@@ -1,4 +1,11 @@
-"""Run one bounded positive-control generation from a private admission proof."""
+"""Run one bounded positive-control generation from a private admission proof.
+
+With `STEP2_RESUME_RUN_ID` set it is an explicit resume (`step2_resume.py`):
+the chain downloaded before the build is re-read here, and
+`positive_control_generate.generate` checks the whole identity and requests
+only what remains, against what is left of `STEP2_CEILING_USD` -- the total
+for the chain -- before its first call.
+"""
 from __future__ import annotations
 
 import json
@@ -17,6 +24,17 @@ def write_shard(paid, cases, shard):
         (paid / 'shard.json').write_text(json.dumps(dict(shard, cases=cases), sort_keys=True) + '\n')
 
 
+def resume_from_env(environ=None):
+    """The `generate(resume=...)` argument, or None when this is not a resume."""
+    environ = os.environ if environ is None else environ
+    from step2_resume import links_from_env, shard_record, validate
+    if not validate(environ)['resume']:
+        return None
+    from step2_merge import git_recipe
+    return {'links': links_from_env(environ, git_recipe), 'run_id': environ['STEP2_RUN_ID'],
+            'shard': shard_record(environ), 'recipe_of': git_recipe}
+
+
 def main():
     root = Path(os.environ['RUNNER_TEMP'])
     rows = [json.loads(line) for line in (root / 'step2-bank' / 'train.jsonl').read_text().splitlines()
@@ -24,6 +42,7 @@ def main():
     samples = int(os.environ['STEP2_SAMPLES'])
     cases = cases_from_env(rows)
     admission = json.loads((root / 'step2-private' / 'admission.json').read_text())
+    resume = resume_from_env()
     backend = ChatBackend(PROVIDER, MODEL, api_key=os.environ['CEREBRAS_API_KEY'].strip(),
                           max_retries=0, timeout_s=120)
     result = generate(
@@ -32,11 +51,12 @@ def main():
         admission=admission, workers=4,
         max_seconds=int(os.environ.get('STEP2_MAX_SECONDS', '14400')),
         requests_per_minute=int(os.environ.get('STEP2_RPM', '60')),
-        samples=samples)
+        samples=samples, resume=resume)
     # Beside manifest.json, not in it: the manifest is the generator's own
     # record and this is the orchestrator's. The grader and the merge read it
     # to prove they selected the very cases this run paid for.
     write_shard(root / 'step2-paid', int(os.environ['STEP2_CASES']), shard_from_env())
+    # Counts, dollars and run ids only; a chain entry carries no case.
     print(json.dumps(result, sort_keys=True))
     return int(not result['complete'])
 

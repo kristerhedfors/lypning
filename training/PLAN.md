@@ -254,6 +254,19 @@ and `target_arms` chosen beforehand; then `s4-target-preflight` on it, which is
 expected to refuse on the case floor (Step 4). Only a k = 16 rung can make the
 preregistered decision.
 
+**A stopped run is resumed, not rerun (2026-09-23).** Full shard 0 of 2 (run
+`35828368891`, 2026-09-23) stopped at 3,942/4,656 requests on one
+`provider-transport` failure, $9.68351838 charged or reserved of $14. Zero
+retries make a transport failure ambiguous about whether it was charged, so the
+run is partial and never graded, and a rerun would buy its completions twice.
+`step2-control.yml`'s `resume_run_id` starts a new run with the same rung and
+shard inputs. It refuses on any identity field that differs. It requests only
+planned − settled, the ambiguous request again as a recorded `re-request`, and
+reads `ceiling_usd` as the chain's total. Only the latest run of a chain may
+be resumed. `full_rpm` lowers the full rung to
+30 rpm. Grade and merge read the chain's union
+(`pipeline/positive_control_resume.py`). Nothing was dispatched.
+
 ### Step 3 — Build contrastive targets (tokens only)
 
 What `prompt + reference` SFT lacks is contrast on nativeness with correctness

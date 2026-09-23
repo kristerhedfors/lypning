@@ -1,6 +1,12 @@
-"""Download one named positive-control evidence directory from the private repo."""
+"""Download one named positive-control evidence directory from the private repo.
+
+A resumed run holds only the requests it made itself; its result names the
+runs it resumed (`resumed_from`), and their generation evidence is copied
+read-only beside it under ``chain/<run>/paid`` so the grade reads the union.
+"""
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -23,6 +29,13 @@ def main():
     import shutil
     target = Path(os.environ['RUNNER_TEMP']) / 'step2-downloaded'
     shutil.copytree(source, target)
+    result = json.loads((target / 'paid' / 'result.json').read_text())
+    if result.get('resumed_from'):
+        from step2_resume import download_recorded_chain, fetcher
+        chain = download_recorded_chain(result, fetcher(os.environ), target / 'chain')
+        print('Downloaded named private positive-control evidence and the %d run(s) it resumed'
+              % len(chain))
+        return
     print('Downloaded named private positive-control evidence')
 
 

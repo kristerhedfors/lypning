@@ -6,6 +6,10 @@ Successful, well-formed usage releases the unused reservation; failed or
 ambiguous requests retain it. Transport retries are forbidden. The caller must
 supply the reviewed population, provider, runtime admission and dollar ceiling.
 This module does not launch jobs, upload data, or authorize its own budget.
+
+A run that stops is continued only by an explicit resume
+(`positive_control_resume`): a new run, named by hand, that re-requests the
+ambiguous request on the record and spends against one ceiling for the chain.
 """
 from __future__ import annotations
 
@@ -19,6 +23,7 @@ import time
 
 from .jsonio import append_jsonl, sha256_of, write_json
 from .backends import BackendError
+from . import positive_control_resume as resuming
 from .positive_control import MODEL, MAX_TOKENS, PRICE_IN, PRICE_OUT, SAMPLES, arm_messages
 from .training_types import TrainingError
 
@@ -78,7 +83,8 @@ class Budget:
             if self.charged + self.reservation > self.ceiling:
                 raise SpendLimit('remaining ceiling cannot cover another request reservation')
             # Durable before network access. An interrupted call is never
-            # silently retried by a resume path (there is no implicit resume).
+            # silently retried: only an explicit resume requests it again, and
+            # records the re-request beside that run's own reservation.
             self.ledger(dict(event='reserved', request=key, usd=str(self.reservation)))
             self.charged += self.reservation
             self.pending.add(key)
@@ -144,14 +150,26 @@ def validate_admission(admission, cases):
         raise TrainingError('verified runtime admission does not cover this population') from exc
 
 
+#: The sampling a manifest records; a resume refuses any other.
+SAMPLING = {'temperature': .7, 'top_p': .8, 'max_tokens': MAX_TOKENS,
+            'reasoning_effort': 'none', 'seed': '1111 + draw'}
+
+
 def generate(cases, spec, backend, output, *, ceiling_usd, admission, workers=4,
-             max_seconds=3000, requests_per_minute=60, samples=SAMPLES):
+             max_seconds=3000, requests_per_minute=60, samples=SAMPLES, resume=None):
     """Generate a reviewed shard; admission is supplied by the orchestrator.
 
     Completion completeness is separate from spend: hitting the cap or any
     provider failure writes a partial result, never a successful comparison.
     Four in-flight requests at most; all have reservations before dispatch.
     Raw completions and the ledger are PRIVATE evidence, not Actions artifacts.
+
+    ``resume`` continues a stopped run explicitly: ``{'links': [...] oldest
+    first, 'run_id': this run's id, 'shard': this run's shard record,
+    'recipe_of': commit -> candidate-image recipe}``. ``ceiling_usd`` is then
+    the TOTAL for the chain. Identity is checked against every earlier run
+    before the output directory exists; only the remaining requests are made,
+    and ``completed``/``planned`` in the result refer to the union.
     """
     if (backend.base_url.rstrip('/') != PROVIDER or backend.model != MODEL or
             backend.max_retries != 0 or not 0 < backend.timeout_s <= 120):
@@ -166,20 +184,45 @@ def generate(cases, spec, backend, output, *, ceiling_usd, admission, workers=4,
     # Materialize before creating output or making a call, so no late data
     # validation error can turn half a paid run into a malformed experiment.
     requests = list(request_order(cases, samples))
+    planned = len(requests)
+    manifest = {
+        'schema': 1, 'provider': backend.identity(), 'admission': admission,
+        'case_set_sha256': sha256_of(cases), 'spec_sha256': hashlib.sha256(spec.encode()).hexdigest(),
+        'requests': planned, 'samples': samples, 'ceiling_usd': str(Budget(ceiling_usd, None).ceiling),
+        'dispatch_seconds': max_seconds, 'inflight_timeout_seconds': backend.timeout_s,
+        'max_retries': 0, 'workers': workers, 'sampling': dict(SAMPLING),
+    }
+    state = None
+    if resume is not None:
+        # Same experiment, then what is left of it -- all before any output
+        # exists or any call is made, so a refusal costs nothing.
+        current = resuming.identity(resume['run_id'], manifest, resume['shard'], resume['recipe_of'])
+        resuming.check_identity(resume['links'], current)
+        keys = [resuming.request_key(c['case_id'], d, a) for c, d, a in requests]
+        state = resuming.plan(resume['links'], keys, ceiling_usd)
+        wanted = set(state['remaining'])
+        requests = [r for r, key in zip(requests, keys) if key in wanted]
+        manifest['resume'] = resuming.summary(state)
     output = Path(output)
     if output.exists():
         raise TrainingError('output exists; preserve partial work and choose a new directory')
     output.mkdir(parents=True)
-    budget = Budget(ceiling_usd, lambda row: append_jsonl(output / 'spend.jsonl', row))
-    write_json(output / 'manifest.json', {
-        'schema': 1, 'provider': backend.identity(), 'admission': admission,
-        'case_set_sha256': sha256_of(cases), 'spec_sha256': hashlib.sha256(spec.encode()).hexdigest(),
-        'requests': len(requests), 'samples': samples, 'ceiling_usd': str(budget.ceiling),
-        'dispatch_seconds': max_seconds, 'inflight_timeout_seconds': backend.timeout_s,
-        'max_retries': 0, 'workers': workers,
-        'sampling': {'temperature': .7, 'top_p': .8, 'max_tokens': MAX_TOKENS,
-                     'reasoning_effort': 'none', 'seed': '1111 + draw'},
-    })
+
+    def ledger(row):
+        append_jsonl(output / 'spend.jsonl', row)
+
+    budget = Budget(state['run_ceiling_usd'] if state else ceiling_usd, ledger)
+    write_json(output / 'manifest.json', manifest)
+    if state:
+        # Private: which requests are asked again, and which rows superseded.
+        write_json(output / 'resume.json', {
+            'resumed_from': state['chain'], 'ceiling_usd': str(state['ceiling_usd']),
+            'prior_charged_or_reserved_usd': str(state['prior_usd']),
+            'run_ceiling_usd': str(state['run_ceiling_usd']),
+            'remaining': len(state['remaining']),
+            're_requested': [{'request': key, 'prior': prior}
+                             for key, prior in state['re_requested'].items()],
+            'superseded': state['superseded']})
     started = time.monotonic()
     completed = 0
     failure = None
@@ -225,6 +268,11 @@ def generate(cases, spec, backend, output, *, ceiling_usd, admission, workers=4,
                 except SpendLimit:
                     failure = 'spend limit'
                     break
+                if state and key in state['re_requested']:
+                    # An earlier run's ambiguous request, asked again on the
+                    # record; its prior reservation stays spent in that run.
+                    ledger(dict(event='re-request', request=key,
+                                prior=state['re_requested'][key]))
                 futures[pool.submit(one, case, draw, arm)] = key
                 next_request_at = time.monotonic() + 60.0 / requests_per_minute
             if failure:
@@ -255,5 +303,18 @@ def generate(cases, spec, backend, output, *, ceiling_usd, admission, workers=4,
               'completed': completed, 'planned': len(requests), 'reason': failure,
               'failure_types': sorted(failure_types),
               'charged_or_reserved_usd': str(budget.charged), 'ceiling_usd': str(budget.ceiling)}
+    if state:
+        # completed/planned are the union's. This run's own share and dollars
+        # sit beside them, and every earlier run's in the chain.
+        union = len(state['prior_rows']) + completed
+        result.update({
+            'complete': result['complete'] and union == planned,
+            'completed': union, 'planned': planned,
+            'completed_in_run': completed, 'requested_in_run': len(requests),
+            're_requested': len(state['re_requested']), 'superseded': len(state['superseded']),
+            'ceiling_usd': str(state['ceiling_usd']), 'run_ceiling_usd': str(budget.ceiling),
+            'chain_charged_or_reserved_usd': str(state['prior_usd'] + budget.charged),
+            'resumed_from': state['chain'],
+        })
     write_json(output / 'result.json', result)
     return result

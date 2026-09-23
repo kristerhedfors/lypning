@@ -34,6 +34,11 @@ USD_PER_REQUEST = Decimal("3.63061517") / 1536
 #: 35.07 minutes (run 35767396604). Sizing by the nominal rate is how a shard
 #: ends up needing more wall-clock than its dispatch window.
 MEASURED_RPM = Decimal("43.8")
+#: The nominal rate that measurement was taken at, and the range the `full`
+#: rung's `full_rpm` input may choose from. Below 45 the achieved rate is
+#: scaled down in proportion -- an extrapolation, never a faster assumption.
+NOMINAL_RPM = 45
+FULL_RPM_RANGE = (30, 45)
 #: Grading cost per completion with 8 workers: 512 completions in 21 min 19 s
 #: (run 35759939928). More workers is not a free fix -- `native` is
 #: host-load-dependent.
@@ -92,37 +97,68 @@ def reservation_usd():
             Decimal(MAX_TOKENS) * Decimal(str(PRICE_OUT))) / Decimal(1000000)
 
 
-def projection(total, samples, shard, *, max_seconds):
-    """Requests, dollars and minutes for one shard; aggregates only."""
-    cases = shard_size(total, **shard)
-    requests = cases * samples * 2
+def achieved_rpm(rpm=NOMINAL_RPM):
+    """Requests per minute to size by: the measured rate, scaled down below 45."""
+    return MEASURED_RPM * min(int(rpm), NOMINAL_RPM) / NOMINAL_RPM
+
+
+def generation(requests, *, max_seconds, rpm=NOMINAL_RPM):
+    """Dollars and minutes to generate ``requests``; a resume sizes its remainder by it."""
     usd = USD_PER_REQUEST * requests
     return {
-        "cases": cases, "requests": requests,
+        "requests": requests,
         "projected_usd": float(round(usd, 2)),
         "ceiling_needed_usd": float(round(usd * (1 + COST_MARGIN) + IN_FLIGHT * reservation_usd(), 2)),
-        "generation_minutes": float(round(Decimal(requests) / MEASURED_RPM, 1)),
+        "generation_minutes": float(round(Decimal(requests) / achieved_rpm(rpm), 1)),
         "generation_window_minutes": max_seconds // 60,
-        "grade_minutes": float(round(Decimal(requests) * GRADE_SECONDS_PER_COMPLETION / 60, 1)),
-        "grade_window_minutes": GRADE_MINUTES_CAP,
-        "basis": "measured: run 35767396604 ($3.63061517 / 1,536 requests, 43.8 rpm); "
-                 "run 35759939928 (2.5 s per graded completion)",
+        "rpm": int(rpm),
     }
 
 
-def refusals(plan, ceiling_usd):
-    """Why this shard would stop before it is complete; empty when it fits."""
+def projection(total, samples, shard, *, max_seconds, rpm=NOMINAL_RPM):
+    """Requests, dollars and minutes for one shard; aggregates only."""
+    cases = shard_size(total, **shard)
+    requests = cases * samples * 2
+    return dict(generation(requests, max_seconds=max_seconds, rpm=rpm), **{
+        "cases": cases,
+        "grade_minutes": float(round(Decimal(requests) * GRADE_SECONDS_PER_COMPLETION / 60, 1)),
+        "grade_window_minutes": GRADE_MINUTES_CAP,
+        "basis": "measured: run 35767396604 ($3.63061517 / 1,536 requests, 43.8 rpm at 45); "
+                 "run 35759939928 (2.5 s per graded completion)",
+    })
+
+
+def refusals(plan, ceiling_usd, *, resume=False):
+    """Why this shard would stop before it is complete; empty when it fits.
+
+    A resume generates only what its chain has not completed, against what
+    the chain has not spent: `step2_resume.py` checks the ceiling and the
+    window on that remainder, with the prior dollars in hand. Grading still
+    covers the whole shard, so the grade window is checked here either way.
+    """
     why = []
-    if plan["ceiling_needed_usd"] > ceiling_usd:
+    if not resume and plan["ceiling_needed_usd"] > ceiling_usd:
         why.append("ceiling $%.2f is below the $%.2f this shard needs"
                    % (ceiling_usd, plan["ceiling_needed_usd"]))
     # 10% of the window is left for the rate limiter's own jitter.
-    if plan["generation_minutes"] > 0.9 * plan["generation_window_minutes"]:
+    if not resume and plan["generation_minutes"] > 0.9 * plan["generation_window_minutes"]:
         why.append("generation needs %.1f of a %d-minute window"
                    % (plan["generation_minutes"], plan["generation_window_minutes"]))
-    if plan["grade_minutes"] > plan["grade_window_minutes"]:
+    if "grade_minutes" in plan and plan["grade_minutes"] > plan["grade_window_minutes"]:
         why.append("grading needs %.1f of %d minutes" % (plan["grade_minutes"], plan["grade_window_minutes"]))
     return why
+
+
+def rpm_from_env(environ, rung):
+    """STEP2_RPM; the `full` rung's is an operator choice between 30 and 45."""
+    raw = environ.get("STEP2_RPM", "") or str(NOMINAL_RPM)
+    if not re.fullmatch(r"[0-9]{1,3}", raw) or not 0 < int(raw) <= 120:
+        raise ShardError("STEP2_RPM must be an integer in 1..120")
+    rpm = int(raw)
+    low, high = FULL_RPM_RANGE
+    if rung == "full" and not low <= rpm <= high:
+        raise ShardError("the full rung's STEP2_RPM must lie in %d..%d" % (low, high))
+    return rpm
 
 
 def main(environ=None):
@@ -138,13 +174,16 @@ def main(environ=None):
         if shard["skip_prefix"] >= total:
             raise ShardError("STEP2_SKIP_PREFIX leaves no case to draw")
         plan = projection(total, int(environ["STEP2_SAMPLES"]), shard,
-                          max_seconds=int(environ["STEP2_MAX_SECONDS"]))
+                          max_seconds=int(environ["STEP2_MAX_SECONDS"]),
+                          rpm=rpm_from_env(environ, rung))
     except (KeyError, ShardError) as exc:
         print("step2 shard refused: %s" % exc, file=sys.stderr)
         return 1
-    plan.update(rung=rung, **shard)
+    resume = bool(environ.get("STEP2_RESUME_RUN_ID"))
+    plan.update(rung=rung, resume=resume, **shard)
     print(json.dumps(plan, sort_keys=True))
-    why = refusals(plan, float(environ["STEP2_CEILING_USD"])) if rung == "full" else []
+    why = (refusals(plan, float(environ["STEP2_CEILING_USD"]), resume=resume)
+           if rung == "full" else [])
     for reason in why:
         print("step2 shard refused: %s" % reason, file=sys.stderr)
     return int(bool(why))

@@ -160,11 +160,31 @@ def generation_complete(completions_path):
     return result
 
 
+def generation_completions(completions_path, chain=None):
+    """The completions a complete generation holds: its own, or its chain's union.
+
+    A resumed run (`positive_control_resume`) stores only what it requested
+    itself; its result's completed/planned refer to the union with the runs it
+    resumed, so its grade reads that union -- each planned request once, the
+    resumed response where an earlier run's request was ambiguous. ``chain``
+    is those runs, oldest first, then the resumed run itself, each read with
+    `positive_control_resume.read_link`.
+    """
+    result = generation_complete(completions_path)
+    if result.get('resumed_from'):
+        from .positive_control_resume import union_completions
+        if not chain:
+            raise TrainingError('a resumed run is graded over its chain; the chain was not supplied')
+        return result, union_completions(chain, result)
+    if chain:
+        raise TrainingError('a chain was supplied for a run that resumed nothing')
+    return result, read_jsonl(completions_path)
+
+
 def grade_files(cases, completions_path, verifier, output, *, samples, workers=8, run_id='',
                 lineage=None, progress=None, target_arms=DEFAULT_ARMS, token_count=None,
-                tokenizer=None):
-    result = generation_complete(completions_path)
-    completions = read_jsonl(completions_path)
+                tokenizer=None, chain=None):
+    result, completions = generation_completions(completions_path, chain)
     if result['planned'] != len(completions):
         raise TrainingError('generation result and completions disagree on the request count')
     return grade(cases, completions, verifier, output,

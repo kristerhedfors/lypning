@@ -6,7 +6,8 @@ name: Step 2 merge graded full-rung shards (no GPU, no container)
 # `target_run` read like any single graded run. `step2_merge.py` refuses a
 # set whose shards differ in engine, base image, subset spec, provider,
 # sampling or candidate-image recipe, naming the shard that differs, and
-# re-runs nothing.
+# re-runs nothing. A resumed shard is named by its resumed run id; the merge
+# fetches the runs it resumed and reads their union, as its grade did.
 on:
   workflow_dispatch:
     inputs:
