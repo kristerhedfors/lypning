@@ -22,10 +22,13 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 - One helper, `training/pipeline/public_view.py`, removes the key at any
   depth. `s0_inventory`, `step0_summary`, `loss_summary`, `hf_status`, the
   other `.github/scripts` report printers and the round scripts' printed JSON
-  (`== report`, `== probe verdict`, `== manifest`) go through it.
+  (`== report`, `== probe verdict`, `== manifest`) go through it, and so do
+  the two files uploaded as public Actions artifacts, `public-report.json`
+  and `s4-target-floor.json`.
 - `training/tests/test_public_view.py` drives each printer with a fixture
-  carrying the key, and guards that no script prints a metrics, best or
-  report object, or names the key, outside the helper.
+  carrying the key, and guards that no script, round-script Python body or
+  workflow prints a metrics, best or report object, or names the key, outside
+  the helper.
 
 **2026-09-23** — Resume a stopped Step 2 run explicitly, never rerun it ([#115](https://github.com/kristerhedfors/lypning/pull/115))
 

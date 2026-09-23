@@ -9,6 +9,7 @@ from pathlib import Path
 from .jsonio import read_jsonl, sha256_of, write_json, write_jsonl
 from .positive_control_generate import request_order
 from .positive_control_targets import DEFAULT_ARMS, build_targets, normalise_arms
+from .public_view import public_view
 from .training import Verifier, program_from_completion
 from .training_metrics import paired_comparison, split_components, summarize
 from .training_types import TrainingError
@@ -119,7 +120,9 @@ def grade(cases, completions, verifier, output, *, samples, workers=8, run_id=''
                                            token_count=token_count, tokenizer=tokenizer)
     write_jsonl(output / 'sft.jsonl', targets)
     write_json(output / 'sft-report.json', target_report)
-    public = {
+    # Uploaded as a PUBLIC Actions artifact, so it passes the one helper that
+    # keeps per-case `case_clusters` counts out of public output (2026-09-23).
+    public = public_view({
         'schema': 1, 'cases': len(cases), 'families': comparison['families'],
         'independent_clusters': comparison['independent_clusters'],
         'samples_per_arm': samples, 'rows': len(rows),
@@ -134,7 +137,7 @@ def grade(cases, completions, verifier, output, *, samples, workers=8, run_id=''
                     ('rows', 'cases_with_targets', 'families_with_targets', 'populations',
                      'eligible_before_cap', 'rejected', 'prompt_policy', 'selection_policy',
                      'arms', 'length_policy')},
-    }
+    })
     write_json(output / 'public-report.json', public)
     return public
 

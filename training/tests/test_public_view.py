@@ -23,12 +23,15 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import textwrap
 from types import SimpleNamespace
 
 import pytest
 
+from pipeline import positive_control_grade
 from pipeline.public_view import PRIVATE_KEYS, public_view
-from pipeline.training_metrics import summarize
+from pipeline.training_metrics import CheckpointGate, summarize
+from pipeline.training_types import Score
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / ".github" / "scripts"
@@ -79,6 +82,13 @@ def assert_public(text):
     assert not any(str(n) in text for n in COUNTS)
 
 
+def load_script(name):
+    """`load`, with `.github/scripts` importable, as the workflow runs it."""
+    if str(SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(SCRIPTS))
+    return load(name)
+
+
 def load(name):
     spec = importlib.util.spec_from_file_location(name, SCRIPTS / (name + ".py"))
     module = importlib.util.module_from_spec(spec)
@@ -115,6 +125,24 @@ def test_the_private_artifact_keeps_the_key():
     kept = stats["by_population"]["coverage"]["case_clusters"]
     assert set(kept) == {"digest", "families"}
     assert "case_clusters" not in json.dumps(public_view(stats))
+
+
+def test_best_json_keeps_the_key_the_offline_reselection_reads():
+    """`best.json` is `CheckpointGate.report()`: the selected metrics, whole.
+    Offline re-selection pairs a checkpoint with base through the counts and
+    the digest, so the private file must still carry both."""
+    def rows(native_every):
+        return [{"family": "f%d" % (i % 2), "case_id": "c%d" % i, "draw": d,
+                 "population": "coverage", "correct": True, "native": (i + d) % native_every == 0}
+                for i in range(8) for d in range(2)]
+    base, candidate = summarize(rows(3)), summarize(rows(1))
+    gate = CheckpointGate(baseline=base)
+    gate.observe(25, candidate)
+    best = gate.report()
+    kept = best["by_population"]["coverage"]["case_clusters"]
+    assert kept["digest"] == base["by_population"]["coverage"]["case_clusters"]["digest"]
+    assert kept["families"]
+    assert not leaks(public_view(best)) and leaks(best)
 
 
 # -- each printer, end to end --------------------------------------------------
@@ -255,6 +283,73 @@ def test_pilot_probe_verdict_prints_without_the_key(tmp_path):
     assert "case_clusters" not in verdict and DIGEST not in verdict
 
 
+# -- the public artifacts ------------------------------------------------------
+#
+# A file uploaded with `actions/upload-artifact` from this public repository is
+# as public as the log: `public-report.json` (Step 2 grade and merge) and
+# `s4-target-floor.json`. Neither holds the key today; both pass the helper so a
+# field added to either tomorrow cannot carry it out.
+
+class _Verifier:
+    def score(self, case, program):
+        n = sum(map(ord, program))
+        if case["population"] == "fallback-control":
+            return Score(1, "correct-control", 0, 2) if n % 3 else Score(0, "incorrect", 0, 2)
+        return Score(1, "correct-native", 2, 2) if n % 2 else Score(1, "correct-fallback", 0, 2)
+
+
+def _step2_inputs():
+    cases = [{"case_id": "c%d" % i, "family": "fam-%d" % (i % 4), "task": "task %d" % i,
+              "split_group": "g%d" % (i % 3),
+              "population": "fallback-control" if i % 4 == 3 else "coverage",
+              "capabilities": [], "split": "train", "tests": [{}, {}]} for i in range(8)]
+    completions = [{"case_id": c["case_id"], "draw": d, "arm": a, "seed": 1111 + d,
+                    "completion": "```python\nprint(%r)\n```" % ("%s/%d/%s" % (c["case_id"], d, a)),
+                    "finish_reason": "stop", "usage": {"completion_tokens": 8 + d}}
+                   for c in cases for d in range(2) for a in ("bare", "subset-spec")]
+    return cases, completions
+
+
+def test_step2_public_report_is_the_public_view_and_report_json_keeps_the_key(
+        monkeypatch, tmp_path):
+    """Grade and merge write the same `public-report.json`; a comparison that
+    carried the key would reach it through `comparison`, and must not."""
+    real = positive_control_grade.population_comparison
+
+    def with_clusters(rows, population):
+        found = real(rows, population)
+        return None if found is None else dict(found, case_clusters=clusters())
+
+    monkeypatch.setattr(positive_control_grade, "population_comparison", with_clusters)
+    cases, completions = _step2_inputs()
+    out = tmp_path / "graded"
+    public = positive_control_grade.grade(cases, completions, _Verifier(), out, samples=2,
+                                          workers=2, run_id="r", lineage={"engine_sha256": "e" * 64})
+    assert not leaks(public)
+    assert_public((out / "public-report.json").read_text())
+    # The private report keeps what it was given.
+    assert "case_clusters" in json.loads((out / "report.json").read_text())["comparison"]
+    merge = load_script("step2_merge")
+    rows = [json.loads(l) for l in (out / "rows.jsonl").read_text().splitlines()]
+    merge.aggregate(cases, completions, rows, tmp_path / "merged", samples=2, run_id="r",
+                    lineage={"engine_sha256": "e" * 64}, target_arms=("subset-spec",))
+    assert ((tmp_path / "merged" / "public-report.json").read_bytes()
+            == (out / "public-report.json").read_bytes())
+    assert "case_clusters" in (tmp_path / "merged" / "report.json").read_text()
+
+
+def test_s4_target_floor_writes_the_public_view_to_its_uploaded_file():
+    tree = ast.parse((SCRIPTS / "s4_target_floor.py").read_text(encoding="utf-8"))
+    writes = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+              and isinstance(n.func, ast.Attribute) and n.func.attr == "write_text"
+              and "out" in ast.unparse(n.func.value)]
+    assert writes, "s4_target_floor no longer writes --out; re-point this test"
+    for call in writes:
+        dumps = [n for n in ast.walk(call) if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Attribute) and n.func.attr == "dumps"]
+        assert dumps and all(_is_public_view(d.args[0]) for d in dumps), ast.unparse(call)
+
+
 # -- the guard -----------------------------------------------------------------
 
 # A script that reads or builds a metrics/best/report object: its printed JSON
@@ -317,6 +412,59 @@ def test_the_named_printers_import_the_helper():
         source = (SCRIPTS / (name + ".py")).read_text(encoding="utf-8")
         assert "from pipeline.public_view import public_view" in source, name
         assert "public_view(" in source.split("import public_view", 1)[1], name
+
+
+# The Python a round script runs: `python3 - <<'TAG' ... TAG` and `python3 -c '...'`.
+HEREDOC = re.compile(r"^([^\n]*\bpython3?\b[^\n]*<<-?\s*'?(\w+)'?[^\n]*)\n(.*?)\n\s*\2\s*$",
+                     re.M | re.S)
+DASH_C = re.compile(r"\bpython3?\s+-c\s+'([^']*)'")
+# A shell command that would put an artifact on stdout without any Python.
+SHELL_DUMP = re.compile(r"\b(cat|jq|head|tail|less|more)\b[^|>#\n]*\.json\b")
+
+
+def python_bodies(text):
+    for match in HEREDOC.finditer(text):
+        yield textwrap.dedent(match.group(3))
+    for match in DASH_C.finditer(text):
+        yield match.group(1)
+
+
+def test_every_python_body_in_a_round_script_prints_json_through_the_helper():
+    """The follower streams the whole job log into a PUBLIC Actions log, so in
+    a round script there is no private stdout: every printed JSON, on one line
+    or several, `json.dumps` or `json.dump(x, sys.stdout)`, passes the helper."""
+    offenders, bodies = [], 0
+    for path in ROUND_SCRIPTS:
+        text = path.read_text(encoding="utf-8")
+        for body in python_bodies(text):
+            bodies += 1
+            for call in _printed_dumps(ast.parse(body)):
+                if not _is_public_view(call.args[0]):
+                    offenders.append("%s: %s" % (path.name, ast.unparse(call)[:80]))
+        for number, line in enumerate(text.splitlines(), 1):
+            if SHELL_DUMP.search(line):
+                offenders.append("%s:%d %s" % (path.name, number, line.strip()))
+    assert offenders == [], "round scripts print JSON around public_view: " + "; ".join(offenders)
+    # Not vacuous: the pilot's manifest, witness, probe and report printers are
+    # all Python bodies this found.
+    assert bodies >= 20
+
+
+def test_workflow_python_printing_an_artifact_uses_the_helper():
+    """Inline Python in a workflow `run:` block prints into the same public log."""
+    offenders = []
+    for path in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+        text = path.read_text(encoding="utf-8")
+        for body in python_bodies(text):
+            if not HANDLES.search(body):
+                continue
+            for call in _printed_dumps(ast.parse(body)):
+                if not _is_public_view(call.args[0]):
+                    offenders.append("%s: %s" % (path.name, ast.unparse(call)[:80]))
+        for number, line in enumerate(text.splitlines(), 1):
+            if SHELL_DUMP.search(line) and HANDLES.search(line):
+                offenders.append("%s:%d %s" % (path.name, number, line.strip()))
+    assert offenders == [], ", ".join(offenders)
 
 
 def test_round_scripts_print_json_only_through_the_helper():

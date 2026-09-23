@@ -195,7 +195,8 @@ def main(argv=None):
     print(json.dumps(public_view(public), indent=2, sort_keys=True))
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(json.dumps(public, indent=2, sort_keys=True) + '\n')
+        # Uploaded as a PUBLIC Actions artifact: the same view as the log.
+        args.out.write_text(json.dumps(public_view(public), indent=2, sort_keys=True) + '\n')
     return 0 if public['clears'] else 1
 
 

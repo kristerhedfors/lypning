@@ -10,8 +10,10 @@ stay private. The artifacts themselves keep the key unchanged -- offline
 re-selection pairs evaluations through it -- and only what is PRINTED loses it.
 
 Every public printer calls `public_view` on the object it is about to print,
-and `training/tests/test_public_view.py` holds the `.github/scripts` printers
-and `round02_pilot.sh` to that. Stdlib only, no I/O: it returns a copy.
+and so does every writer of a file uploaded as a public Actions artifact
+(`public-report.json`, `s4-target-floor.json`).
+`training/tests/test_public_view.py` holds the `.github/scripts` printers, the
+round scripts and the workflows to that. Stdlib only, no I/O: it returns a copy.
 """
 from __future__ import annotations
 
