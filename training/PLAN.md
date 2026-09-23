@@ -53,8 +53,8 @@ Advance a step by editing this table in the same PR as the work.
 |---|---|---|---|---|
 | 0 | Read what was paid for | $0 | did dev native move inside the selector's blind spot? | done (2026-09-21, [read](reports/2026-09-21-codex-step0-read.md), GH 35575454075) |
 | 1 | Fix the instrument | $0 | nothing else is readable until it is | done (2026-09-22, implementation in PRs #97–#101; validation limits below) |
-| 2 | Positive control (S1 / stage 0b) | ~$126 at 512 output tokens/request; ~$225 at allowance (full k=16); rungs so far $5.74 charged or reserved | distillation route, rejection-filtered distillation, or contrastive route | in progress (2026-09-22: smoke generated and graded, pooled; 192-case target rung `35767396604` complete and **not yet graded**; rungs below; [review](reviews/2026-09-22-claude-step2-s4-review.md): revise) |
-| 3 | Build contrastive targets | tokens | is there enough pair supply for a preference arm? | in progress (2026-09-23: free reader `step3-pairs.yml` added; not yet dispatched, no count) |
+| 2 | Positive control (S1 / stage 0b) | ~$126 at 512 output tokens/request; ~$225 at allowance (full k=16); rungs run: $28.12751896 charged or reserved | distillation route, rejection-filtered distillation, or contrastive route | done (2026-09-23, full split k=4, merge `35912725289`: **flat** — no distillation route; Step 3 mandatory) |
+| 3 | Build contrastive targets | tokens | is there enough pair supply for a preference arm? | done (2026-09-23, `step3-pairs` `35918571219`: 110–257 pair prompts by source, **< 300** — no preference arm; arm C carries the signal) |
 | 4 | S4, re-specified, three seeds | up to ~$180 (three h200 seed jobs capped at 720m, ~$60 each) | the first result the instrument can read | open |
 
 **Operator direction, 2026-09-22: free first.** Continue Step 2's free checks
@@ -256,7 +256,11 @@ known-positive to validate on.
 | `35759939928` | grade smoke | $0 | **pooled** (controls counted): native +14.78pp [+3.89, +26.81], correct −9.01pp [−17.34, −2.02]; neither route earned; 157 targets over 54 cases / 29 families |
 | `35762924601` | S4 target preflight | $0 | 156,691 scheduled supervised tokens vs 50,000 — about 7.6 passes over 157 rows |
 | `35763603648` | targets 192 × 4 at 60 rpm | $0.90358492 of $6 | stopped at 327/1,536 on an opaque provider error; not gradeable |
-| `35767396604` | targets 192 × 4 at 45 rpm | $3.63061517 of $6 | complete 1,536/1,536; references 192/192; **grade once, after this PR** |
+| `35767396604` | targets 192 × 4 at 45 rpm | $3.63061517 of $6 | complete 1,536/1,536; references 192/192; graded `35828042217` (2026-09-23): coverage native +6.92pp [−1.56, +16.54], correct −5.82pp [−10.61, −0.94]; shard 0 of the full rung |
+| `35828368891` | full shard 0 of 2 (2026-09-23) | $9.68351838 of $14 | stopped at 3,942/4,656 on one `provider-transport` error |
+| `35849787147` | resume of `35828368891` | $1.69720121 (chain $11.38071959 of $14) | complete 4,656/4,656; 714 requested, 3 re-requested; graded `35889053866`, 0 engine mismatches |
+| `35828540620` | full shard 1 of 2 (2026-09-23) | $11.00544250 of $14 | complete 4,648/4,648; graded `35889094290`, 1 engine mismatch (private witness; parser fix held in #118) |
+| `35912725289` | merge of the three shards, `subset-spec` targets | $0 | all 1,355 cases, 5,420 draws per arm; see the completed decision below |
 
 The smoke is exploratory: 64 cases, k = 4, 30 clusters. The rungs are nested —
 the 192-case set begins with the smoke's 64 and repeats their requests
@@ -293,6 +297,27 @@ verification block still aborts, and `step2_grade.py` prints only its type and
 a digest; the traceback goes to the private `grade-failure/`. Each mismatch is
 still an engine bug (invariant 1), filed from the private witness file.
 
+**Completed decision (2026-09-23, merge `35912725289`): flat — no distillation
+route; Step 3 is mandatory.** On the whole 1,355-case train split at k = 4,
+coverage rows, conditioned minus bare: correct-and-native **+2.59pp
+[−3.94, +9.74]**, correct **−7.13pp [−11.09, −4.37]**. On controls the spec pushed
+fallback cases native (+22.98pp) at −11.32pp correctness. The smoke's pooled
++14.78pp counted controls; the coverage-only read over 21× the cases is flat.
+Rejection-filtered targets exist anyway, because only verified draws are kept.
+Every target set clears the S4 case floor (`s4-target-preflight`, seeds
+1111/2222/3333, 2026-09-23, 139,192–142,509 scheduled supervised tokens against
+50,000), so the choice of set is a GPU-approval decision:
+
+| `target_arms` | merge run | cases | rows |
+|---|---|---|---|
+| `subset-spec` (reviewed default) | `35912725289` | 1,165 | 3,381 |
+| `bare` (plain ReST-EM on own draws) | `35913580092` | 1,155 | 3,088 |
+| `bare,subset-spec` | `35913600534` | 1,291 | 4,197 |
+
+At `PILOT_STEPS` 300 and batch 4 the schedule exposes 1,200 rows —
+`passes_over_rows` 0.36 on the `subset-spec` set — so most target rows are never
+seen. One pass is about 845 steps; the dose is also a GPU-approval decision.
+
 ### Step 3 — Build contrastive targets (tokens only)
 
 What `prompt + reference` SFT lacks is contrast on nativeness with correctness
@@ -322,6 +347,15 @@ their case ids join the run's with family and population unchanged; the join
 is printed either way, with `same_engine_as_run` — a probe label is seed 1111's
 engine's, so on a different engine its columns are that engine's pairs. Rows carry no program text, so every pair count is an
 upper bound on distinct programs.
+
+**Completed decision (2026-09-23, `step3-pairs` `35918571219`): below 300 in
+every mode — no preference arm; arm C carries the contrastive signal.** Coverage
+prompts with at least one correct-native and one correct-fallback draw, of
+1,132: bare 110, seed 1111's probe 148 with bare (same case set, a different
+engine), same-arm 175, any arm 234 (118 of them only through a conditioned
+positive), any source 257. 641 of the 723 any-arm negative draws are `module`
+refusals. Controls are not paired; 108 of 223 control prompts had a draw that
+ran native, 20 of them under the bare prompt.
 
 ### Step 4 — S4, re-specified (three seeds; up to ~$180 at the 720m ceiling)
 
