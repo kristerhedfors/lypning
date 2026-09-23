@@ -455,6 +455,19 @@ impl Interp {
                             let kind = err_kind(&err);
                             let mut handled = None;
                             for h in handlers {
+                                // A clause that is an expression (`parse.rs`,
+                                // `EXCEPT_EXPR`): CPython evaluates it now, as a
+                                // whole, before matching any element, and this
+                                // engine cannot. Refuse here and not earlier, so
+                                // a program whose exception never reaches the
+                                // clause still runs natively.
+                                if h.kinds.iter().any(|k| &**k == crate::ast::EXCEPT_EXPR) {
+                                    handled = Some(Err(unsupported(
+                                        "exception",
+                                        "an except clause that is an expression, not a class name or a tuple of them",
+                                    )));
+                                    break;
+                                }
                                 if h.kinds.is_empty()
                                     || h.kinds.iter().any(|k| exc_matches(k, kind))
                                 {

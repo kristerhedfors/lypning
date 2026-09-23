@@ -14,6 +14,32 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-23** — An `except` clause is an expression; valid Python the parser did not know refuses instead of dying ([#118](https://github.com/kristerhedfors/lypning/pull/118))
+
+- **Engine change — do not merge before S4 arm A's three seeds finish**: the
+  engine is frozen for arm A from the Step 2 target rung on.
+- `except (E, x is None):` was `SyntaxError: expected ')', found 'is'` at
+  exit 1 — the error that aborted Step 2 control grading run 35854009245.
+  The clause now parses as CPython's grammar has it; names, dotted names and
+  a flat tuple of them match as before, and any other expression refuses as
+  `exception` when an exception reaches it, the only time CPython evaluates
+  it. The router sends such a program to CPython.
+- A replacement field that goes on past a line break (`f"""{x\nis None}"""`)
+  printed its first line and dropped the rest at exit 0. It refuses as
+  `fstring`.
+- More SyntaxErrors at exit 1 on programs the reference compiles, found by
+  sweeping local model-written and stdlib programs: PEP 701 f-strings (a
+  reused quote, a line break in a single-quoted field) refuse as `fstring`
+  from 3.12; `*` after the first element of a list, tuple, set or subscript
+  refuses as `unpack`; a slice after the first element of a subscript, or
+  `x[:, i]`, refuses as `subscript`; `*args: T` and `**kw: T` parse.
+- A quote or bracket as a format-spec fill (`f"{x:'>10}"`, `f"{x:(^9}"`,
+  valid in every version) was `expecting '}'` at exit 1; the spec is read as
+  literal text and these run. A multi-line field that does not parse as a
+  module (`f"""{a +\nb}"""`) refuses as `fstring` instead of exit 1.
+- Pinned in `tests/test_semantics.py`: every new case fails on the previous
+  binary and passes on this one.
+
 **2026-09-23** — Keep `case_clusters` private: every public printer strips it ([#116](https://github.com/kristerhedfors/lypning/pull/116))
 
 - The operator decided that per-case `case_clusters` counts stay private.
