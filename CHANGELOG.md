@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-23** — Resume a stopped Step 2 run explicitly, never rerun it (#TBD)
+**2026-09-23** — Resume a stopped Step 2 run explicitly, never rerun it ([#115](https://github.com/kristerhedfors/lypning/pull/115))
 
 - `step2-control.yml` gains `resume_run_id`. A new run proves it is the same
   experiment as the stopped one, refusing on the first field that differs. It
