@@ -6,6 +6,8 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -349,3 +351,254 @@ def test_concurrent_witness_rows_stay_parseable(tmp_path):
     assert len(lines) == 320
     for line in lines:
         json.loads(line)
+
+
+# --- scoring overlapped with the next chunk's generation --------------------------
+
+class SeededModel(Model):
+    """A model whose completions depend on the torch RNG state it generates under.
+
+    So a scoring thread that consumed RNG, or a chunk generated under another
+    state, would change the programs and hence the bytes compared below.
+    `hook(call)` runs at the start of each `generate`; `fail_at` makes that
+    call raise, as a CUDA out-of-memory would.
+    """
+
+    def __init__(self, torch, fail_at=None, hook=None):
+        super().__init__(torch, [])
+        self.fail_at, self.hook = fail_at, hook
+
+    def generate(self, **kwargs):
+        assert kwargs["generation_config"].eos_token_id == 99
+        call = len(self.seeds)
+        if self.hook:
+            self.hook(call)
+        if call == self.fail_at:
+            raise RuntimeError("CUDA out of memory")
+        self.seeds.append(self.torch.state)
+        state = self.torch.state % 1000
+        self.torch.state += 1
+        n = kwargs["input_ids"].shape[0] * kwargs["generation_config"].num_return_sequences
+        return Tokens([[7, 7, 7, state, row, 99] for row in range(n)])
+
+
+class Scorer:
+    """Deterministic scores, an uneven finishing order, an optional block."""
+
+    def __init__(self, block=None, enter=None):
+        self.block, self.enter = block, enter
+        self.lock = threading.Lock()
+        self.seen = []
+
+    def score(self, case, program):
+        with self.lock:
+            self.seen.append((case["case_id"], program))
+        if self.enter:
+            self.enter(case, program)
+        n = sum(map(ord, program))
+        time.sleep((n % 5) * 0.002)          # later draws often finish first
+        if self.block and self.block(case, program):
+            from pipeline.training_types import VerificationBlocked
+            raise VerificationBlocked("engine mismatch", {"program": program})
+        if case["population"] == "fallback-control":
+            return Score(1, "correct-control", 3, 3)
+        return Score(1, "correct-native", 3, 3) if n % 3 else Score(0, "incorrect", 0, 1, (), 0)
+
+
+#: Five cases at two draws, four sequences per call: chunks of 2, 2 and 1 case.
+OVERLAP_CASES = [dict(case_id="c%d" % i, family="f%d" % (i % 2), task="t%d" % i,
+                      population="fallback-control" if i == 4 else "coverage",
+                      split_group="g%d" % (i % 2), tests=[{"stdout": str(i)}]) for i in range(5)]
+
+
+def chunk_of(case):
+    return int(case["case_id"][1:]) // 2
+
+
+def scoring_threads():
+    return [t.name for t in threading.enumerate() if t.name.startswith(("eval-score", "eval-stage"))]
+
+
+def run_evaluation(tmp_path, name, overlapped, *, block=None, fail_at=None, score_workers=3,
+                   hook=None, enter=None):
+    ev, torch = load_evaluation(), FakeTorch()
+    model = SeededModel(torch, fail_at, hook)
+    verifier = Scorer(block, enter)
+    out = tmp_path / name
+    out.mkdir()
+    got = {"raised": None, "metrics": None, "records": None}
+    try:
+        got["metrics"], got["records"] = ev.evaluate(
+            model, Tokenizer(), OVERLAP_CASES, verifier, decoding(10), out / "evaluations.jsonl", 3,
+            torch, seed=11, draws=2, return_records=True, witness_path=out / "witness.jsonl",
+            sequences_per_call=4, score_workers=score_workers, overlapped=overlapped)
+    except Exception as exc:                                     # noqa: BLE001 -- compared below
+        got["raised"] = (type(exc).__name__, str(exc), getattr(exc, "witness", None))
+    for key in ("evaluations.jsonl", "witness.jsonl"):
+        got[key] = (out / key).read_bytes() if (out / key).exists() else None
+    got.update(seeds=model.seeds, scored=sorted(verifier.seen), threads=scoring_threads(),
+               state=torch.state, training=model.training)
+    return got
+
+
+def c2_second_draw(case, program):
+    """One draw of the middle chunk blocks; its sibling draws score."""
+    return case["case_id"] == "c2" and program.endswith(",1)")
+
+
+@pytest.mark.parametrize("scenario, block, fail_at, raised", [
+    ("clean", None, None, None),
+    ("blocked", c2_second_draw, None, "VerificationBlocked"),
+    ("blocked-first-chunk", lambda c, p: c["case_id"] == "c0" and p.endswith(",0)"), None,
+     "VerificationBlocked"),
+    ("generation-fails", None, 2, "RuntimeError"),
+    ("blocked-then-generation-fails", c2_second_draw, 2, "VerificationBlocked"),
+    ("every-draw-of-a-case-blocks", lambda c, p: c["case_id"] == "c1", None, "VerificationBlocked"),
+])
+def test_overlapped_scoring_writes_the_serial_bytes(tmp_path, monkeypatch, scenario, block, fail_at, raised):
+    """Rows, their order, metrics, witness and the exception: the serial loop's, exactly.
+
+    The only thing overlap may change is that, on an abort, one more chunk was
+    GENERATED while the failing one was being scored -- and it is never
+    scored and never written.
+    """
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(GenerationConfig=SimpleNamespace))
+    serial = run_evaluation(tmp_path, "serial", False, block=block, fail_at=fail_at)
+    overlapped = run_evaluation(tmp_path, "overlapped", True, block=block, fail_at=fail_at)
+    assert (serial["raised"] or (None,))[0] == raised
+    compared = ["raised", "metrics", "records", "evaluations.jsonl", "scored", "state", "training"]
+    if scenario != "every-draw-of-a-case-blocks":
+        compared.append("witness.jsonl")          # two witness rows race in either mode
+    for key in compared:
+        assert overlapped[key] == serial[key], key
+    if scenario == "every-draw-of-a-case-blocks":
+        def rows(got):
+            return sorted(got["witness.jsonl"].decode().splitlines())
+        assert rows(overlapped) == rows(serial) and len(rows(serial)) == 2
+    assert serial["state"] == 123 and serial["training"], "fork_rng and the trainer's state restored"
+    # Generation's RNG sequence is the serial one, chunk for chunk.
+    assert overlapped["seeds"][:len(serial["seeds"])] == serial["seeds"]
+    if raised is None:
+        assert overlapped["seeds"] == serial["seeds"] and len(serial["seeds"]) == 3
+        assert [(r["case_id"], r["draw"]) for r in serial["records"]] == \
+            [("c%d" % i, d) for i in range(5) for d in range(2)]
+    else:
+        assert len(overlapped["seeds"]) - len(serial["seeds"]) <= 1, "at most one call later"
+    if raised == "VerificationBlocked":
+        assert serial["witness.jsonl"], "a blocked draw still leaves its witness"
+    assert serial["threads"] == overlapped["threads"] == [], "no scoring thread outlives evaluate"
+
+
+def test_a_chunk_is_scored_while_the_next_generates_and_never_two_at_once(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(GenerationConfig=SimpleNamespace))
+    lock, inflight, seen_at_generate, widest = threading.Lock(), {}, {}, []
+    entered, generating = threading.Event(), threading.Event()
+
+    def enter(case, program):
+        chunk = chunk_of(case)
+        with lock:
+            inflight[chunk] = inflight.get(chunk, 0) + 1
+            widest.append(len(inflight))
+        if chunk == 0:
+            entered.set()
+            # Held until the second call is generating: overlap, not luck.
+            assert generating.wait(5), "chunk 0 was not scored while chunk 1 generated"
+
+    class Tracked(Scorer):
+        def score(self, case, program):
+            try:
+                return Scorer.score(self, case, program)
+            finally:
+                with lock:
+                    chunk = chunk_of(case)
+                    inflight[chunk] -= 1
+                    if not inflight[chunk]:
+                        del inflight[chunk]
+
+    def hook(call):
+        if call == 1:
+            assert entered.wait(5)
+        with lock:
+            seen_at_generate[call] = set(inflight)
+        if call == 1:
+            generating.set()          # chunk 0's scorings were held in flight until now
+
+    ev, torch = load_evaluation(), FakeTorch()
+    model = SeededModel(torch, hook=hook)
+    ev.evaluate(model, Tokenizer(), OVERLAP_CASES, Tracked(enter=enter), decoding(10),
+                tmp_path / "eval.jsonl", 0, torch, seed=11, draws=2, sequences_per_call=4, score_workers=4)
+    assert seen_at_generate[0] == set() and seen_at_generate[1] == {0}
+    assert all(now <= {call - 1} for call, now in seen_at_generate.items())
+    assert max(widest) == 1, "one chunk scored at a time: backpressure"
+    assert scoring_threads() == []
+
+
+def test_a_scoring_failure_surfaces_once_the_overlapping_generate_returns(tmp_path, monkeypatch):
+    """The abort is raised after the call in flight, and the chunk it made is never scored."""
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(GenerationConfig=SimpleNamespace))
+    failed = threading.Event()
+
+    def block(case, program):
+        if case["case_id"] == "c0" and program.endswith(",0)"):
+            failed.set()
+            return True
+        return False
+
+    def hook(call):
+        if call == 1:
+            assert failed.wait(5), "chunk 0's block happens during chunk 1's generation"
+
+    got = run_evaluation(tmp_path, "abort", True, block=block, hook=hook)
+    assert got["raised"][0] == "VerificationBlocked"
+    assert len(got["seeds"]) == 2, "no third call: the abort is taken before the next generate"
+    assert {case for case, _ in got["scored"]} == {"c0", "c1"}, "chunk 1 was generated, never scored"
+    assert [json.loads(line)["case_id"] for line in got["evaluations.jsonl"].decode().splitlines()] == \
+        ["c0", "c1", "c1"], "the blocked draw's siblings are kept"
+    assert json.loads(got["witness.jsonl"])["case_id"] == "c0"
+    assert got["threads"] == [] and got["state"] == 123
+
+
+def test_an_interrupt_cancels_queued_scorings_and_joins_every_thread(tmp_path, monkeypatch):
+    """KeyboardInterrupt (or a TERM handler's exit) mid-generate: nothing left running."""
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(GenerationConfig=SimpleNamespace))
+    started = threading.Event()
+
+    def enter(case, program):
+        started.set()
+        time.sleep(0.2)                      # in flight when the interrupt lands
+
+    def hook(call):
+        if call == 1:
+            assert started.wait(5)
+            raise KeyboardInterrupt
+
+    ev, torch = load_evaluation(), FakeTorch()
+    model, verifier = SeededModel(torch, hook=hook), Scorer(enter=enter)
+    with pytest.raises(KeyboardInterrupt):
+        ev.evaluate(model, Tokenizer(), OVERLAP_CASES, verifier, decoding(10), tmp_path / "eval.jsonl",
+                    0, torch, seed=11, draws=2, sequences_per_call=4, score_workers=1)
+    assert scoring_threads() == [], "every scoring thread joined before the interrupt propagates"
+    assert len(verifier.seen) < 4, "queued scorings of the chunk were cancelled, not run"
+    assert torch.state == 123 and model.training
+
+
+def test_the_trainer_overlaps_by_default_records_it_and_keeps_it_out_of_every_identity():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "gpu" / "train_verified.py").read_text()
+    assert source.count("overlapped=not args.serial_scoring") == source.count("evaluate(model, tok,") == 2
+    assert '"scoring": "serial" if args.serial_scoring else "overlapped"' in source
+    spec = importlib.util.spec_from_file_location("overlap_tv", root / "gpu" / "train_verified.py")
+    tv = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tv)
+    argv = ["eval", "--bundle", "b.json", "--engine", "e", "--output", "o", "--revision", "a" * 40]
+    assert tv.parser().parse_args(argv).serial_scoring is False
+    assert tv.parser().parse_args(argv + ["--serial-scoring"]).serial_scoring is True
+    from pipeline import evaluation_reuse
+    for keys in (evaluation_reuse.CONTRACT_KEYS, evaluation_reuse.ARGUMENT_KEYS,
+                 evaluation_reuse.STEP0_CONTRACT_KEYS, evaluation_reuse.STEP0_ARGUMENT_KEYS):
+        assert "scoring" not in keys and "serial_scoring" not in keys
+    spec = importlib.util.spec_from_file_location("overlap_arm", root.parent / ".github" / "scripts"
+                                                  / "arm_check.py")
+    arm_check = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(arm_check)
+    assert not {"scoring", "serial_scoring"} & set(arm_check.ARM_FIELDS)

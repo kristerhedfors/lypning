@@ -79,6 +79,9 @@ def parser():
     p.add_argument("--eval-sequences", type=int, default=256,
                    help="sequences per generate call in evaluation: cases per chunk = this // draws")
     p.add_argument("--score-workers", type=int, default=16, help="concurrent verifier scorings per chunk")
+    p.add_argument("--serial-scoring", action="store_true",
+                   help="diagnosis: score each chunk before generating the next, instead of while "
+                        "it generates; the same rows either way, only slower")
     p.add_argument("--greedy", action="store_true", help="eval-only diagnostic; not checkpoint selection")
     p.add_argument("--warmup-ratio", type=float, default=0.1)
     p.add_argument("--max-seq", type=int, default=4096)
@@ -688,7 +691,11 @@ def run(args, bundle, adapter_info):
                               if args.stage in ("sft", "grpo") and not args.adapter else None),
                 "sft_optimizer": (dict(SFT_OPTIMIZER, name="AdamW", max_grad_norm=MAX_GRAD_NORM)
                                   if args.stage == "sft" else None),
-                "grpo_geometry": grpo_geometry(args)}
+                "grpo_geometry": grpo_geometry(args),
+                # How evaluation spent the wall clock, not what it measured:
+                # both modes write the same rows (`verified_evaluation.ScoringStage`),
+                # so this is in no reuse or arm identity.
+                "scoring": "serial" if args.serial_scoring else "overlapped"}
     if adapter_info:
         prior = adapter_info["experiment"]
         for key in ("tokenizer_sha256", "model_config_sha256", "enable_thinking"):
@@ -709,7 +716,8 @@ def run(args, bundle, adapter_info):
             args.output / "probe-rollouts.jsonl", 0, torch,
             seed=args.seed, draws=args.generations, return_records=True,
             witness_path=args.output / "eval-blocked-witnesses.jsonl",
-            sequences_per_call=args.eval_sequences, score_workers=args.score_workers)
+            sequences_per_call=args.eval_sequences, score_workers=args.score_workers,
+            overlapped=not args.serial_scoring)
         contract = probe_contract(bundle, args.revision, adapter_info, policy,
                                   args.seed, args.generations, args.smoke)
         write_json(args.output / "probe.json", probe_report(records, contract))
@@ -721,7 +729,7 @@ def run(args, bundle, adapter_info):
                         seed=args.seed, draws=1 if args.greedy else args.eval_draws,
                         witness_path=args.output / "eval-blocked-witnesses.jsonl",
                         sequences_per_call=args.eval_sequences, score_workers=args.score_workers,
-                        **metric_policy(bundle))
+                        overlapped=not args.serial_scoring, **metric_policy(bundle))
     if args.reuse_evaluation is not None and reuse_evaluation(
             args.reuse_evaluation, args.output, manifest, dev_cases):
         core.log("eval reused equivalent policy; provenance saved in reuse.json")
