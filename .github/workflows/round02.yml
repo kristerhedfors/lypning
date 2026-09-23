@@ -102,8 +102,8 @@ env:
   # sealed selection. Scheduling, not the arm; set after the hardware smoke's
   # projection says whether one 720m job holds the whole arm.
   PILOT_EVAL2: "same-job"
-  # The hardware smoke's ceiling: deps, the 55 GB pull, one load, two generate
-  # calls and 22 SFT steps, on the pilot's flavor (launch.py HWSMOKE_TIMEOUT).
+  # The hardware smoke's ceiling: deps, the 55 GB pull, one load, three generate
+  # calls and 34 SFT steps, on the pilot's flavor (launch.py HWSMOKE_TIMEOUT).
   HWSMOKE_TIMEOUT: "90m"
   # PLAN Step 1.5: a twelve-hour ceiling, independently enforced in-container.
   # This is a maximum, not an estimate or spend approval; preflight still gates

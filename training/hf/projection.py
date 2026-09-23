@@ -194,23 +194,42 @@ def project(batch_seconds, sft_seconds_per_step, load_minutes, download_minutes,
                                                                     score_worker_seconds)}
 
 
-def from_hwsmoke(report, plan=None, draws_per_minute=None, **kw):
+#: The three readings of one smoke. `measured`: the pilot-decoding calls and the
+#: max-length SFT rows. `upper`: every `generate` call lasts as long as the
+#: forced full-length 256 call (`generation_full_length`), because a call ends
+#: at its LONGEST completion and a real 256-draw chunk truncates at
+#: max_new_tokens often (seed 1111's base dev truncated 0.16% of draws,
+#: `reports/2026-09-21-codex-step0-aggregates.json`: about one call in three
+#: of 256), while the public starter tasks the smoke prompts with are
+#: short and may never reach it. `lower`: the pilot-decoding calls and
+#: typical-length SFT rows (`sft_typical`).
+READINGS = {"measured": ("generation", "sft"), "upper": ("generation_full_length", "sft"),
+            "lower": ("generation", "sft_typical")}
+
+
+def from_hwsmoke(report, plan=None, draws_per_minute=None, reading="measured", **kw):
     """`project` over a `hwsmoke.json`: its generation calls, SFT step and load.
 
-    `draws_per_minute`, when given, replaces the generation measurement with a
-    flat rate that already includes scoring (e.g. an earlier job's observed
-    rate), so the two readings can be printed side by side.
+    `reading` picks which measurements (`READINGS`). `draws_per_minute`, when
+    given, replaces the generation measurement with a flat rate that already
+    includes scoring (e.g. an earlier job's observed rate), so the two
+    readings can be printed side by side.
     """
+    if reading not in READINGS:
+        raise ValueError("reading must be one of %s" % ", ".join(sorted(READINGS)))
+    generation_key, sft_key = READINGS[reading]
     load = (report.get("load_seconds") or 0) / 60.0
     download = (report.get("download_seconds") or 0) / 60.0
-    step = (report.get("sft") or {}).get("seconds_per_step")
+    step = (report.get(sft_key) or {}).get("seconds_per_step")
     if step is None:
-        raise ValueError("the hardware smoke has no SFT seconds per step")
+        raise ValueError("the hardware smoke has no %s seconds per step" % sft_key)
     if draws_per_minute:
         return project(flat_rate(draws_per_minute), step, load, download, plan,
                        score_worker_seconds=0.0, **kw)
-    measured = {g["sequences"]: g["seconds"] for g in report.get("generation") or []
-                if g.get("seconds") and not g.get("error")}
+    rows = report.get(generation_key) or []
+    rows = [rows] if isinstance(rows, dict) else rows
+    measured = {g["sequences"]: g["seconds"] for g in rows
+                if isinstance(g, dict) and g.get("seconds") and not g.get("error")}
     return project(batch_seconds_from(measured), step, load, download, plan, **kw)
 
 
@@ -222,11 +241,19 @@ def main(argv=None):
     for key, value in PLAN.items():
         p.add_argument("--" + key.replace("_", "-"), type=int, default=value)
     p.add_argument("--margin", type=float, default=DEFAULT_MARGIN)
+    p.add_argument("--reading", choices=sorted(READINGS), default="measured",
+                   help="measured (pilot decoding, max-length SFT rows), upper (every call "
+                        "full-length) or lower (typical-length SFT rows)")
     args = p.parse_args(argv)
     with open(args.hwsmoke, encoding="utf-8") as fh:
         report = json.load(fh)
     plan = {key: getattr(args, key) for key in PLAN}
-    print(json.dumps(from_hwsmoke(report, plan, args.draws_per_minute, margin=args.margin), indent=2))
+    try:
+        got = from_hwsmoke(report, plan, args.draws_per_minute, args.reading, margin=args.margin)
+    except ValueError as exc:
+        print("projection: %s" % exc, file=sys.stderr)
+        return 1
+    print(json.dumps(got, indent=2))
     return 0
 
 

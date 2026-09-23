@@ -93,6 +93,33 @@ def hand_total(dpm, step_s, load_min, download_min):
     return pilot, eval2
 
 
+def test_the_upper_reading_prices_every_call_at_the_full_length_call():
+    report = smoke_report(generation_full_length={"sequences": 256, "seconds": 600.0, "full_length": True},
+                          sft_typical={"seconds_per_step": 5.0})
+    upper = projection.from_hwsmoke(report, reading="upper", score_worker_seconds=0.0)
+    measured = projection.from_hwsmoke(report, reading="measured", score_worker_seconds=0.0)
+    lower = projection.from_hwsmoke(report, reading="lower", score_worker_seconds=0.0)
+    dev = {r: next(s for s in got["stages"] if s["stage"] == "base-dev")["minutes"]
+           for r, got in (("upper", upper), ("measured", measured))}
+    # 306 cases x 16 draws at 256 per call is 20 calls (19 full, one of 32);
+    # the upper reading prices each at the full-length 600 s, the short one too.
+    assert dev["upper"] == pytest.approx(3.0 + 20 * 600 / 60, abs=0.1)
+    assert dev["upper"] > dev["measured"]
+    assert upper["sft_seconds_per_step"] == 20.0 and lower["sft_seconds_per_step"] == 5.0
+    assert lower["same_job_minutes"] < measured["same_job_minutes"] < upper["same_job_minutes"]
+    with pytest.raises(ValueError):
+        projection.from_hwsmoke(smoke_report(), reading="upper")      # no full-length call
+    with pytest.raises(ValueError):
+        projection.from_hwsmoke(report, reading="sideways")
+
+
+def test_the_projection_cli_reads_each_reading_and_refuses_a_missing_one(tmp_path, capsys):
+    path = tmp_path / "hwsmoke.json"
+    path.write_text(json.dumps(smoke_report()))
+    assert projection.main(["--hwsmoke", str(path), "--reading", "upper"]) == 1
+    assert "generation" not in capsys.readouterr().out
+
+
 def test_the_projection_counts_every_stage_the_job_runs():
     got = projection.project(projection.flat_rate(40), 20.0, 3.0, 5.0, score_worker_seconds=0.0)
     pilot, eval2 = hand_total(40, 20.0, 3.0, 5.0)
@@ -265,9 +292,10 @@ def test_a_generation_row_is_aggregates_only(monkeypatch, tmp_path):
     assert row["truncated"] == 1 and row["peak_memory_bytes"] == 123
     text = json.dumps(row)
     assert "SECRET" not in text and "case_id" not in text and "completion\"" not in text
-    assert set(row) == {"sequences", "prompts", "draws", "max_new_tokens", "seconds", "generated_tokens",
-                        "max_completion_tokens", "mean_completion_tokens", "truncated",
+    assert set(row) == {"sequences", "prompts", "draws", "max_new_tokens", "full_length", "seconds",
+                        "generated_tokens", "max_completion_tokens", "mean_completion_tokens", "truncated",
                         "sequences_per_minute", "generated_tokens_per_second", "peak_memory_bytes"}
+    assert row["full_length"] is False and "min_new_tokens" not in seen["policy"]
 
 
 def test_an_out_of_memory_call_is_a_recorded_result_not_a_crash(monkeypatch, tmp_path):
@@ -313,3 +341,178 @@ def test_the_smoke_job_needs_no_bank_and_uploads_privately_under_its_job():
     assert 'path_in_repo="round-02/%s/hwsmoke" % job' in SCRIPT
     assert "private is not True" in SCRIPT
     assert 'print("== hwsmoke:", json.dumps(public_view(report)))' in SCRIPT
+
+
+def test_the_full_length_call_forces_every_sequence_to_the_cap(monkeypatch, tmp_path):
+    import verified_evaluation
+    hw = load("hwsmoke")
+    seen = {}
+
+    def evaluate(model, tok, cases, verifier, policy, output, step, torch, **kw):
+        seen.update(policy=policy)
+        return {}, [{"completion_tokens": 1024, "truncated": True} for _ in range(len(cases) * 16)]
+    monkeypatch.setattr(verified_evaluation, "evaluate", evaluate)
+    row = hw.measure_generation(None, None, fake_torch(), 256, 1024, 1111, tmp_path, full_length=True)
+    assert seen["policy"]["min_new_tokens"] == seen["policy"]["max_new_tokens"] == 1024
+    # Otherwise the pilot's decoding, untouched.
+    from pipeline.training_contract import decoding
+    assert {k: v for k, v in seen["policy"].items() if k != "min_new_tokens"} == decoding(1024)
+    assert row["full_length"] is True and row["truncated"] == 256 and row["max_completion_tokens"] == 1024
+
+
+@pytest.mark.parametrize("exc, want", [(RuntimeError("CUDA error: out of memory"), "out-of-memory"),
+                                       (RuntimeError("CUBLAS_STATUS_ALLOC_FAILED\nmore"),
+                                        "RuntimeError: CUBLAS_STATUS_ALLOC_FAILED"),
+                                       (ValueError("x" * 500), "ValueError: " + "x" * 200)])
+def test_any_failed_call_is_recorded_and_one_line(monkeypatch, tmp_path, exc, want):
+    import verified_evaluation
+    hw = load("hwsmoke")
+
+    def evaluate(*a, **kw):
+        raise exc
+    monkeypatch.setattr(verified_evaluation, "evaluate", evaluate)
+    row = hw.measure_generation(None, None, fake_torch(), 128, 1024, 1111, tmp_path)
+    assert row["error"] == want and row["peak_memory_bytes"] == 123 and "seconds" not in row
+
+
+def test_an_sft_row_that_cannot_be_built_is_recorded_not_raised(tmp_path):
+    hw = load("hwsmoke")
+
+    def build_examples(tok, rows, max_seq):
+        raise ValueError("the tokeniser merges across the prompt/completion boundary")
+    out = hw.measure_sft(None, WordTok(), fake_torch(), SimpleNamespace(build_examples=build_examples),
+                         1111, 64, 4096, tmp_path)
+    assert out["error"].startswith("ValueError: the tokeniser merges") and "seconds_per_step" not in out
+    over = hw.measure_sft(None, WordTok(), fake_torch(),
+                          SimpleNamespace(build_examples=lambda tok, rows, max_seq: ([], 4)),
+                          1111, 64, 4096, tmp_path)
+    assert "exceed --max-seq" in over["error"]
+
+
+def test_the_report_is_written_atomically(tmp_path):
+    hw = load("hwsmoke")
+    path = tmp_path / "hwsmoke.json"
+    hw.write_atomically(path, {"status": "measuring"})
+    hw.write_atomically(path, {"status": "complete"})
+    assert json.loads(path.read_text()) == {"status": "complete"}
+    assert [p.name for p in tmp_path.iterdir()] == ["hwsmoke.json"]
+
+
+class FakeModel:
+    def __init__(self):
+        self.config = SimpleNamespace()
+        self.generation_config = SimpleNamespace()
+
+
+def fake_gpu_modules(monkeypatch, hw):
+    """torch, transformers and lypning_lora as `measure` imports them, on no GPU."""
+    import sys
+    cuda = FakeCuda()
+    cuda.is_available = lambda: True
+    cuda.is_bf16_supported = lambda: True
+    cuda.get_device_name = lambda: "fake"
+    cuda.get_device_properties = lambda i: SimpleNamespace(total_memory=141 * 2 ** 30)
+    cuda.memory_allocated = lambda: 54 * 2 ** 30
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=cuda, bfloat16="bf16"))
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(set_seed=lambda seed: None))
+    monkeypatch.setitem(sys.modules, "lypning_lora", SimpleNamespace(
+        check_adapted_modules=lambda model: (400, 100), log=lambda msg: None))
+    tv = SimpleNamespace(block_fused_kernels=lambda: {"fla": "blocked"}, refuse_import_binding=lambda: None,
+                         load_tokenizer=lambda rev: SimpleNamespace(pad_token_id=0),
+                         download_base=lambda rev: "/snapshot", load_base_model=lambda path, dtype: FakeModel(),
+                         attach_fresh_lora=lambda model, rank, seed, core: model,
+                         refuse_bound_kernels=lambda model: {"chunk_gated_delta_rule": "torch"})
+    monkeypatch.setattr(hw, "tv", tv)
+    monkeypatch.setattr(hw, "runtime_versions", lambda: {"torch": "fake"})
+
+
+def test_every_measurement_is_saved_before_it_starts_and_one_failure_does_not_stop_the_rest(
+        monkeypatch, tmp_path):
+    hw = load("hwsmoke")
+    fake_gpu_modules(monkeypatch, hw)
+    out = tmp_path / "hwsmoke"
+    order = []
+
+    def on_disk():
+        return json.loads((out / "hwsmoke.json").read_text())
+
+    def generation(model, tok, torch, sequences, max_new_tokens, seed, scratch, full_length=False):
+        name = "generation-full-length-%d" % sequences if full_length else "generation-%d" % sequences
+        assert on_disk()["in_progress"] == name
+        order.append(name)
+        if sequences == 128:
+            return {"sequences": 128, "error": "out-of-memory"}
+        return {"sequences": sequences, "seconds": 900.0 if full_length else 300.0}
+
+    def sft(model, tok, torch, core, seed, row_tokens, max_seq, scratch, timed_steps=20, name="sft"):
+        assert on_disk()["in_progress"] == name
+        order.append(name)
+        return {"seconds_per_step": 20.0 if name == "sft" else 6.0}
+    monkeypatch.setattr(hw, "measure_generation", generation)
+    monkeypatch.setattr(hw, "measure_sft", sft)
+    assert hw.main(["--revision", "r" * 40, "--output", str(out)]) == 1
+    # Every generation call precedes every optimizer step.
+    assert order == ["generation-256", "generation-128", "generation-full-length-256", "sft", "sft-typical"]
+    report = on_disk()
+    assert "in_progress" not in report and report["status"] == "failed"
+    assert report["errors"] == ["generation-128"]
+    assert report["verdict"] == {"eval_sequences_256_fits": True, "sft_batch_4_fits": True}
+    assert report["projection"]["verdict"] and set(report["projection_bounds"]) == {"upper", "lower"}
+    assert report["projection_bounds"]["upper"]["same_job_minutes"] > report["projection"]["same_job_minutes"]
+    assert report["kernel_binding"] == {"chunk_gated_delta_rule": "torch"}
+
+
+def test_a_full_length_out_of_memory_fails_the_256_verdict(monkeypatch, tmp_path):
+    hw = load("hwsmoke")
+    fake_gpu_modules(monkeypatch, hw)
+    monkeypatch.setattr(hw, "measure_generation", lambda *a, full_length=False: (
+        {"sequences": a[3], "error": "out-of-memory"} if full_length else {"sequences": a[3], "seconds": 60.0}))
+    monkeypatch.setattr(hw, "measure_sft", lambda *a, **kw: {"seconds_per_step": 10.0})
+    assert hw.main(["--revision", "r" * 40, "--output", str(tmp_path / "o")]) == 1
+    report = json.loads((tmp_path / "o" / "hwsmoke.json").read_text())
+    assert report["verdict"]["eval_sequences_256_fits"] is False
+    assert "error" in report["projection_bounds"]["upper"]
+
+
+def test_sigterm_mid_measurement_is_recorded_before_the_upload_trap(monkeypatch, tmp_path):
+    hw = load("hwsmoke")
+    fake_gpu_modules(monkeypatch, hw)
+
+    def generation(*a, **kw):
+        raise hw.Terminated()
+    monkeypatch.setattr(hw, "measure_generation", generation)
+    assert hw.main(["--revision", "r" * 40, "--output", str(tmp_path / "o")]) == 124
+    report = json.loads((tmp_path / "o" / "hwsmoke.json").read_text())
+    assert report["status"] == "terminated" and "generation-256" in report["error"]
+    assert report["load_seconds"] is not None
+    import signal
+    assert signal.getsignal(signal.SIGTERM) is not hw._terminate, "the handler outlived main"
+
+
+def test_a_loader_refusal_is_recorded_and_still_raised(monkeypatch, tmp_path):
+    hw = load("hwsmoke")
+    fake_gpu_modules(monkeypatch, hw)
+
+    def refuse(model):
+        raise SystemExit("gated-delta-net is not bound to the torch reference")
+    monkeypatch.setattr(hw.tv, "refuse_bound_kernels", refuse)
+    with pytest.raises(SystemExit):
+        hw.main(["--revision", "r" * 40, "--output", str(tmp_path / "o")])
+    report = json.loads((tmp_path / "o" / "hwsmoke.json").read_text())
+    assert report["status"] == "failed" and "torch reference" in report["error"]
+    assert report["in_progress"] == "load"
+
+
+def test_a_dependency_drift_refuses_before_the_weight_pull(monkeypatch, tmp_path):
+    hw = load("hwsmoke")
+    fake_gpu_modules(monkeypatch, hw)
+    pulled = []
+    monkeypatch.setattr(hw.tv, "download_base", lambda rev: pulled.append(rev))
+
+    def drift():
+        raise RuntimeError("GPU dependency versions differ from the pinned experiment")
+    monkeypatch.setattr(hw, "runtime_versions", drift)
+    with pytest.raises(RuntimeError):
+        hw.main(["--revision", "r" * 40, "--output", str(tmp_path / "o")])
+    assert pulled == []
+    assert json.loads((tmp_path / "o" / "hwsmoke.json").read_text())["in_progress"] == "kernels"

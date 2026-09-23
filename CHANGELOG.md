@@ -20,8 +20,11 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   `PILOT_DEV_EVAL_DRAWS` 16, new `PILOT_EVAL_EVERY` 350 wired to the job's SFT
   cadence and recorded as arm field `eval_every`; `PILOT_EVAL2` stays `same-job`.
 - New `hwsmoke` stage (h200, 90m, no bank): loads through `train_verified`'s
-  own loaders, times 256- and 128-sequence generation and 20 SFT steps, and
-  projects every stage of the arm against 720m (`training/hf/projection.py`).
+  own loaders, times 256- and 128-sequence generation, a forced full-length
+  256 call, and SFT steps at ~1,024- and ~256-token rows, and projects every
+  stage of the arm against 720m (`training/hf/projection.py`), as a
+  measured reading with an upper and a lower bound. Each measurement is saved
+  before it starts; a failure or the job's timeout is recorded, not lost.
 - New `eval2` stage: runs a `separate` pilot's step 7g in a second job after
   refusing any identity field that moved; `arm_check` joins the pair.
 - Fix: `experiment.json` now records `purpose`, without which every SFT adapter

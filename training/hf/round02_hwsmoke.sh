@@ -5,9 +5,11 @@
 # pilot is billed: `training/hf/hwsmoke.py` loads Qwen/Qwen3.8-27B at QWEN_REV
 # through `train_verified`'s own loaders (torch-reference kernel enforced, LoRA
 # r16), times one 256-sequence and one 128-sequence `generate` call with the
-# pilot's decoding, and 20 SFT steps at batch 4 through `train_sft`, with peak
-# CUDA memory for each; then projects the approved arm-A job over those numbers
-# (`training/hf/projection.py`). No bank is downloaded and no verifier Space is
+# pilot's decoding, one 256 call forced to max_new_tokens, and SFT steps at
+# batch 4 through `train_sft` at two row lengths, with peak CUDA memory for
+# each; then projects the approved arm-A job over those numbers
+# (`training/hf/projection.py`). hwsmoke.json is saved before every
+# measurement, so a failure or this job's timeout leaves what was measured. No bank is downloaded and no verifier Space is
 # used: the prompts are the public starter tasks, and nothing case-level
 # exists to print. hwsmoke.json goes to the private work repo under
 # round-02/<job>/hwsmoke/ and, through `public_view`, to this log.

@@ -438,11 +438,14 @@ Nothing below has been dispatched.
   a reuse of base-dev. `PILOT_GRPO_STEPS` 0. `eval_every` is now an arm field.
 - **Hardware smoke first** (`stage: hwsmoke`, h200, 90m ceiling, no bank). It
   loads the model through `train_verified`'s own loaders, times one 256- and
-  one 128-sequence `generate` call with the pilot's decoding, and 20 SFT
-  steps at batch 4 through `train_sft`, with peak memory. Its
+  one 128-sequence `generate` call with the pilot's decoding, one 256 call
+  forced to the full 1,024 tokens (a call lasts as long as its longest draw,
+  and the public starter prompts are short), and SFT steps at batch 4
+  through `train_sft` at ~1,024- and ~256-token rows, with peak memory. Its
   `hwsmoke.json` carries a projection (`training/hf/projection.py`) of every
-  stage of the approved job against the 720m ceiling. The projection's prep
-  and scoring terms are stated constants, not measurements.
+  stage of the approved job against the 720m ceiling, measured plus an upper
+  and a lower bound; read the upper one before choosing `PILOT_EVAL2`. The
+  projection's prep and scoring terms are stated constants, not measurements.
 - **Split, if the projection needs it.** `PILOT_EVAL2` stays `same-job` until
   the smoke has been read. `separate` ends the pilot job after the test split
   with `eval2-deferred.json`. A `stage: eval2` dispatch (`eval2_of` = that

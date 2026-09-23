@@ -102,8 +102,9 @@ Since 2026-09-23 the pilot also passes `--eval-every "${PILOT_EVAL_EVERY}"`
 (350; an arm field) and `--eval2 "${PILOT_EVAL2}"` (`same-job` or `separate`).
 Two more dispatch-only stages, each billed only with `submit=SUBMIT`:
 `hwsmoke` (h200, 90m ceiling, no bank) measures generation at 256/128
-sequences and SFT seconds per step, then projects the approved arm against
-720m (`training/hf/projection.py`). `eval2` (`eval2_of` = a completed pilot
+sequences plus one 256 call forced to full length, and SFT seconds per step,
+then projects the approved arm against 720m (`training/hf/projection.py`;
+`projection_bounds.upper` prices every call at full length). `eval2` (`eval2_of` = a completed pilot
 job that ran `separate`) runs that job's step 7g after `split_eval2.py`
 verifies every identity field (`PLAN.md` Step 4).
 

@@ -86,7 +86,7 @@ BANKED_FLAVOR, BANKED_TIMEOUT = "h200", "720m"
 SMOKE_FLAVOR, SMOKE_TIMEOUT = "a10g-small", "75m"
 #: The hardware smoke is billed on the pilot's flavor, because that is the
 #: hardware it measures, and capped at 90 minutes: deps, the 55 GB pull, one
-#: load, two generate calls and 22 SFT steps.
+#: load, three generate calls and 34 SFT steps.
 HWSMOKE_TIMEOUT = "90m"
 #: (default flavor, default timeout, ceiling) per stage; None is no ceiling.
 STAGE_LIMITS = {"smoke": (SMOKE_FLAVOR, SMOKE_TIMEOUT, None),
