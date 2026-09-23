@@ -186,8 +186,11 @@ model made.
 - **Selection** folds each distinct program into one record and ranks
   `claude-opus-5-5` first. Other Claude models stay eligible, ranked after it.
   Other hosts, and GPT or Codex model strings, are dropped unless
-  `--host`/`--allow-other-vendors` asks for them. Whether they may train the
-  target at all is an operator decision that has not been made.
+  `--host`/`--allow-other-vendors` asks for them. The operator made GPT-written
+  programs conditional on being materially similar to Claude's. The
+  pre-registered test on 2026-09-23 found they are not: all three criteria
+  failed ([report](reports/2026-09-23-codex-similarity/README.md)). They stay
+  excluded.
 - **Execution** happens only in `eval2_select`'s two regeneration runs, and only
   for tier-A rows. `lypning_source.classify_entry` now refuses to run a program
   that spawns processes, opens sockets or writes files (`capture_quality.hazard`).

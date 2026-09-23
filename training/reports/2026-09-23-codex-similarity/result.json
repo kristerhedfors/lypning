@@ -1,0 +1,1015 @@
+{
+ "A_pass": false,
+ "claude_pool_overlaps_kept": {
+  "C1&C2": 12,
+  "C1&C3": 2,
+  "C2&C3": 0
+ },
+ "date": "2026-09-23",
+ "inputs": {
+  "claude_dropped_unsafe_or_invalid": 10,
+  "claude_log_occurrences": 5673,
+  "claude_models_occurrences": {
+   "claude-fable-5-1": 982,
+   "claude-opus-4-8": 27,
+   "claude-opus-5": 4304,
+   "claude-opus-5-5": 350
+  },
+  "codex_models_occurrences": {
+   "gpt-5.2-codex": 9,
+   "gpt-5.3-codex": 130,
+   "gpt-5.4": 173,
+   "gpt-5.5": 40,
+   "gpt-5.6-sol": 32,
+   "gpt-6-astra": 83,
+   "gpt-daybreak-blue-latest": 7
+  },
+  "codex_occurrences": 474
+ },
+ "overlap_any_claude_row_vs_G": 0,
+ "overlap_dropped_claude_pools_vs_G": 0,
+ "pools": {
+  "C": {
+   "construct_prevalence": {
+    "class": 0.0104,
+    "comprehension": 0.2835,
+    "dataclass": 0.0004,
+    "decorator": 0.0061,
+    "def": 0.1988,
+    "f-string": 0.0425,
+    "generator": 0.0008,
+    "lambda": 0.0332,
+    "try": 0.0956,
+    "type-hints": 0.0079,
+    "walrus": 0.0004,
+    "with": 0.0435
+   },
+   "median_lines": 14.0,
+   "median_nodes_parseable": 102,
+   "models": {
+    "claude-fable-5-1": 850,
+    "claude-opus-5": 4064
+   },
+   "n": 4914,
+   "share_contaminated": 0.1335,
+   "share_no_imports": 0.1144,
+   "share_only_stdlib_imports": 0.7705,
+   "share_parseable": 0.9815,
+   "share_with_def": 0.1988,
+   "tier_a_contaminated": 15,
+   "tier_a_median_lines": 10.5,
+   "tier_a_n": 210,
+   "tier_a_rate": 0.0427,
+   "tier_a_share_with_def": 0.2476,
+   "verdict_mix": {
+    "environment": 8,
+    "network": 12,
+    "privacy": 8,
+    "process": 371,
+    "reads-files": 1213,
+    "repo-import": 851,
+    "stdin-glue": 129,
+    "third-party": 100,
+    "tier-A": 210,
+    "trivial": 226,
+    "unparseable": 91,
+    "unseeded": 4,
+    "writes-files": 1691
+   }
+  },
+  "C1": {
+   "construct_prevalence": {
+    "class": 0.0066,
+    "comprehension": 0.296,
+    "dataclass": 0.0005,
+    "decorator": 0.0062,
+    "def": 0.1932,
+    "f-string": 0.0376,
+    "generator": 0.0005,
+    "lambda": 0.032,
+    "try": 0.0992,
+    "type-hints": 0.0076,
+    "walrus": 0.0002,
+    "with": 0.0482
+   },
+   "median_lines": 14.0,
+   "median_nodes_parseable": 100.0,
+   "models": {
+    "claude-opus-5": 4064
+   },
+   "n": 4064,
+   "share_contaminated": 0.1538,
+   "share_no_imports": 0.1208,
+   "share_only_stdlib_imports": 0.7655,
+   "share_parseable": 0.9813,
+   "share_with_def": 0.1932,
+   "tier_a_contaminated": 15,
+   "tier_a_median_lines": 10.0,
+   "tier_a_n": 186,
+   "tier_a_rate": 0.0458,
+   "tier_a_share_with_def": 0.2634,
+   "verdict_mix": {
+    "environment": 8,
+    "network": 12,
+    "privacy": 6,
+    "process": 285,
+    "reads-files": 970,
+    "repo-import": 702,
+    "stdin-glue": 100,
+    "third-party": 89,
+    "tier-A": 186,
+    "trivial": 192,
+    "unparseable": 76,
+    "unseeded": 3,
+    "writes-files": 1435
+   }
+  },
+  "C2": {
+   "construct_prevalence": {
+    "class": 0.0278,
+    "comprehension": 0.2204,
+    "dataclass": 0.0,
+    "decorator": 0.0058,
+    "def": 0.2227,
+    "f-string": 0.065,
+    "generator": 0.0023,
+    "lambda": 0.0383,
+    "try": 0.0777,
+    "type-hints": 0.0093,
+    "walrus": 0.0012,
+    "with": 0.0209
+   },
+   "median_lines": 11.0,
+   "median_nodes_parseable": 111,
+   "models": {
+    "claude-fable-5-1": 862
+   },
+   "n": 862,
+   "share_contaminated": 0.036,
+   "share_no_imports": 0.0835,
+   "share_only_stdlib_imports": 0.7865,
+   "share_parseable": 0.9733,
+   "share_with_def": 0.2227,
+   "tier_a_contaminated": 0,
+   "tier_a_median_lines": 13.0,
+   "tier_a_n": 24,
+   "tier_a_rate": 0.0278,
+   "tier_a_share_with_def": 0.125,
+   "verdict_mix": {
+    "privacy": 2,
+    "process": 86,
+    "reads-files": 243,
+    "repo-import": 150,
+    "stdin-glue": 30,
+    "third-party": 11,
+    "tier-A": 24,
+    "trivial": 36,
+    "unparseable": 23,
+    "unseeded": 1,
+    "writes-files": 256
+   }
+  },
+  "C3": {
+   "construct_prevalence": {
+    "class": 0.0146,
+    "comprehension": 0.2507,
+    "dataclass": 0.0,
+    "decorator": 0.0087,
+    "def": 0.1458,
+    "f-string": 0.0087,
+    "generator": 0.0,
+    "lambda": 0.0233,
+    "try": 0.0816,
+    "type-hints": 0.0,
+    "walrus": 0.0,
+    "with": 0.0087
+   },
+   "median_lines": 12,
+   "median_nodes_parseable": 94,
+   "models": {
+    "claude-opus-5-5": 343
+   },
+   "n": 343,
+   "share_contaminated": 0.2711,
+   "share_no_imports": 0.1195,
+   "share_only_stdlib_imports": 0.7026,
+   "share_parseable": 0.9708,
+   "share_with_def": 0.1458,
+   "tier_a_contaminated": 0,
+   "tier_a_median_lines": 2,
+   "tier_a_n": 9,
+   "tier_a_rate": 0.0262,
+   "tier_a_share_with_def": 0.1111,
+   "verdict_mix": {
+    "privacy": 1,
+    "process": 2,
+    "reads-files": 89,
+    "repo-import": 77,
+    "stdin-glue": 9,
+    "third-party": 8,
+    "tier-A": 9,
+    "trivial": 2,
+    "unparseable": 10,
+    "writes-files": 136
+   }
+  },
+  "G": {
+   "construct_prevalence": {
+    "class": 0.0473,
+    "comprehension": 0.1959,
+    "dataclass": 0.0248,
+    "decorator": 0.0405,
+    "def": 0.2185,
+    "f-string": 0.1712,
+    "generator": 0.0113,
+    "lambda": 0.045,
+    "try": 0.0676,
+    "type-hints": 0.1216,
+    "walrus": 0.0,
+    "with": 0.0541
+   },
+   "median_lines": 9.0,
+   "median_nodes_parseable": 85.0,
+   "models": {
+    "gpt-5.2-codex": 9,
+    "gpt-5.3-codex": 124,
+    "gpt-5.4": 158,
+    "gpt-5.5": 35,
+    "gpt-5.6-sol": 29,
+    "gpt-6-astra": 82,
+    "gpt-daybreak-blue-latest": 7
+   },
+   "n": 444,
+   "share_contaminated": 0.0901,
+   "share_no_imports": 0.018,
+   "share_only_stdlib_imports": 0.6464,
+   "share_parseable": 0.973,
+   "share_with_def": 0.2185,
+   "tier_a_contaminated": 0,
+   "tier_a_median_lines": 7,
+   "tier_a_n": 13,
+   "tier_a_rate": 0.0293,
+   "tier_a_share_with_def": 0.4615,
+   "verdict_mix": {
+    "environment": 8,
+    "network": 5,
+    "privacy": 2,
+    "process": 23,
+    "reads-files": 182,
+    "repo-import": 23,
+    "stdin-glue": 5,
+    "third-party": 84,
+    "tier-A": 13,
+    "trivial": 17,
+    "unparseable": 12,
+    "writes-files": 70
+   }
+  },
+  "G:gpt-5.3-codex": {
+   "construct_prevalence": {
+    "class": 0.128,
+    "comprehension": 0.208,
+    "dataclass": 0.088,
+    "decorator": 0.104,
+    "def": 0.44,
+    "f-string": 0.184,
+    "generator": 0.032,
+    "lambda": 0.056,
+    "try": 0.072,
+    "type-hints": 0.368,
+    "walrus": 0.0,
+    "with": 0.056
+   },
+   "median_lines": 13,
+   "median_nodes_parseable": 110.5,
+   "models": {
+    "gpt-5.3-codex": 125
+   },
+   "n": 125,
+   "share_contaminated": 0.016,
+   "share_no_imports": 0.032,
+   "share_only_stdlib_imports": 0.272,
+   "share_parseable": 0.96,
+   "share_with_def": 0.44,
+   "tier_a_contaminated": 0,
+   "tier_a_median_lines": 25.0,
+   "tier_a_n": 6,
+   "tier_a_rate": 0.048,
+   "tier_a_share_with_def": 0.8333,
+   "verdict_mix": {
+    "environment": 4,
+    "network": 4,
+    "process": 4,
+    "reads-files": 16,
+    "stdin-glue": 2,
+    "third-party": 71,
+    "tier-A": 6,
+    "trivial": 8,
+    "unparseable": 5,
+    "writes-files": 5
+   }
+  },
+  "G:gpt-5.4": {
+   "construct_prevalence": {
+    "class": 0.0,
+    "comprehension": 0.0949,
+    "dataclass": 0.0,
+    "decorator": 0.0,
+    "def": 0.0633,
+    "f-string": 0.1772,
+    "generator": 0.0,
+    "lambda": 0.0,
+    "try": 0.0316,
+    "type-hints": 0.019,
+    "walrus": 0.0,
+    "with": 0.019
+   },
+   "median_lines": 7.0,
+   "median_nodes_parseable": 73,
+   "models": {
+    "gpt-5.4": 158
+   },
+   "n": 158,
+   "share_contaminated": 0.0063,
+   "share_no_imports": 0.0063,
+   "share_only_stdlib_imports": 0.8038,
+   "share_parseable": 0.981,
+   "share_with_def": 0.0633,
+   "tier_a_contaminated": 0,
+   "tier_a_median_lines": 9,
+   "tier_a_n": 1,
+   "tier_a_rate": 0.0063,
+   "tier_a_share_with_def": 0.0,
+   "verdict_mix": {
+    "environment": 3,
+    "privacy": 2,
+    "process": 7,
+    "reads-files": 108,
+    "repo-import": 1,
+    "stdin-glue": 2,
+    "third-party": 6,
+    "tier-A": 1,
+    "trivial": 3,
+    "unparseable": 3,
+    "writes-files": 22
+   }
+  },
+  "G:gpt-5.5": {
+   "construct_prevalence": {
+    "class": 0.0571,
+    "comprehension": 0.2286,
+    "dataclass": 0.0,
+    "decorator": 0.0,
+    "def": 0.1714,
+    "f-string": 0.3143,
+    "generator": 0.0,
+    "lambda": 0.0,
+    "try": 0.0857,
+    "type-hints": 0.0,
+    "walrus": 0.0,
+    "with": 0.0286
+   },
+   "median_lines": 7,
+   "median_nodes_parseable": 81,
+   "models": {
+    "gpt-5.5": 35
+   },
+   "n": 35,
+   "share_contaminated": 0.0,
+   "share_no_imports": 0.0,
+   "share_only_stdlib_imports": 0.9714,
+   "share_parseable": 1.0,
+   "share_with_def": 0.1714,
+   "tier_a_contaminated": 0,
+   "tier_a_median_lines": 6.5,
+   "tier_a_n": 2,
+   "tier_a_rate": 0.0571,
+   "tier_a_share_with_def": 0.0,
+   "verdict_mix": {
+    "process": 3,
+    "reads-files": 17,
+    "third-party": 1,
+    "tier-A": 2,
+    "trivial": 4,
+    "writes-files": 8
+   }
+  },
+  "G:gpt-6-astra": {
+   "construct_prevalence": {
+    "class": 0.0366,
+    "comprehension": 0.3293,
+    "dataclass": 0.0,
+    "decorator": 0.061,
+    "def": 0.2439,
+    "f-string": 0.0122,
+    "generator": 0.0122,
+    "lambda": 0.122,
+    "try": 0.122,
+    "type-hints": 0.0,
+    "walrus": 0.0,
+    "with": 0.1585
+   },
+   "median_lines": 16.5,
+   "median_nodes_parseable": 143.5,
+   "models": {
+    "gpt-6-astra": 82
+   },
+   "n": 82,
+   "share_contaminated": 0.3537,
+   "share_no_imports": 0.0244,
+   "share_only_stdlib_imports": 0.7195,
+   "share_parseable": 0.9756,
+   "share_with_def": 0.2439,
+   "tier_a_contaminated": 0,
+   "tier_a_median_lines": 3,
+   "tier_a_n": 1,
+   "tier_a_rate": 0.0122,
+   "tier_a_share_with_def": 0.0,
+   "verdict_mix": {
+    "process": 9,
+    "reads-files": 15,
+    "repo-import": 19,
+    "third-party": 2,
+    "tier-A": 1,
+    "unparseable": 2,
+    "writes-files": 34
+   }
+  }
+ },
+ "sets": {
+  "all": {
+   "constructs": {
+    "C1-C2": {
+     "ci90": [
+      0.011479034183858514,
+      0.02312868717742777
+     ],
+     "jsd": 0.014887758945635763,
+     "n": [
+      4064,
+      862
+     ],
+     "perm_null_mean": 0.0023831482082022014,
+     "perm_p": 0.000999000999000999
+    },
+    "G-C": {
+     "ci90": [
+      0.06670733186260677,
+      0.10072598229315731
+     ],
+     "jsd": 0.08155306858980677,
+     "n": [
+      444,
+      4914
+     ],
+     "perm_null_mean": 0.00422510261386637,
+     "perm_p": 0.000999000999000999
+    },
+    "bins": 13,
+    "claude_pairs_with_C3": {
+     "C1-C3": {
+      "ci90": [
+       0.01755112152931604,
+       0.03898541357893038
+      ],
+      "jsd": 0.02188810765052882,
+      "n": [
+       4064,
+       343
+      ],
+      "perm_null_mean": 0.0049790873186322865,
+      "perm_p": 0.004975124378109453
+     },
+     "C2-C3": {
+      "ci90": [
+       0.024297773836001502,
+       0.05381852963550588
+      ],
+      "jsd": 0.03177835082332723,
+      "n": [
+       862,
+       343
+      ],
+      "perm_null_mean": 0.006964994807938726,
+      "perm_p": 0.004975124378109453
+     }
+    },
+    "pass": false,
+    "per_gpt_model_vs_C": {
+     "G:gpt-5.3-codex-C": {
+      "ci90": [
+       0.17638028752980017,
+       0.25794414043166913
+      ],
+      "jsd": 0.21230525014790913,
+      "n": [
+       125,
+       4914
+      ],
+      "perm_null_mean": 0.013256459383854571,
+      "perm_p": 0.004975124378109453
+     },
+     "G:gpt-5.4-C": {
+      "ci90": [
+       0.09268380079380903,
+       0.16094602105743075
+      ],
+      "jsd": 0.11809660659044648,
+      "n": [
+       158,
+       4914
+      ],
+      "perm_null_mean": 0.010358904501010324,
+      "perm_p": 0.004975124378109453
+     },
+     "G:gpt-5.5-C": {
+      "ci90": [
+       0.07629906878038488,
+       0.1540395127720022
+      ],
+      "jsd": 0.09161984462203572,
+      "n": [
+       35,
+       4914
+      ],
+      "perm_null_mean": 0.0391795485125383,
+      "perm_p": 0.029850746268656716
+     },
+     "G:gpt-6-astra-C": {
+      "ci90": [
+       0.03477628932908206,
+       0.08963821549351488
+      ],
+      "jsd": 0.0527927636529987,
+      "n": [
+       82,
+       4914
+      ],
+      "perm_null_mean": 0.018790742030377127,
+      "perm_p": 0.014925373134328358
+     }
+    },
+    "sensitivity_pass_max_claude_pairs": false,
+    "sensitivity_threshold_max_claude_pairs": 0.03177835082332723,
+    "threshold_C1C2": 0.014887758945635763
+   },
+   "nodes": {
+    "C1-C2": {
+     "ci90": [
+      0.005381649003476322,
+      0.01515680822896833
+     ],
+     "jsd": 0.007585495614174498,
+     "n": [
+      4064,
+      862
+     ],
+     "perm_null_mean": 0.002303344682779226,
+     "perm_p": 0.000999000999000999
+    },
+    "G-C": {
+     "ci90": [
+      0.009340377453613276,
+      0.026498033895511617
+     ],
+     "jsd": 0.013009483119446988,
+     "n": [
+      444,
+      4914
+     ],
+     "perm_null_mean": 0.004095238667686183,
+     "perm_p": 0.002997002997002997
+    },
+    "bins": 10,
+    "claude_pairs_with_C3": {
+     "C1-C3": {
+      "ci90": [
+       0.009544200013107067,
+       0.0302742030854402
+      ],
+      "jsd": 0.013898334967390904,
+      "n": [
+       4064,
+       343
+      ],
+      "perm_null_mean": 0.005274344896203534,
+      "perm_p": 0.004975124378109453
+     },
+     "C2-C3": {
+      "ci90": [
+       0.00837011320175611,
+       0.029156027658606417
+      ],
+      "jsd": 0.010650236120213718,
+      "n": [
+       862,
+       343
+      ],
+      "perm_null_mean": 0.00678397042972909,
+      "perm_p": 0.11442786069651742
+     }
+    },
+    "pass": false,
+    "per_gpt_model_vs_C": {
+     "G:gpt-5.3-codex-C": {
+      "ci90": [
+       0.020018308776699405,
+       0.06791927100258843
+      ],
+      "jsd": 0.026279151124941398,
+      "n": [
+       125,
+       4914
+      ],
+      "perm_null_mean": 0.014214944851564947,
+      "perm_p": 0.03980099502487562
+     },
+     "G:gpt-5.4-C": {
+      "ci90": [
+       0.05202773688435438,
+       0.1092243635822818
+      ],
+      "jsd": 0.06680151508826891,
+      "n": [
+       158,
+       4914
+      ],
+      "perm_null_mean": 0.011027598017164178,
+      "perm_p": 0.004975124378109453
+     },
+     "G:gpt-5.5-C": {
+      "ci90": [
+       0.0274916659006009,
+       0.14562780929614208
+      ],
+      "jsd": 0.02196813407551952,
+      "n": [
+       35,
+       4914
+      ],
+      "perm_null_mean": 0.05754669269897488,
+      "perm_p": 0.8955223880597015
+     },
+     "G:gpt-6-astra-C": {
+      "ci90": [
+       0.032602850784364014,
+       0.1066348774824889
+      ],
+      "jsd": 0.04236843332857032,
+      "n": [
+       82,
+       4914
+      ],
+      "perm_null_mean": 0.02055879330349189,
+      "perm_p": 0.01990049751243781
+     }
+    },
+    "sensitivity_pass_max_claude_pairs": true,
+    "sensitivity_threshold_max_claude_pairs": 0.013898334967390904,
+    "threshold_C1C2": 0.007585495614174498
+   },
+   "overall_pass": false,
+   "stdlib": {
+    "C1-C2": {
+     "ci90": [
+      0.04966039943147345,
+      0.06885594126911354
+     ],
+     "jsd": 0.05375398632054217,
+     "n": [
+      4064,
+      862
+     ],
+     "perm_null_mean": 0.006773041247176362,
+     "perm_p": 0.000999000999000999
+    },
+    "G-C": {
+     "ci90": [
+      0.11241114463683795,
+      0.14175088996190524
+     ],
+     "jsd": 0.11978410063930287,
+     "n": [
+      444,
+      4914
+     ],
+     "perm_null_mean": 0.012286620693603662,
+     "perm_p": 0.000999000999000999
+    },
+    "bins": 46,
+    "claude_pairs_with_C3": {
+     "C1-C3": {
+      "ci90": [
+       0.0751731129486199,
+       0.10085881420451576
+      ],
+      "jsd": 0.07808731246697465,
+      "n": [
+       4064,
+       343
+      ],
+      "perm_null_mean": 0.014199222211127098,
+      "perm_p": 0.004975124378109453
+     },
+     "C2-C3": {
+      "ci90": [
+       0.08099641821740952,
+       0.11599787108249611
+      ],
+      "jsd": 0.08791952173240086,
+      "n": [
+       862,
+       343
+      ],
+      "perm_null_mean": 0.017544942017233476,
+      "perm_p": 0.004975124378109453
+     }
+    },
+    "pass": false,
+    "per_gpt_model_vs_C": {
+     "G:gpt-5.3-codex-C": {
+      "ci90": [
+       0.19557721510400938,
+       0.30034385056738994
+      ],
+      "jsd": 0.22358360642915373,
+      "n": [
+       125,
+       4914
+      ],
+      "perm_null_mean": 0.03508410376203228,
+      "perm_p": 0.004975124378109453
+     },
+     "G:gpt-5.4-C": {
+      "ci90": [
+       0.2658599323495322,
+       0.32212122195398524
+      ],
+      "jsd": 0.2822450112398845,
+      "n": [
+       158,
+       4914
+      ],
+      "perm_null_mean": 0.028266294664574535,
+      "perm_p": 0.004975124378109453
+     },
+     "G:gpt-5.5-C": {
+      "ci90": [
+       0.3631993821530781,
+       0.5179653155591981
+      ],
+      "jsd": 0.405310369477584,
+      "n": [
+       35,
+       4914
+      ],
+      "perm_null_mean": 0.09106259328125509,
+      "perm_p": 0.004975124378109453
+     },
+     "G:gpt-6-astra-C": {
+      "ci90": [
+       0.14054189709300496,
+       0.2152997212703647
+      ],
+      "jsd": 0.15121739440285728,
+      "n": [
+       82,
+       4914
+      ],
+      "perm_null_mean": 0.04810010681480458,
+      "perm_p": 0.004975124378109453
+     }
+    },
+    "sensitivity_pass_max_claude_pairs": false,
+    "sensitivity_threshold_max_claude_pairs": 0.08791952173240086,
+    "threshold_C1C2": 0.05375398632054217
+   },
+   "verdict": {
+    "C1-C2": {
+     "ci90": [
+      0.00873073709507645,
+      0.019107817224012093
+     ],
+     "jsd": 0.011219120294561296,
+     "n": [
+      4064,
+      862
+     ],
+     "perm_null_mean": 0.0032490660468269305,
+     "perm_p": 0.000999000999000999
+    },
+    "G-C": {
+     "ci90": [
+      0.11538867532205244,
+      0.1647826231351705
+     ],
+     "jsd": 0.13634820168545397,
+     "n": [
+      444,
+      4914
+     ],
+     "perm_null_mean": 0.005761725034868171,
+     "perm_p": 0.000999000999000999
+    },
+    "bins": 13,
+    "claude_pairs_with_C3": {
+     "C1-C3": {
+      "ci90": [
+       0.03748744473145623,
+       0.06885350380375556
+      ],
+      "jsd": 0.04588556811967188,
+      "n": [
+       4064,
+       343
+      ],
+      "perm_null_mean": 0.007425999974238911,
+      "perm_p": 0.004975124378109453
+     },
+     "C2-C3": {
+      "ci90": [
+       0.04751050013988485,
+       0.08341704399242712
+      ],
+      "jsd": 0.05760132639915917,
+      "n": [
+       862,
+       343
+      ],
+      "perm_null_mean": 0.00765128781362325,
+      "perm_p": 0.004975124378109453
+     }
+    },
+    "pass": false,
+    "per_gpt_model_vs_C": {
+     "G:gpt-5.3-codex-C": {
+      "ci90": [
+       0.4209622021175586,
+       0.5440114150760225
+      ],
+      "jsd": 0.46600325462984715,
+      "n": [
+       125,
+       4914
+      ],
+      "perm_null_mean": 0.017969757888351364,
+      "perm_p": 0.004975124378109453
+     },
+     "G:gpt-5.4-C": {
+      "ci90": [
+       0.1834381294779821,
+       0.27015382049658077
+      ],
+      "jsd": 0.2123263238070977,
+      "n": [
+       158,
+       4914
+      ],
+      "perm_null_mean": 0.0142612733007882,
+      "perm_p": 0.004975124378109453
+     },
+     "G:gpt-5.5-C": {
+      "ci90": [
+       0.14428246531323577,
+       0.2475293179011953
+      ],
+      "jsd": 0.16163513688547995,
+      "n": [
+       35,
+       4914
+      ],
+      "perm_null_mean": 0.058667294340576354,
+      "perm_p": 0.004975124378109453
+     },
+     "G:gpt-6-astra-C": {
+      "ci90": [
+       0.052076517503931094,
+       0.10140478846996974
+      ],
+      "jsd": 0.05745523872194106,
+      "n": [
+       82,
+       4914
+      ],
+      "perm_null_mean": 0.02642477280185317,
+      "perm_p": 0.029850746268656716
+     }
+    },
+    "sensitivity_pass_max_claude_pairs": false,
+    "sensitivity_threshold_max_claude_pairs": 0.05760132639915917,
+    "threshold_C1C2": 0.011219120294561296
+   }
+  },
+  "tierA": {
+   "constructs": {
+    "C1-C2": {
+     "ci90": [
+      0.056327132212106217,
+      0.204214156312843
+     ],
+     "jsd": 0.08159751701372323,
+     "n": [
+      186,
+      24
+     ],
+     "perm_null_mean": 0.05326267377637177,
+     "perm_p": 0.11188811188811189
+    },
+    "G-C": {
+     "ci90": [
+      0.16583454299855654,
+      0.36390624559763024
+     ],
+     "jsd": 0.2230623073743057,
+     "n": [
+      13,
+      210
+     ],
+     "perm_null_mean": 0.09022064298413969,
+     "perm_p": 0.015984015984015984
+    },
+    "bins": 12,
+    "claude_pairs_with_C3": {},
+    "pass": false,
+    "per_gpt_model_vs_C": {},
+    "sensitivity_pass_max_claude_pairs": false,
+    "sensitivity_threshold_max_claude_pairs": 0.08159751701372323,
+    "threshold_C1C2": 0.08159751701372323
+   },
+   "nodes": {
+    "C1-C2": {
+     "ci90": [
+      0.16868851589047706,
+      0.35510308654162315
+     ],
+     "jsd": 0.1851216109584935,
+     "n": [
+      186,
+      24
+     ],
+     "perm_null_mean": 0.093025977869193,
+     "perm_p": 0.03296703296703297
+    },
+    "G-C": {
+     "ci90": [
+      0.22510439740574836,
+      0.47203567163777616
+     ],
+     "jsd": 0.23632197756845327,
+     "n": [
+      13,
+      210
+     ],
+     "perm_null_mean": 0.18462071520584836,
+     "perm_p": 0.18981018981018982
+    },
+    "bins": 10,
+    "claude_pairs_with_C3": {},
+    "pass": false,
+    "per_gpt_model_vs_C": {},
+    "sensitivity_pass_max_claude_pairs": false,
+    "sensitivity_threshold_max_claude_pairs": 0.1851216109584935,
+    "threshold_C1C2": 0.1851216109584935
+   },
+   "overall_pass": false,
+   "stdlib": {
+    "C1-C2": {
+     "ci90": [
+      0.26693045247361386,
+      0.4925135397293821
+     ],
+     "jsd": 0.33670689308018337,
+     "n": [
+      186,
+      24
+     ],
+     "perm_null_mean": 0.06981351358012924,
+     "perm_p": 0.000999000999000999
+    },
+    "G-C": {
+     "ci90": [
+      0.13827180279409107,
+      0.36496535231892285
+     ],
+     "jsd": 0.1897532005343565,
+     "n": [
+      13,
+      210
+     ],
+     "perm_null_mean": 0.11894034548520896,
+     "perm_p": 0.05194805194805195
+    },
+    "bins": 12,
+    "claude_pairs_with_C3": {},
+    "pass": true,
+    "per_gpt_model_vs_C": {},
+    "sensitivity_pass_max_claude_pairs": true,
+    "sensitivity_threshold_max_claude_pairs": 0.33670689308018337,
+    "threshold_C1C2": 0.33670689308018337
+   },
+   "verdict": {
+    "note": "degenerate: every tier-A verdict is ''"
+   }
+  }
+ }
+}

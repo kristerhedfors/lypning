@@ -14,6 +14,16 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-23** — Publish attributed sightings; Codex/GPT programs stay excluded
+([#114](https://github.com/kristerhedfors/lypning/pull/114))
+
+- Sightings re-exported with `lypning harvest --export --transcripts`, which
+  also journaled 15,307 model attributions to `attribution.jsonl`.
+- A pre-registered test found Codex/GPT-written programs not materially
+  similar to Claude's: 444 vs 4,914 distinct programs, all three criteria
+  failed (`training/reports/2026-09-23-codex-similarity/`). They stay out of
+  the capture tier.
+
 **2026-09-23** — Capture at all times with model attribution; a capture-tier
 export; the sharded arm-A target rung ([#113](https://github.com/kristerhedfors/lypning/pull/113))
 
