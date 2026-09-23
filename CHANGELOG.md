@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-23** — Close Step 2 (flat) and Step 3 (below 300 pairs); arm A targets ready (#TBD)
+**2026-09-23** — Close Step 2 (flat) and Step 3 (below 300 pairs); arm A targets ready ([#120](https://github.com/kristerhedfors/lypning/pull/120))
 
 - Full-split Step 2 over all 1,355 train cases (merge `35912725289`):
   coverage native +2.59pp [−3.94, +9.74], correct −7.13pp. No distillation
