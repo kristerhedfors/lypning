@@ -195,7 +195,8 @@ class Runner:
                            mem_mb=self.mem_mb, interpreter=[self.engine] if native else None,
                            env_extra=env_extra)
         if result.harness_error:
-            raise VerificationBlocked("harness: " + result.harness_error)
+            # Detail on the witness, never the message (it reaches CI logs).
+            raise VerificationBlocked("harness", {"harness_error": result.harness_error})
         return result
 
     @staticmethod

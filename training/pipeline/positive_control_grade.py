@@ -12,7 +12,39 @@ from .positive_control_targets import DEFAULT_ARMS, build_targets, normalise_arm
 from .public_view import public_view
 from .training import Verifier, program_from_completion
 from .training_metrics import paired_comparison, split_components, summarize
-from .training_types import TrainingError
+from .training_types import ENGINE_MISMATCH, Score, TrainingError, VerificationBlocked
+
+#: The status of a draw whose native run disagreed with a clean CPython oracle.
+#: Neither correct-native nor correct-fallback: `Score.correct` is False for
+#: it, so it counts against both rates, and the target builder admits only
+#: correct-native / correct-control, so it is never an SFT target.
+ENGINE_MISMATCH_STATUS = 'engine-mismatch'
+#: The PRIVATE file beside rows.jsonl that holds each such draw's witness;
+#: written only when there is one, so a clean grade's files are unchanged.
+ENGINE_MISMATCH_FILE = 'engine-mismatches.jsonl'
+#: A grade fails once engine-mismatch draws exceed this percentage of the
+#: graded draws: past it the rows describe the engine, not the model.
+ENGINE_MISMATCH_BOUND_PERCENT = 1
+
+
+class EngineMismatchBound(TrainingError):
+    """More engine mismatches than a grade may absorb. Its message is counts only."""
+
+
+def engine_mismatches(rows):
+    """How many graded rows are engine mismatches: the only public fact about them."""
+    return sum(r.get('status') == ENGINE_MISMATCH_STATUS for r in rows)
+
+
+def over_mismatch_bound(count, total):
+    """True when `count` of `total` draws exceeds the bound; integers, no float edge."""
+    return count * 100 > total * ENGINE_MISMATCH_BOUND_PERCENT
+
+
+def check_mismatch_bound(count, total):
+    if over_mismatch_bound(count, total):
+        raise EngineMismatchBound('engine-mismatch draws %d of %d exceed the %d%% bound'
+                                  % (count, total, ENGINE_MISMATCH_BOUND_PERCENT))
 
 
 def _expected(cases, samples):
@@ -66,7 +98,22 @@ def grade(cases, completions, verifier, output, *, samples, workers=8, run_id=''
     def one(row):
         case = by_case[row['case_id']]
         program = program_from_completion(row.get('completion'))
-        score = verifier.score(case, program)
+        witness = None
+        try:
+            score = verifier.score(case, program)
+        except VerificationBlocked as exc:
+            # Only a native run that disagreed with a clean oracle is the
+            # draw's own outcome; a harness, runner or identity failure is
+            # ours and still aborts the grade.
+            if exc.kind != ENGINE_MISMATCH:
+                raise
+            detail = exc.witness if isinstance(exc.witness, dict) else {}
+            score = Score(0.0, ENGINE_MISMATCH_STATUS, total_tests=len(case.get('tests') or ()),
+                          failed_test=detail.get('test'))
+            witness = {'case_id': case['case_id'], 'draw': row['draw'], 'arm': row['arm'],
+                       'seed': row['seed'], 'family': case['family'],
+                       'population': case['population'], 'program': program,
+                       'digest': exc.digest, 'witness': exc.witness}
         result = {
             'case_id': case['case_id'], 'draw': row['draw'], 'arm': row['arm'],
             'seed': row['seed'], 'family': case['family'],
@@ -77,20 +124,41 @@ def grade(cases, completions, verifier, output, *, samples, workers=8, run_id=''
             'truncated': row.get('finish_reason') == 'length',
             'score': asdict(score),
         }
-        return result
+        return result, witness
 
-    rows = []
+    rows, witnesses = [], []
     total = len(completions)
     if progress:
         progress({'event': 'grade_progress', 'completed': 0, 'total': total,
                   'workers': workers})
+
+    def keep_witnesses():
+        # PRIVATE: uploaded with rows.jsonl to the private repository only.
+        # Absent when empty, so a grade with no mismatch writes what it did.
+        if witnesses:
+            witnesses.sort(key=lambda w: (w['arm'], w['case_id'], w['draw']))
+            write_jsonl(output / ENGINE_MISMATCH_FILE, witnesses)
+
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(one, row) for row in completions]
         for completed, future in enumerate(as_completed(futures), 1):
-            rows.append(future.result())
+            result, witness = future.result()
+            rows.append(result)
+            if witness is not None:
+                witnesses.append(witness)
+                # Past the bound against the PLANNED total no later draw can
+                # bring the grade back under it: stop paying for containers.
+                if over_mismatch_bound(len(witnesses), total):
+                    for pending in futures:
+                        pending.cancel()
+                    keep_witnesses()
+                    check_mismatch_bound(len(witnesses), total)
             if progress and (completed == total or completed % 32 == 0):
                 progress({'event': 'grade_progress', 'completed': completed,
                           'total': total, 'workers': workers})
+    keep_witnesses()
+    mismatched = engine_mismatches(rows)
+    check_mismatch_bound(mismatched, len(rows))
     rows.sort(key=lambda r: (r['arm'], r['case_id'], r['draw']))
     write_jsonl(output / 'rows.jsonl', rows)
     arms = {arm: [r for r in rows if r['arm'] == arm]
@@ -114,6 +182,9 @@ def grade(cases, completions, verifier, output, *, samples, workers=8, run_id=''
               'case_set_sha256': sha256_of(sorted(by_case)), 'rows': len(rows),
               'metrics': metrics, 'comparison': comparison,
               'control_comparison': control_comparison, 'decision': decision}
+    # Present only when non-zero: a clean grade's report is byte-identical.
+    if mismatched:
+        report['engine_mismatches'] = mismatched
     write_json(output / 'report.json', report)
     targets, target_report = build_targets(cases, completions, rows, samples=samples,
                                            run_id=run_id, lineage=lineage, arms=target_arms,
@@ -122,7 +193,7 @@ def grade(cases, completions, verifier, output, *, samples, workers=8, run_id=''
     write_json(output / 'sft-report.json', target_report)
     # Uploaded as a PUBLIC Actions artifact, so it passes the one helper that
     # keeps per-case `case_clusters` counts out of public output (2026-09-23).
-    public = public_view({
+    public = {
         'schema': 1, 'cases': len(cases), 'families': comparison['families'],
         'independent_clusters': comparison['independent_clusters'],
         'samples_per_arm': samples, 'rows': len(rows),
@@ -137,7 +208,11 @@ def grade(cases, completions, verifier, output, *, samples, workers=8, run_id=''
                     ('rows', 'cases_with_targets', 'families_with_targets', 'populations',
                      'eligible_before_cap', 'rejected', 'prompt_policy', 'selection_policy',
                      'arms', 'length_policy')},
-    })
+    }
+    # The COUNT is public; which draws, and why, stays in ENGINE_MISMATCH_FILE.
+    if mismatched:
+        public['engine_mismatches'] = mismatched
+    public = public_view(public)
     write_json(output / 'public-report.json', public)
     return public
 

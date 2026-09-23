@@ -102,7 +102,8 @@ def grade(item, selected, verifier):
             score = verifier.score(case, program)
         except VerificationBlocked as exc:
             # Stored privately; never convert a mismatch/infra failure into a preference.
-            yield dict(row, action="blocked-verification", diagnostic=str(exc))
+            yield dict(row, action="blocked-verification", diagnostic=str(exc),
+                       witness=exc.witness)
             raise
         if case["population"] == "fallback-control" and score.correct:
             action = "retain-control"

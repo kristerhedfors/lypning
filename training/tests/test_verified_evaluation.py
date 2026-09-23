@@ -203,7 +203,7 @@ def test_a_blocked_evaluation_preserves_the_program_and_still_aborts(tmp_path, m
     raised = []
 
     def block(case, program):
-        exc = VerificationBlocked("engine mismatch: " + program)
+        exc = VerificationBlocked("engine mismatch", {"program": program})
         raised.append(exc)
         raise exc
 
@@ -220,7 +220,11 @@ def test_a_blocked_evaluation_preserves_the_program_and_still_aborts(tmp_path, m
     assert rows, "the program that blocked the arm must survive the abort"
     assert rows[0]["case_id"] == "c" and rows[0]["step"] == 7
     assert rows[0]["split_group"] == "g" and rows[0]["tests"] == [{"stdout": "1"}]
-    assert rows[0]["program"] and rows[0]["program"] in rows[0]["error"]
+    # The detail is on the private row's witness; the message names only a
+    # kind and a digest, because it reaches the public GPU log (2026-09-23).
+    assert rows[0]["program"] and rows[0]["program"] not in rows[0]["error"]
+    assert rows[0]["kind"] == "engine mismatch"
+    assert rows[0]["witness"] == {"program": rows[0]["program"]}
     # The arm still aborts and the trainer's state is still restored.
     assert model.training and model.is_gradient_checkpointing and torch.state == 123
 

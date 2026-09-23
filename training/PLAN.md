@@ -280,6 +280,19 @@ be resumed. `full_rpm` lowers the full rung to
 30 rpm. Grade and merge read the chain's union
 (`pipeline/positive_control_resume.py`). Nothing was dispatched.
 
+**An engine mismatch is a counted draw, never a public quote (2026-09-23).**
+The grade of full shard 1 of 2 (run `35854009245`) aborted on one draw whose
+`lypning-l` run reported a SyntaxError that CPython did not, and the abort
+printed that case's id and expected stdout into the public log. Such a draw is
+now graded `engine-mismatch`. It is not correct and not native, and it is never
+an SFT target. Its witness goes to the private `grade/engine-mismatches.jsonl`,
+and `public-report.json` and the log carry only the count. A grade whose
+engine-mismatch draws exceed 1% of its graded draws fails, printing counts
+only. The merge re-checks the same bound over the union. Any other
+verification block still aborts, and `step2_grade.py` prints only its type and
+a digest; the traceback goes to the private `grade-failure/`. Each mismatch is
+still an engine bug (invariant 1), filed from the private witness file.
+
 ### Step 3 — Build contrastive targets (tokens only)
 
 What `prompt + reference` SFT lacks is contrast on nativeness with correctness

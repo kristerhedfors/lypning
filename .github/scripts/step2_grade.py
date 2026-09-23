@@ -7,10 +7,12 @@ import os
 from pathlib import Path
 import runpy
 import subprocess
+import sys
+import traceback
 
 from pipeline.container_runner import ContainerRunner
 from pipeline.positive_control import MODEL_REPO
-from pipeline.positive_control_grade import grade_files
+from pipeline.positive_control_grade import ENGINE_MISMATCH_FILE, grade_files
 from pipeline.public_view import public_view
 from pipeline.training import Verifier, engine_identity
 from pipeline.training_types import TrainingError
@@ -126,8 +128,49 @@ def token_counter():
             '%s@%s' % (MODEL_REPO, revision))
 
 
+#: Where a failed grade keeps its traceback (and any engine-mismatch
+#: witnesses it had written), for `step2_grade_upload.py --failure` to put in
+#: the PRIVATE repository. Never printed.
+FAILURE_DIR = 'step2-grade-failure'
+
+
+def keep_failure(root, exc):
+    """Write the traceback privately; return the line a public log may carry.
+
+    A library message can carry a case id, a program or an expected stdout --
+    run 35854009245 printed exactly that on 2026-09-23 -- so the log gets the
+    exception's TYPE and the digest of the private traceback, and nothing of
+    its text. The digest is what joins the log line to the private file.
+    """
+    text = ''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    digest = hashlib.sha256(text.encode('utf-8')).hexdigest()[:12]
+    failure = Path(root) / FAILURE_DIR
+    failure.mkdir(parents=True, exist_ok=True)
+    (failure / 'traceback.txt').write_text(text, encoding='utf-8')
+    detail = {'type': type(exc).__name__, 'digest': digest,
+              'kind': getattr(exc, 'kind', None), 'witness': getattr(exc, 'witness', None)}
+    (failure / 'failure.json').write_text(json.dumps(detail, sort_keys=True, ensure_ascii=False,
+                                                     default=repr) + '\n', encoding='utf-8')
+    witnesses = Path(root) / 'step2-grade' / ENGINE_MISMATCH_FILE
+    if witnesses.is_file():
+        (failure / ENGINE_MISMATCH_FILE).write_bytes(witnesses.read_bytes())
+    return 'step2 grade failed: %s (traceback digest %s, kept privately)' % (type(exc).__name__, digest)
+
+
 def main():
     root = Path(os.environ['RUNNER_TEMP'])
+    try:
+        return grade_run(root)
+    except Exception as exc:  # noqa: BLE001 -- nothing of its text may reach the log
+        try:
+            line = keep_failure(root, exc)
+        except Exception:  # noqa: BLE001 -- a failed write must not print the original
+            line = 'step2 grade failed: %s (traceback could not be kept)' % type(exc).__name__
+        print(line, file=sys.stderr, flush=True)
+        return 1
+
+
+def grade_run(root):
     private = root / 'step2-downloaded'
     admission = json.loads((private / 'admission.json').read_text())
     rows = [json.loads(line) for line in (root / 'step2-bank' / 'train.jsonl').read_text().splitlines()
@@ -166,7 +209,12 @@ def main():
         'source_commit': head, 'candidate_image': os.environ['CANDIDATE_IMAGE'],
         'base_image': base_image, 'candidate_recipe': recipe}, sort_keys=True) + '\n')
     print(json.dumps(public_view(public), sort_keys=True))
+    # The count, always, so a clean grade says zero rather than nothing; which
+    # draws they were is in the private grade/engine-mismatches.jsonl.
+    print(json.dumps(public_view({'engine_mismatches': public.get('engine_mismatches', 0)}),
+                     sort_keys=True))
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

@@ -199,7 +199,8 @@ def _run(program: str, test: Dict[str, Any], *, timeout_s: float, mem_mb: int,
                    interpreter=interpreter, env_extra=env_extra)
     if r.harness_error:
         # Ours, not the case's: never counted as a drop (sandbox.py, THE HARNESS/PROGRAM SPLIT).
-        raise VerificationBlocked("harness error: " + r.harness_error)
+        # Detail on the witness, never the message (it reaches CI logs).
+        raise VerificationBlocked("harness error", {"harness_error": r.harness_error})
     return r
 
 

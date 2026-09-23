@@ -19,7 +19,7 @@ from pathlib import Path
 from . import sandbox
 from .jsonio import sha256_of, write_json, write_jsonl
 
-from .training_types import Score, TrainingError, VerificationBlocked
+from .training_types import ENGINE_MISMATCH, Score, TrainingError, VerificationBlocked
 from .training_contract import complete
 from .training_data import validate_cases, split_cases, validate_benchmark, validate_pilot, validate_reference_scores
 
@@ -180,9 +180,13 @@ class Verifier:
                             mem_mb=self.memory_mb,
                             interpreter=[self.binary] if native else None)
         except (OSError, subprocess.SubprocessError) as exc:
-            raise VerificationBlocked("runner failed: " + str(exc)) from exc
+            # The runner's own text can name a scratch path or a test's file:
+            # detail for the private witness, never the public message. `from
+            # None`, because a printed traceback would show a chained cause.
+            raise VerificationBlocked("runner failed", {
+                "error_type": type(exc).__name__, "error": str(exc)}) from None
         if r.harness_error:
-            raise VerificationBlocked("harness: " + r.harness_error)
+            raise VerificationBlocked("harness", {"harness_error": r.harness_error})
         return r
 
     @staticmethod
@@ -217,16 +221,20 @@ class Verifier:
             if native.exit_code == 90:
                 if (native.stdout or native.timed_out or native.memory_exceeded or native.truncated or native.encoding_error or not re.fullmatch(
                         r"lypning-l: unsupported: [^:\n]+: [^\n]+\n?", native.stderr)):
-                    raise VerificationBlocked("refusal protocol: %s test %d" % (case["case_id"], i))
+                    raise VerificationBlocked("refusal protocol", {
+                        "case_id": case["case_id"], "test": i,
+                        "observed": list(self._observed(native))})
                 refusals.append((i, native.stderr.strip()))
                 continue
             # Native timeout/exception/wrong output after a correct oracle is an
             # engine issue, not permission to teach the model to avoid a feature.
             if (not native.ok or native.memory_exceeded or native.truncated or native.encoding_error or native.stderr or
                     native.stdout != test["stdout"]):
-                raise VerificationBlocked("engine mismatch: " + json.dumps({
+                # The detail rides on `.witness`, never in the message: the
+                # message reaches public logs (run 35854009245, 2026-09-23).
+                raise VerificationBlocked(ENGINE_MISMATCH, {
                     "case_id": case["case_id"], "test": i, "expected_stdout": test["stdout"],
-                    "observed": self._observed(native)}, ensure_ascii=False))
+                    "observed": list(self._observed(native))})
             native_count += 1
         if case["population"] == "fallback-control":
             return Score(1.0, "correct-control", native_count, len(tests), tuple(refusals))
@@ -474,7 +482,8 @@ class Reward:
         rewards, truncated_flags, programs = [], [], []
         for i, (completion, cid) in enumerate(zip(completions, case_id)):
             if cid not in self.cases:
-                raise TrainingError("non-training case in RL batch: " + cid)
+                # No id in the message: it reaches the GPU job's public log.
+                raise TrainingError("non-training case in RL batch")
             program = program_from_completion(completion)
             truncated = self.eos_token_id is not None and not complete(token_ids[i], self.eos_token_id)
             truncated_flags.append(truncated)
@@ -487,8 +496,11 @@ class Reward:
             except VerificationBlocked as exc:
                 if self.witness_path:
                     from .jsonio import append_jsonl
+                    # PRIVATE file: the exception's detail lives here, not in
+                    # its message (`VerificationBlocked.witness`).
                     append_jsonl(self.witness_path, {"case_id": cid, "program": program,
-                                                     "error": str(exc), "tests": self.cases[cid]["tests"]})
+                                                     "error": str(exc), "tests": self.cases[cid]["tests"],
+                                                     "kind": exc.kind, "witness": exc.witness})
                 raise
         # A group's completions are scored concurrently (each one is a dozen
         # sandbox requests) and kept in batch order; the first block wins.
