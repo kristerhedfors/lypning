@@ -3,8 +3,10 @@ name: Step 2 grade Cerebras control (no GPU)
 on:
   workflow_dispatch:
     inputs:
+      # A resumed run is graded by its own id: the download fetches the runs
+      # its result names in `resumed_from`, and the grade reads their union.
       run_id:
-        description: Private positive-control run id
+        description: Private positive-control run id (a resumed run is graded over its chain)
         required: true
         type: string
       rung:

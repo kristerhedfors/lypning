@@ -14,6 +14,19 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-23** — Resume a stopped Step 2 run explicitly, never rerun it (#TBD)
+
+- `step2-control.yml` gains `resume_run_id`. A new run proves it is the same
+  experiment as the stopped one, refusing on the first field that differs. It
+  requests only planned − settled, and the ambiguous request again as a
+  recorded `re-request`. `ceiling_usd` is the chain's total, so the prior
+  dollars count against it.
+- A resumed result reports the union's completed/planned and a `resumed_from`
+  chain with each run's own dollars. `step2_grade` and `step2_merge` read the
+  union, and a request settled in two runs is refused, not deduplicated.
+- The `full` rung's rate is `full_rpm`, 30–45; the shard gate sizes by it.
+  A transport error is a resume, not a rerun. Nothing was dispatched.
+
 **2026-09-23** — Publish attributed sightings; Codex/GPT programs stay excluded
 ([#114](https://github.com/kristerhedfors/lypning/pull/114))
 

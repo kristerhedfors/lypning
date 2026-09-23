@@ -10,7 +10,7 @@ on:
         options: [smoke, targets, budget20, confirmatory, full]
         default: smoke
       ceiling_usd:
-        description: Hard Cerebras dollar ceiling (smoke <= 5, targets <= 6, budget20 <= 20, confirmatory <= 50, full <= 14 per shard)
+        description: Hard Cerebras dollar ceiling (smoke <= 5, targets <= 6, budget20 <= 20, confirmatory <= 50, full <= 14 per shard); for a resume, the TOTAL of the whole chain
         required: true
         type: string
         default: '5'
@@ -45,6 +45,27 @@ on:
         type: choice
         options: ['192', '0']
         default: '192'
+      # A transport error is a RESUME, not a rerun. Zero retries means one
+      # ambiguous provider failure stops a run whose completions are already
+      # paid for; rerunning the shard buys them twice. Dispatch again with the
+      # SAME rung and shard inputs and the stopped run's private id here
+      # (`positive_control_resume`): the new run proves it is the same
+      # experiment, requests only what the chain has not completed -- the
+      # ambiguous request again, on the record -- and treats `ceiling_usd` as
+      # the chain's total, so the stopped run's dollars count against it.
+      # Not for the smoke. Empty is an ordinary run.
+      resume_run_id:
+        description: "Resume only: the stopped run's private id (<rung>[-<i>of<n>]-<sha>-<run>); empty for a new run"
+        type: string
+        default: ''
+      # 45 is the rate every completed rung above the smoke ran at; the
+      # full-0of2 shard (run 35828368891) stopped on one transport error at 45.
+      # Lower trades wall-clock for headroom; the shard gate sizes by it.
+      full_rpm:
+        description: "full only: requests per minute, 30-45"
+        type: choice
+        options: ['45', '40', '35', '30']
+        default: '45'
 
 permissions:
   contents: read
@@ -72,8 +93,10 @@ env:
   # completed at 60 rpm; every longer rung, including the k=16 rungs that
   # decide Step 2, gets 25% sliding-window headroom at 45 rpm and keeps zero
   # retries. The confirmatory rung (9,600 calls) needs about 213 minutes of its
-  # 240-minute dispatch window at this rate.
-  STEP2_RPM: ${{ inputs.rung == 'smoke' && '60' || '45' }}
+  # 240-minute dispatch window at this rate. The full rung's rate is the
+  # operator's `full_rpm`, 30 to 45 (`step2_shard.rpm_from_env`).
+  STEP2_RPM: ${{ inputs.rung == 'smoke' && '60' || inputs.rung == 'full' && inputs.full_rpm || '45' }}
+  STEP2_RESUME_RUN_ID: ${{ inputs.resume_run_id }}
   STEP2_RUN_ID: ${{ inputs.rung }}${{ inputs.rung == 'full' && format('-{0}of{1}', inputs.shard_index, inputs.shard_count) || '' }}-${{ github.sha }}-${{ github.run_id }}
 
 jobs:
@@ -98,9 +121,13 @@ jobs:
           if not math.isfinite(ceiling) or not 0 < ceiling <= limit:
               raise SystemExit('ceiling must be positive and <= $%d for this rung' % limit)
           PY
+      # Free and offline: a resume names a recorded run of THIS rung and shard.
+      - name: Validate the resumed run id, if any
+        run: python .github/scripts/step2_resume.py validate
       # Free, before any build or call: a full shard whose ceiling, generation
       # window or grading time cannot cover it would stop half-way, and a
-      # partial run is never graded. Prints the projection; counts only.
+      # partial run is never graded. Prints the projection; counts only. A
+      # resume's ceiling and window are sized on its remainder, below.
       - name: Size this shard against its ceiling and windows
         run: python .github/scripts/step2_shard.py
       - run: pip install -q 'huggingface-hub==1.31.0' 'transformers==5.17.0' jinja2
@@ -117,6 +144,16 @@ jobs:
           name: step2-control-public-plan
           path: ${{ runner.temp }}/step2-plan.json
           if-no-files-found: error
+      # Resume only, still before any build or call: copy the stopped run and
+      # its recorded chain read-only, re-prove each run's ledger, check the
+      # identity known without the candidate, and refuse unless what is left
+      # of the chain's ceiling and the window covers the remaining requests.
+      # Prints run ids, counts and dollars only.
+      - name: Fetch and account the resumed run's private evidence
+        if: inputs.resume_run_id != ''
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python .github/scripts/step2_resume.py download
       - name: Build the native candidate for CPython 3.12
         run: |
           echo "LYPNING_HOME=$RUNNER_TEMP/step2-engine" >> "$GITHUB_ENV"

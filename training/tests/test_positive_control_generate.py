@@ -167,7 +167,10 @@ def test_every_paid_rung_above_smoke_uses_the_45_rpm_that_survived():
     root = Path(__file__).resolve().parents[2]
     text = (root / '.github' / 'workflows' / 'step2-control.yml').read_text()
     expr = re.search(r"^  STEP2_RPM: \$\{\{ (.+) \}\}$", text, re.M).group(1)
-    assert expr == "inputs.rung == 'smoke' && '60' || '45'"
+    # The full rung's rate is the operator's choice, never above 45.
+    assert expr == "inputs.rung == 'smoke' && '60' || inputs.rung == 'full' && inputs.full_rpm || '45'"
+    choice = re.search(r"      full_rpm:\n(?:        .*\n)*?        options: \[(.+)\]\n", text).group(1)
+    assert sorted(int(v.strip(" '")) for v in choice.split(',')) == [30, 35, 40, 45]
     seconds = re.search(r"^  STEP2_MAX_SECONDS: \$\{\{ (.+) \}\}$", text, re.M).group(1)
     assert seconds == "inputs.rung == 'smoke' && '3600' || '14400'"
     # The largest rung (300 cases x 16 draws x 2 arms) must fit its dispatch

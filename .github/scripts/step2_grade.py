@@ -81,6 +81,23 @@ def recorded_shard(paid, cases, shard):
         raise TrainingError('the dispatched rung and shard differ from the ones this run generated')
 
 
+def resumed_chain(private, run_id, recipe_of=git_recipe):
+    """A resumed run's recorded chain and the run itself, oldest first; else None.
+
+    `step2_private_download` copied each run the result names under
+    ``chain/<run>/paid``. Each is re-read from its own ledger, and every run
+    of the chain must be this run's experiment (`positive_control_resume`).
+    """
+    from pipeline.positive_control_resume import read_link
+    result = json.loads((private / 'paid' / 'result.json').read_text())
+    recorded = result.get('resumed_from')
+    if not recorded:
+        return None
+    links = [read_link(entry.get('run_id'), private / 'chain' / str(entry.get('run_id')) / 'paid',
+                       recipe_of) for entry in recorded]
+    return links + [read_link(run_id, private / 'paid', recipe_of)]
+
+
 def target_arms(value):
     """The dispatch input, as build_targets' arms; the reviewed default first."""
     arms = tuple(part.strip() for part in (value or 'subset-spec').split(',') if part.strip())
@@ -129,6 +146,8 @@ def main():
     runner = ContainerRunner(os.environ['CANDIDATE_IMAGE'], expected)
     verifier = Verifier(binary, runner=runner)
     count, tokenizer = token_counter()
+    chain = resumed_chain(private, os.environ['STEP2_RUN_ID'])
+    lineage_chain = {'resumed_from': [link['run_id'] for link in chain[:-1]]} if chain else {}
     public = grade_files(cases, private / 'paid' / 'completions.jsonl', verifier,
                          root / 'step2-grade', samples=int(os.environ['STEP2_SAMPLES']), workers=8,
                          run_id=os.environ['STEP2_RUN_ID'], lineage={
@@ -136,9 +155,10 @@ def main():
                              'engine_sha256': admission['conformance']['engine_sha256'],
                              'base_image': admission['conformance']['base_image'],
                              'candidate_image': admission['candidate_image'],
+                             **lineage_chain,
                          }, progress=lambda event: print(json.dumps(event, sort_keys=True), flush=True),
                          target_arms=target_arms(os.environ.get('STEP2_TARGET_ARMS')),
-                         token_count=count, tokenizer=tokenizer)
+                         token_count=count, tokenizer=tokenizer, chain=chain)
     # Which image graded, beside the rows it graded: the lineage above names
     # generation's image, and a rebuild never reproduces its id.
     (root / 'step2-grade' / 'grader.json').write_text(json.dumps({
