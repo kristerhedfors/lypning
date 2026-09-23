@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-23** — An `except` clause is an expression; valid Python the parser did not know refuses instead of dying (#TBD)
+**2026-09-23** — An `except` clause is an expression; valid Python the parser did not know refuses instead of dying ([#118](https://github.com/kristerhedfors/lypning/pull/118))
 
 - **Engine change — do not merge before S4 arm A's three seeds finish**: the
   engine is frozen for arm A from the Step 2 target rung on.
