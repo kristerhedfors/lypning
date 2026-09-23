@@ -69,7 +69,10 @@ def blocked_witness(verifier, witness_path, step):
                     "step": step, "case_id": case.get("case_id"), "draw": draw,
                     "family": case.get("family"), "population": case.get("population"),
                     "split_group": case.get("split_group") or case.get("family"),
-                    "program": program, "error": str(exc), "tests": case.get("tests")})
+                    "program": program, "error": str(exc), "tests": case.get("tests"),
+                    # The detail the public message no longer carries; this
+                    # file is uploaded to the private repository only.
+                    "kind": getattr(exc, "kind", None), "witness": getattr(exc, "witness", None)})
             raise
 
     return score_one

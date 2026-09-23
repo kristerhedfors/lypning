@@ -113,7 +113,10 @@ def test_the_admission_check_refuses_a_long_batchencoding_prompt():
     with pytest.raises(TrainingError) as exc:
         gpu.check_prompt_budget(FakeTokenizer(4000), [case("too-long")],
                                 max_new_tokens=512, max_seq=2048)
-    assert "too-long" in str(exc.value)
+    # Named by digest, never by id: this message reaches the GPU job's
+    # public log (2026-09-23).
+    from pipeline.training_types import case_ref
+    assert case_ref("too-long") in str(exc.value) and "too-long" not in str(exc.value)
 
 
 def test_the_admission_check_refuses_a_long_list_prompt_too():

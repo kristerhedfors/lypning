@@ -152,7 +152,8 @@ def aggregate(cases, completions, rows, output, *, samples, run_id, lineage, tar
     shard aggregated here writes grade's own files byte for byte.
     """
     from pipeline.jsonio import sha256_of, write_json, write_jsonl
-    from pipeline.positive_control_grade import population_comparison
+    from pipeline.positive_control_grade import (check_mismatch_bound, engine_mismatches,
+                                                 population_comparison)
     from pipeline.public_view import public_view
     from pipeline.positive_control_targets import build_targets, normalise_arms
     from pipeline.training_metrics import summarize
@@ -163,6 +164,10 @@ def aggregate(cases, completions, rows, output, *, samples, run_id, lineage, tar
         raise TrainingError('grade output exists; preserve it and choose a new directory')
     output.mkdir(parents=True)
     by_case = {case['case_id']: case for case in cases}
+    # Each shard's own grade held its engine-mismatch draws under the bound,
+    # so the union does too; checked again because the union is what trains.
+    mismatched = engine_mismatches(rows)
+    check_mismatch_bound(mismatched, len(rows))
     rows = sorted(rows, key=lambda r: (r['arm'], r['case_id'], r['draw']))
     write_jsonl(output / 'rows.jsonl', rows)
     arms = {arm: [r for r in rows if r['arm'] == arm]
@@ -186,13 +191,15 @@ def aggregate(cases, completions, rows, output, *, samples, run_id, lineage, tar
               'case_set_sha256': sha256_of(sorted(by_case)), 'rows': len(rows),
               'metrics': metrics, 'comparison': comparison,
               'control_comparison': control_comparison, 'decision': decision}
+    if mismatched:
+        report['engine_mismatches'] = mismatched
     write_json(output / 'report.json', report)
     targets, target_report = build_targets(cases, completions, rows, samples=samples,
                                            run_id=run_id, lineage=lineage, arms=target_arms,
                                            token_count=token_count, tokenizer=tokenizer)
     write_jsonl(output / 'sft.jsonl', targets)
     write_json(output / 'sft-report.json', target_report)
-    public = public_view({
+    public = {
         'schema': 1, 'cases': len(cases), 'families': comparison['families'],
         'independent_clusters': comparison['independent_clusters'],
         'samples_per_arm': samples, 'rows': len(rows),
@@ -207,7 +214,10 @@ def aggregate(cases, completions, rows, output, *, samples, run_id, lineage, tar
                     ('rows', 'cases_with_targets', 'families_with_targets', 'populations',
                      'eligible_before_cap', 'rejected', 'prompt_policy', 'selection_policy',
                      'arms', 'length_policy')},
-    })
+    }
+    if mismatched:
+        public['engine_mismatches'] = mismatched
+    public = public_view(public)
     write_json(output / 'public-report.json', public)
     return public
 
@@ -343,7 +353,8 @@ def main():
         return 1
     from pipeline.public_view import public_view
     print(json.dumps(public_view({"merged_run": run_id, "shards": len(shards), "cases": public["cases"],
-                                  "rows": public["rows"], "targets": public["targets"]}),
+                                  "rows": public["rows"], "targets": public["targets"],
+                                  "engine_mismatches": public.get("engine_mismatches", 0)}),
                      sort_keys=True))
     return 0
 

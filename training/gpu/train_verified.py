@@ -35,6 +35,7 @@ from pipeline.training import (ISOLATED_KINDS, TrainingError, Verifier,
     assistant_turn, chat_prompt_token_ids, execution_runner, load_bundle, messages,
     program_from_completion)
 
+from pipeline.training_types import case_ref
 from pipeline.training_contract import (BASE_MODEL, CONTRACT_VERSION, MIN_SUPERVISED_TOKENS,
     MIN_TRAIN_CASES, PROTOCOL_EVAL_DRAWS, PROTOCOL_TRAIN_SEEDS,
     adapter_files, adapter_identity, decoding, model_config_identity, probe_contract, probe_report,
@@ -446,7 +447,7 @@ def check_prompt_budget(tok, cases, max_new_tokens, max_seq):
     for case in cases:
         prompt_ids = chat_prompt_token_ids(tok, messages(case))
         if len(prompt_ids) + max_new_tokens > max_seq:
-            raise TrainingError("prompt + completion budget exceeds --max-seq: " + case["case_id"])
+            raise TrainingError("prompt + completion budget exceeds --max-seq: " + case_ref(case["case_id"]))
 
 
 def run(args, bundle, adapter_info):
@@ -741,7 +742,14 @@ def main(argv=None):
         else:
             run(args, bundle, adapter)
         return 0
-    except (TrainingError, OSError, KeyError) as exc:
+    except KeyError as exc:
+        # A KeyError's text IS its key, and a missing key here is as likely a
+        # case id as a field name; this log is streamed publicly (round
+        # follower), so it gets the type and a digest of the key, never the key.
+        print("training blocked: KeyError (key %s)"
+              % hashlib.sha256(repr(exc.args).encode("utf-8")).hexdigest()[:12], file=sys.stderr)
+        return 1
+    except (TrainingError, OSError) as exc:
         print("training blocked: %s" % exc, file=sys.stderr)
         return 1
 

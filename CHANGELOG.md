@@ -14,6 +14,30 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-23** — Keep verification detail private; grade an engine mismatch as a counted status ([#117](https://github.com/kristerhedfors/lypning/pull/117))
+
+- `VerificationBlocked`'s message is a kind and a 12-hex digest only. The case
+  id, test, expected and observed output, harness text and program ride on
+  `.witness`. Every private witness file persists that field: the RL reward's
+  `blocked-witnesses.jsonl`, the evaluation arms' `eval-blocked-witnesses.jsonl`
+  and the harvest review queue.
+- A Step 2 grade records an engine mismatch as `engine-mismatch`. It is not
+  correct, not native and never a target. Its witness goes to the private
+  `grade/engine-mismatches.jsonl`, and only the count is public. A grade fails
+  above 1% of its graded draws, and the merge re-checks that bound over the
+  union. A grade with no mismatch writes byte-identical files, pinned against
+  a fixture.
+- `step2_grade.py` prints a failure's type and digest only. Its traceback
+  goes to the private `grade-failure/<run>` through a new `if: failure()`
+  step.
+- Messages that the GPU job prints now name a case only as
+  `case <sha256[:12]>`. That covers reference admission and the prompt
+  budget. A trainer `KeyError` prints only its type and a digest of the key.
+  If a grade is aborted by another block, it still keeps the mismatch
+  witnesses it had already found.
+- `training.py` changed, so `verifier_sha256` moved and every prepared bundle
+  must be re-prepared.
+
 **2026-09-23** — Keep `case_clusters` private: every public printer strips it ([#116](https://github.com/kristerhedfors/lypning/pull/116))
 
 - The operator decided that per-case `case_clusters` counts stay private.

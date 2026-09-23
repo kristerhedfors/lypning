@@ -99,6 +99,13 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python .github/scripts/step2_grade_upload.py
+      # A failed grade prints only an exception type and a digest; the
+      # traceback and any engine-mismatch witnesses go to the PRIVATE repo.
+      - name: Persist private grade-failure evidence
+        if: failure()
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python .github/scripts/step2_grade_upload.py --failure
       - uses: actions/upload-artifact@v4
         with:
           name: step2-control-public-report
