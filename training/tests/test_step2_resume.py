@@ -388,6 +388,66 @@ def test_the_ceiling_is_the_chains_total_and_every_run_keeps_its_own_dollars(tmp
     assert provider.calls == [] and not (tmp_path / "positive-control" / run_id(4)).exists()
 
 
+def test_a_run_another_run_already_resumed_is_never_resumed_again(stopped):
+    """A fork would buy the successor's requests twice, outside the chain's ceiling."""
+    cs, root, _ = stopped
+    second = paid_run(root, run_id(1), cs, Provider(cs, fail={3: TRANSPORT}), ceiling="14",
+                      resume=resume_of(root, run_id(0), run_id(1)))
+    assert second["complete"] is False
+    manifests = {run_id(n): json.loads((root / "positive-control" / run_id(n) / "paid" /
+                                        "manifest.json").read_text()) for n in (0, 1)}
+    with pytest.raises(res.ResumeError) as refused:
+        res.check_not_forked([run_id(0)], manifests)
+    assert str(refused.value) == ("run %s already resumed run %s; resume the latest run of "
+                                  "that chain, never an earlier one" % (run_id(1), run_id(0)))
+    assert PRIVATE not in str(refused.value)
+    # Resuming the latest run is the one road on: its chain holds both runs.
+    res.check_not_forked([run_id(0), run_id(1)], manifests)
+    # An ordinary run of the same shard resumed nothing and forks nothing.
+    res.check_not_forked([run_id(0)], {run_id(0): manifests[run_id(0)],
+                                       run_id(5): {"requests": 32}})
+    with pytest.raises(res.ResumeError, match="malformed resume"):
+        res.check_not_forked([run_id(0)], {run_id(5): {"resume": {"resumed_from": "x"}}})
+
+
+def test_the_download_step_refuses_to_fork_a_chain(stopped, tmp_path, monkeypatch, capsys):
+    cs, root, _ = stopped
+    paid_run(root, run_id(1), cs, Provider(cs, fail={3: TRANSPORT}), ceiling="14",
+             resume=resume_of(root, run_id(0), run_id(1)))
+    # Another shard's runs and non-run directories are never read as siblings.
+    (root / "positive-control" / "not-a-run" / "paid").mkdir(parents=True)
+    script = load("step2_resume")
+    temp = tmp_path / "runner"
+    (temp / "step2-bank").mkdir(parents=True)
+    (temp / "step2-bank" / "train.jsonl").write_text("")
+    env = {"STEP2_RUN_ID": run_id(2), "STEP2_RUNG": "full", "STEP2_SHARD_INDEX": "1",
+           "STEP2_SHARD_COUNT": "2", "STEP2_SKIP_PREFIX": "192", "STEP2_CASES": "1355",
+           "STEP2_SAMPLES": "2", "STEP2_CEILING_USD": "14", "STEP2_MAX_SECONDS": "14400",
+           "STEP2_RPM": "45", "STEP2_RESUME_RUN_ID": run_id(0), "RUNNER_TEMP": str(temp),
+           "GITHUB_SHA": "a" * 40}
+    asked = []
+
+    def fetch(runs=(), **kw):
+        asked.append(kw.get("manifests_of"))
+        return root
+    monkeypatch.setattr(script, "fetcher", lambda environ: fetch)
+    monkeypatch.setitem(sys.modules, "step2_merge", SimpleNamespace(git_recipe=recipe))
+    import step2_shard
+    monkeypatch.setattr(step2_shard, "cases_from_env", lambda rows, environ=None: cs)
+    spec = tmp_path / "spec.md"
+    spec.write_text(SPEC)
+    monkeypatch.setattr(script, "SPEC", spec)
+    assert script.main(["download"], env) == 1
+    err = capsys.readouterr().err
+    assert "refused during siblings: run %s already resumed run %s" % (run_id(1), run_id(0)) in err
+    assert PRIVATE not in err and "full-1of2" in asked
+    import shutil
+    shutil.rmtree(temp / "step2-resume")
+    assert script.main(["download"], dict(env, STEP2_RESUME_RUN_ID=run_id(1))) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["resumed_from"] == [run_id(0), run_id(1)]
+
+
 def test_a_ledger_that_disagrees_with_its_result_is_refused(stopped):
     cs, root, _ = stopped
     result = root / "positive-control" / run_id(0) / "paid" / "result.json"
@@ -545,7 +605,7 @@ def test_no_line_the_resume_prints_carries_a_case(stopped, tmp_path, monkeypatch
            "STEP2_SAMPLES": "2", "STEP2_CEILING_USD": "14", "STEP2_MAX_SECONDS": "14400",
            "STEP2_RPM": "30", "STEP2_RESUME_RUN_ID": run_id(0), "RUNNER_TEMP": str(temp),
            "GITHUB_SHA": "a" * 40}
-    monkeypatch.setattr(script, "fetcher", lambda environ: lambda runs: root)
+    monkeypatch.setattr(script, "fetcher", lambda environ: lambda runs=(), **kw: root)
     monkeypatch.setitem(sys.modules, "step2_merge", SimpleNamespace(git_recipe=recipe))
     monkeypatch.setattr(script, "cases_from_env", lambda rows, environ: cs, raising=False)
     import step2_shard

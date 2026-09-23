@@ -53,6 +53,7 @@ on:
       # experiment, requests only what the chain has not completed -- the
       # ambiguous request again, on the record -- and treats `ceiling_usd` as
       # the chain's total, so the stopped run's dollars count against it.
+      # Name the LATEST run of a chain: a run already resumed is refused.
       # Not for the smoke. Empty is an ordinary run.
       resume_run_id:
         description: "Resume only: the stopped run's private id (<rung>[-<i>of<n>]-<sha>-<run>); empty for a new run"

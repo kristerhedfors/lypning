@@ -84,6 +84,40 @@ def parse_run_id(run_id):
     return "full", int(match.group("index")), int(match.group("count"))
 
 
+def shard_prefix(run_id):
+    """The ``<rung>[-<i>of<n>]`` every run of one rung and shard starts with."""
+    parse_run_id(run_id)
+    return RUN_ID.fullmatch(run_id).group("rung")
+
+
+def check_not_forked(chain_ids, manifests):
+    """Refuse a resume of a run that another run has already resumed.
+
+    ``chain_ids`` is the chain about to be resumed; ``manifests`` maps every
+    stored run of the same rung and shard to its ``paid/manifest.json``. A
+    resume's manifest names the runs it resumed before its first call, so a
+    resume that spent anything -- even one cancelled before it wrote a result
+    -- is seen here. Resuming an earlier run of a chain again would buy what
+    its successor already bought and spend that successor's dollars a second
+    time, outside the chain's ceiling: resume the latest run instead.
+    """
+    chain = set(chain_ids)
+    for run in sorted(manifests):
+        if run in chain:
+            continue
+        manifest = manifests[run] if isinstance(manifests[run], dict) else {}
+        record = manifest.get("resume")
+        if record is None:
+            continue
+        resumed = record.get("resumed_from") if isinstance(record, dict) else None
+        if not isinstance(resumed, list) or not all(isinstance(r, str) for r in resumed):
+            raise ResumeError("run %s records a malformed resume" % run)
+        overlap = [r for r in resumed if r in chain]
+        if overlap:
+            raise ResumeError("run %s already resumed run %s; resume the latest run of that "
+                              "chain, never an earlier one" % (run, overlap[-1]))
+
+
 def check_target(resume_run_id, run_id, rung, shard):
     """Refuse a resume of another rung or shard, or of this very run."""
     if rung not in RESUMABLE_RUNGS:

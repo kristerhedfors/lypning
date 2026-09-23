@@ -262,7 +262,8 @@ run is partial and never graded, and a rerun would buy its completions twice.
 `step2-control.yml`'s `resume_run_id` starts a new run with the same rung and
 shard inputs. It refuses on any identity field that differs. It requests only
 planned − settled, the ambiguous request again as a recorded `re-request`, and
-reads `ceiling_usd` as the chain's total. `full_rpm` lowers the full rung to
+reads `ceiling_usd` as the chain's total. Only the latest run of a chain may
+be resumed. `full_rpm` lowers the full rung to
 30 rpm. Grade and merge read the chain's union
 (`pipeline/positive_control_resume.py`). Nothing was dispatched.
 

@@ -24,6 +24,8 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 - A resumed result reports the union's completed/planned and a `resumed_from`
   chain with each run's own dollars. `step2_grade` and `step2_merge` read the
   union, and a request settled in two runs is refused, not deduplicated.
+- A run that another run already resumed is never resumed again: the fork
+  would buy the successor's requests twice, outside the chain's ceiling.
 - The `full` rung's rate is `full_rpm`, 30–45; the shard gate sizes by it.
   A transport error is a resume, not a rerun. Nothing was dispatched.
 

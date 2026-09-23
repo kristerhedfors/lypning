@@ -13,8 +13,10 @@ the stopped run's charged-or-reserved dollars count against it.
 
 `validate` refuses a run id of the wrong shape, rung or shard. `download`
 copies the named run's private evidence and its recorded chain, read-only,
-into ``$RUNNER_TEMP/step2-resume/<run>/paid``, proves the chain's own
-ledgers, checks the identity fields known before the build, and refuses when
+into ``$RUNNER_TEMP/step2-resume/<run>/paid``, refuses when another run of
+the shard already resumed any run of that chain (resume the latest run, never
+an earlier one: the successor's dollars would be spent twice), proves the
+chain's own ledgers, checks the identity fields known before the build, and refuses when
 what is left of the ceiling or the dispatch window cannot cover the requests
 that remain. `step2_generate.py` re-reads the same copy and checks the full
 identity -- engine, base image, oracle, provider, sampling -- before its first
@@ -29,10 +31,11 @@ from pathlib import Path
 import shutil
 import sys
 
-from pipeline.positive_control_resume import (PLANNED_IDENTITY, ResumeError, chain_links,
-                                              check_identity, check_target, parse_run_id,
-                                              plan, planned_identity, read_link, request_key,
-                                              summary)
+from pipeline.positive_control_resume import (PLANNED_IDENTITY, RUN_ID, ResumeError,
+                                              chain_links, check_identity, check_not_forked,
+                                              check_target, parse_run_id, plan,
+                                              planned_identity, read_link, request_key,
+                                              shard_prefix, summary)
 from step2_shard import ShardError, generation, refusals, rpm_from_env, shard_from_env
 
 SPEC = Path("training/prompts/subset-spec.md")
@@ -66,8 +69,11 @@ def fetcher(environ):
     if not info.private:
         raise ResumeError("artifact repository must be private")
 
-    def fetch(runs):
+    def fetch(runs=(), *, manifests_of=None):
+        # ``manifests_of``: a shard prefix whose runs' manifests are wanted.
         patterns = ["positive-control/%s/paid/*" % run for run in runs]
+        if manifests_of:
+            patterns.append("positive-control/%s-*/paid/manifest.json" % manifests_of)
         return Path(snapshot_download(repo, repo_type="dataset", revision=info.sha,
                                       allow_patterns=patterns, token=token))
     return fetch
@@ -105,6 +111,35 @@ def download_recorded_chain(result, fetch, dest):
         for run in chain:
             _copy(root, run, dest)
     return chain
+
+
+def sibling_manifests(root, prefix):
+    """``{run: manifest}`` for every stored run of the shard ``prefix`` names.
+
+    Only directory names of the recorded run-id shape are read, so nothing
+    else in the repository becomes a path.
+    """
+    base = Path(root) / "positive-control"
+    manifests = {}
+    if not base.is_dir():
+        return manifests
+    for entry in sorted(base.iterdir()):
+        match = RUN_ID.fullmatch(entry.name)
+        if not match or match.group("rung") != prefix:
+            continue
+        path = entry / "paid" / "manifest.json"
+        if path.is_file():
+            try:
+                manifests[entry.name] = json.loads(path.read_text(encoding="utf-8"))
+            except ValueError as exc:
+                raise ResumeError("run %s has an unreadable manifest" % entry.name) from exc
+    return manifests
+
+
+def check_siblings(named, chain, fetch):
+    """Refuse when a run outside ``chain`` already resumed a run of it."""
+    prefix = shard_prefix(named)
+    check_not_forked(chain, sibling_manifests(fetch(manifests_of=prefix), prefix))
 
 
 def reader(dest, recipe_of):
@@ -158,7 +193,12 @@ def main(argv=None, environ=None):
         from step2_shard import cases_from_env
         phase = "download"
         dest = Path(environ["RUNNER_TEMP"]) / "step2-resume"
-        download_chain(resume_run_id(environ), fetcher(environ), dest)
+        fetch = fetcher(environ)
+        chain = download_chain(resume_run_id(environ), fetch, dest)
+        # A run already resumed by another is never resumed again: its
+        # successor's dollars would be spent twice, outside the ceiling.
+        phase = "siblings"
+        check_siblings(resume_run_id(environ), chain, fetch)
         phase = "chain"
         links = links_from_env(environ, git_recipe)
         phase = "plan"
