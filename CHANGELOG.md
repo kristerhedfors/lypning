@@ -30,6 +30,11 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 - `step2_grade.py` prints a failure's type and digest only. Its traceback
   goes to the private `grade-failure/<run>` through a new `if: failure()`
   step.
+- Messages that the GPU job prints now name a case only as
+  `case <sha256[:12]>`. That covers reference admission and the prompt
+  budget. A trainer `KeyError` prints only its type and a digest of the key.
+  If a grade is aborted by another block, it still keeps the mismatch
+  witnesses it had already found.
 - `training.py` changed, so `verifier_sha256` moved and every prepared bundle
   must be re-prepared.
 

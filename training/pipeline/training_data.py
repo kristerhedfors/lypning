@@ -11,7 +11,7 @@ import ast
 from pathlib import PurePosixPath
 
 from .jsonio import sha256_of
-from .training_types import TrainingError
+from .training_types import TrainingError, case_ref
 
 POPULATIONS = {"coverage", "fallback-control"}
 
@@ -205,10 +205,10 @@ def validate_reference_scores(cases, scores):
         score = scores[case["case_id"]]
         n = len(case["tests"])
         if score["total_tests"] != n or score["reward"] != 1.0:
-            raise TrainingError("reference fails population admission: " + case["case_id"])
+            raise TrainingError("reference fails population admission: " + case_ref(case["case_id"]))
         want = n if case["population"] == "coverage" else 0
         if score["native_tests"] != want:
-            raise TrainingError("reference native/fallback label is stale: " + case["case_id"])
+            raise TrainingError("reference native/fallback label is stale: " + case_ref(case["case_id"]))
         status = "correct-native" if want else "correct-control"
         if score["status"] != status:
-            raise TrainingError("reference status is inconsistent: " + case["case_id"])
+            raise TrainingError("reference status is inconsistent: " + case_ref(case["case_id"]))

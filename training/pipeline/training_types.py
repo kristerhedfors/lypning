@@ -21,6 +21,16 @@ def witness_digest(witness):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
 
+def case_ref(case_id):
+    """A case named in a message without quoting its id: ``case <sha256[:12]>``.
+
+    A case id is private (it names the task), and a message reaches the GPU
+    job's log, which the round follower streams publicly. Whoever holds the
+    bank finds the case by hashing its ids the same way.
+    """
+    return "case " + hashlib.sha256(str(case_id).encode("utf-8")).hexdigest()[:12]
+
+
 class VerificationBlocked(TrainingError):
     """An oracle, harness, or engine failure must not become an RL reward.
 

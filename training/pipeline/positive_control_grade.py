@@ -139,24 +139,29 @@ def grade(cases, completions, verifier, output, *, samples, workers=8, run_id=''
             witnesses.sort(key=lambda w: (w['arm'], w['case_id'], w['draw']))
             write_jsonl(output / ENGINE_MISMATCH_FILE, witnesses)
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(one, row) for row in completions]
-        for completed, future in enumerate(as_completed(futures), 1):
-            result, witness = future.result()
-            rows.append(result)
-            if witness is not None:
-                witnesses.append(witness)
-                # Past the bound against the PLANNED total no later draw can
-                # bring the grade back under it: stop paying for containers.
-                if over_mismatch_bound(len(witnesses), total):
-                    for pending in futures:
-                        pending.cancel()
-                    keep_witnesses()
-                    check_mismatch_bound(len(witnesses), total)
-            if progress and (completed == total or completed % 32 == 0):
-                progress({'event': 'grade_progress', 'completed': completed,
-                          'total': total, 'workers': workers})
-    keep_witnesses()
+    # `finally`: the witnesses already found are kept whatever ends the grade
+    # -- the bound, or another block that aborts it -- for the private
+    # failure upload (`step2_grade.keep_failure`); otherwise a re-grade is
+    # the only way back to them.
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(one, row) for row in completions]
+            for completed, future in enumerate(as_completed(futures), 1):
+                result, witness = future.result()
+                rows.append(result)
+                if witness is not None:
+                    witnesses.append(witness)
+                    # Past the bound against the PLANNED total no later draw can
+                    # bring the grade back under it: stop paying for containers.
+                    if over_mismatch_bound(len(witnesses), total):
+                        for pending in futures:
+                            pending.cancel()
+                        check_mismatch_bound(len(witnesses), total)
+                if progress and (completed == total or completed % 32 == 0):
+                    progress({'event': 'grade_progress', 'completed': completed,
+                              'total': total, 'workers': workers})
+    finally:
+        keep_witnesses()
     mismatched = engine_mismatches(rows)
     check_mismatch_bound(mismatched, len(rows))
     rows.sort(key=lambda r: (r['arm'], r['case_id'], r['draw']))

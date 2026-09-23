@@ -351,3 +351,67 @@ def test_a_failed_grade_uploads_its_evidence_privately_and_only_then(tmp_path, m
     assert calls[1]["path_in_repo"] == "positive-control/run-1/grade"
     workflow = (SCRIPTS.parent / "workflows" / "step2-control-grade.yml").read_text()
     assert "if: failure()" in workflow and "step2_grade_upload.py --failure" in workflow
+
+
+# -- review follow-ups (2026-09-23) --------------------------------------------
+
+def test_witnesses_found_before_another_block_aborts_the_grade_are_kept(tmp_path):
+    """The failure upload copies them; a re-grade must not be the only way back."""
+    rows = cases(30)
+    bad = program_of(rows[0]["case_id"], 0, "bare")
+
+    class ThenHarness(Verifier):
+        seen = 0
+
+        def score(self, case, program):
+            if program == bad:
+                return Verifier({bad}).score(case, program)
+            ThenHarness.seen += 1
+            if ThenHarness.seen > 40:
+                raise VerificationBlocked("harness", {"harness_error": PRIVATE})
+            return Verifier().score(case, program)
+
+    rows_sorted = sorted(rows, key=lambda c: c["case_id"] != rows[0]["case_id"])
+    with pytest.raises(VerificationBlocked, match="^harness"):
+        grade.grade(rows_sorted, completions(rows_sorted), ThenHarness(), tmp_path / "g",
+                    samples=2, workers=1, run_id="fixture-run", lineage={})
+    assert not (tmp_path / "g" / "rows.jsonl").exists()
+    kept = read_jsonl(tmp_path / "g" / grade.ENGINE_MISMATCH_FILE)
+    assert [w["program"] for w in kept] == [bad]
+
+
+def test_reference_admission_names_a_case_by_digest_only():
+    """`validate_reference_scores` runs in training-prepare and bundle load on the GPU job."""
+    from dataclasses import asdict
+    from pipeline.training_data import validate_reference_scores
+    from pipeline.training_types import TrainingError, case_ref
+    case = dict(private_case(), tests=[{"stdout": "a"}, {"stdout": "b"}, {"stdout": "c"}])
+    scores = {case["case_id"]: asdict(Score(.25, "correct-fallback", 0, 3))}
+    with pytest.raises(TrainingError) as caught:
+        validate_reference_scores([case], scores)
+    assert case_ref(case["case_id"]) in str(caught.value)
+    assert_private(caught.value)
+    scores[case["case_id"]] = asdict(Score(1, "correct-native", 3, 3))
+    case["population"] = "fallback-control"
+    with pytest.raises(TrainingError) as caught:
+        validate_reference_scores([case], scores)
+    assert_private(caught.value)
+
+
+def test_the_trainer_never_prints_a_key_error_s_key(monkeypatch, capsys):
+    """A KeyError's text is its key; on the GPU job that key can be a case id."""
+    spec = importlib.util.spec_from_file_location(
+        "verified_gpu_keyerror_test",
+        Path(__file__).resolve().parents[2] / "training" / "gpu" / "train_verified.py")
+    tv = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tv)
+
+    def preflight(args):
+        return {}[PRIVATE + "missing"]
+
+    monkeypatch.setattr(tv, "preflight", preflight)
+    assert tv.main(["eval", "--bundle", "b.json", "--output", "o", "--engine", "e",
+                    "--revision", "0" * 40]) == 1
+    out = capsys.readouterr()
+    assert "training blocked: KeyError" in out.err
+    assert PRIVATE not in out.out + out.err
