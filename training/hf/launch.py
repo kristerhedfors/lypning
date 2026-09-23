@@ -4,7 +4,8 @@ Two stages: `smoke` (round02_smoke.sh, the plumbing on the starter) and `pilot`
 (round02_pilot.sh, the first real round on reviewed banks). A pilot names the
 bank with --bank-path, a directory in the private --work-repo that holds
 eval2.jsonl, train.jsonl and the evidence-*/ snapshots they cite; --steps,
---eval-draws and --seed travel to the job as environment, as the bank path does.
+--eval-draws, --seed and --split-seed travel to the job as environment, as the
+bank path does.
 
 The job image is the SAME CPython base digest as the verifier Space, so the
 identity handshake's `sys.version` matches by construction. The job clones the
@@ -31,7 +32,44 @@ REPO_URL = "https://github.com/kristerhedfors/lypning"
 STAGES = {"smoke": "training/hf/round02_smoke.sh", "pilot": "training/hf/round02_pilot.sh"}
 #: The stages that read reviewed banks from the private dataset repo (--bank-path).
 BANKED = ("pilot",)
-DEFAULT_STEPS, DEFAULT_GRPO_STEPS, DEFAULT_EVAL_DRAWS, DEFAULT_SEED = 250, 20, 16, 1111
+DEFAULT_STEPS, DEFAULT_EVAL_DRAWS, DEFAULT_SEED = 250, 16, 1111
+#: No GRPO unless asked for. The only dose this launcher ever defaulted to --
+#: 20 steps at 4 generations -- is the one PLAN.md retired with seed 1111's
+#: configuration, and S4 arm A is SFT alone: its probe still runs, as arm C's
+#: admission evidence, and the job writes grpo-skipped.json saying why. Arm C
+#: names its own dose with --grpo-steps when it is launched.
+DEFAULT_GRPO_STEPS = 0
+#: Group size shared by the probe and GRPO, and prompt groups per GRPO step.
+#: 4 keeps an arm-A probe comparable with seed 1111's; arm C passes 8 (`PLAN.md`).
+DEFAULT_GRPO_GENERATIONS = 4
+DEFAULT_GRPO_PROMPTS = 4
+#: Dev draws per case in the checkpoint-selecting stages; eval-2 has its own.
+DEFAULT_DEV_EVAL_DRAWS = 4
+#: THE SPLIT SEED IS NOT THE TRAINING SEED. Review and preparation assign cases
+#: to train/dev/test with `split_cases(cases, split_seed)`; training draws its
+#: initialisation and data order from --seed. Rejection targets are graded on
+#: ONE train split -- the split seed's -- and the trainer refuses any target
+#: whose case is not in the bundle's train split, so while the two were one
+#: number, seeds 2222 and 3333 died at the plan stage after deps, bank and
+#: preparation were billed. Decoupled on 2026-09-22 (PLAN item 1.2, option a):
+#: every seed of an S4 arm trains on the same train split and is measured on
+#: the same sealed dev and test cases, and the seeds differ in init and data
+#: order only. A replicate therefore means "same experiment, another draw of
+#: the optimiser", not "another split". The split seed is an arm field
+#: (`.github/scripts/arm_check.py`), recorded in job-manifest.json.
+DEFAULT_SPLIT_SEED = 1111
+#: `pipeline.training_contract.PROTOCOL_TRAIN_SEEDS`, restated because this file
+#: is loaded by path and imports nothing from the package; a test ties the two.
+#: The trainer refuses any other seed after the dependency install and the
+#: bank download; this refuses it before anything is billed.
+PROTOCOL_TRAIN_SEEDS = (1111, 2222, 3333)
+#: The flavor and ceiling a banked stage bills when not told otherwise. A 27B
+#: model in bf16 is ~54 GB of weights, so the smoke's 24 GB a10g-small cannot
+#: load it: defaulting a pilot there billed deps and preparation and died at the
+#: first weight load. 720 minutes is PLAN Step 1.5's twelve-hour ceiling, and
+#: it is a ceiling -- a banked launch above it is refused, not trimmed.
+BANKED_FLAVOR, BANKED_TIMEOUT = "h200", "720m"
+SMOKE_FLAVOR, SMOKE_TIMEOUT = "a10g-small", "75m"
 # 12 scorers, not 16: the default pool is 4 x 4 = 16 slots, and 16 scorers in
 # 16 slots is the exact-fit shape that has no room for a sandbox winding down.
 DEFAULT_EVAL_SEQUENCES, DEFAULT_SCORE_WORKERS = 256, 12
@@ -96,7 +134,9 @@ def job_env(args):
     if args.stage in BANKED:
         env.update({"BANK_PATH": args.bank_path, "STEPS": str(args.steps),
                     "GRPO_STEPS": str(args.grpo_steps),
-                    "EVAL_DRAWS": str(args.eval_draws), "SEED": str(args.seed),
+                    "GRPO_GENERATIONS": str(args.grpo_generations), "GRPO_PROMPTS": str(args.grpo_prompts),
+                    "EVAL_DRAWS": str(args.eval_draws), "DEV_EVAL_DRAWS": str(args.dev_eval_draws), "SEED": str(args.seed),
+                    "SPLIT_SEED": str(args.split_seed),
                     "EVAL_SEQUENCES": str(args.eval_sequences), "SCORE_WORKERS": str(args.score_workers),
                     "NTX_POOL_SANDBOXES_PER_HOST": str(args.pool_sandboxes_per_host),
                     "NTX_POOL_MAX_HOSTS": str(args.pool_max_hosts),
@@ -141,8 +181,14 @@ def main(argv=None):
     p.add_argument("--bank-path", help="pilot: directory in --work-repo holding eval2.jsonl, train.jsonl, evidence-*/")
     p.add_argument("--steps", type=int, default=DEFAULT_STEPS, help="pilot: SFT optimizer steps")
     p.add_argument("--grpo-steps", type=int, default=DEFAULT_GRPO_STEPS,
-                   help="pilot: GRPO optimizer steps (default: 20)")
+                   help="pilot: GRPO optimizer steps; 0 (the default) runs the probe and no GRPO")
+    p.add_argument("--grpo-generations", type=int, default=DEFAULT_GRPO_GENERATIONS,
+                   help="pilot: draws per prompt in the probe and in GRPO (one contract binds them)")
+    p.add_argument("--grpo-prompts", type=int, default=DEFAULT_GRPO_PROMPTS,
+                   help="pilot: prompt groups per GRPO optimizer step")
     p.add_argument("--eval-draws", type=int, default=DEFAULT_EVAL_DRAWS, help="pilot: draws per case on the eval-2 benchmark")
+    p.add_argument("--dev-eval-draws", type=int, default=DEFAULT_DEV_EVAL_DRAWS,
+                   help="pilot: draws per dev case in the stages that select a checkpoint")
     p.add_argument("--eval-sequences", type=int, default=DEFAULT_EVAL_SEQUENCES,
                    help="pilot: sequences per generate call in evaluation")
     p.add_argument("--score-workers", type=int, default=DEFAULT_SCORE_WORKERS,
@@ -156,16 +202,34 @@ def main(argv=None):
                    help="pilot: reuse the pilot/ and eval2/ bundles under this directory of --work-repo")
     p.add_argument("--sft-target-run", default="",
                    help="pilot: private positive-control run whose grade/sft.jsonl supplies rejection targets")
-    p.add_argument("--seed", type=int, default=DEFAULT_SEED, help="pilot: review, preparation and training seed")
-    p.add_argument("--flavor", default="a10g-small")
-    p.add_argument("--timeout", default="75m")
+    p.add_argument("--seed", type=int, default=DEFAULT_SEED,
+                   help="pilot: training seed (initialisation and data order), one of %s"
+                        % ", ".join(map(str, PROTOCOL_TRAIN_SEEDS)))
+    p.add_argument("--split-seed", type=int, default=DEFAULT_SPLIT_SEED,
+                   help="pilot: review and preparation seed, i.e. the train/dev/test split "
+                        "(default %d for every training seed)" % DEFAULT_SPLIT_SEED)
+    p.add_argument("--flavor", help="default %s for a banked stage, %s for the smoke"
+                   % (BANKED_FLAVOR, SMOKE_FLAVOR))
+    p.add_argument("--timeout", help="default and maximum %s for a banked stage; %s for the smoke"
+                   % (BANKED_TIMEOUT, SMOKE_TIMEOUT))
     p.add_argument("--yes", action="store_true", help="actually submit (billed)")
     p.add_argument("--follow", action="store_true", help="stream logs until the job ends")
     args = p.parse_args(argv)
+    banked = args.stage in BANKED
+    args.flavor = args.flavor or (BANKED_FLAVOR if banked else SMOKE_FLAVOR)
+    args.timeout = args.timeout or (BANKED_TIMEOUT if banked else SMOKE_TIMEOUT)
     try:
         deadline = timeout_seconds(args.timeout)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
+        return 2
+    if banked and deadline > timeout_seconds(BANKED_TIMEOUT):
+        print("--timeout %s is above the %s ceiling of a banked stage" % (args.timeout, BANKED_TIMEOUT),
+              file=sys.stderr)
+        return 2
+    if banked and (args.seed not in PROTOCOL_TRAIN_SEEDS or args.split_seed not in PROTOCOL_TRAIN_SEEDS):
+        print("--seed and --split-seed must be pre-registered seeds: %s"
+              % ", ".join(map(str, PROTOCOL_TRAIN_SEEDS)), file=sys.stderr)
         return 2
     for name, value in (("commit", args.commit), ("space revision", args.space_revision), ("Qwen revision", args.qwen_revision)):
         if not re.fullmatch(r"[0-9a-f]{40}", value):
@@ -178,9 +242,12 @@ def main(argv=None):
     if args.sft_target_run and ("/" in args.sft_target_run or ".." in args.sft_target_run):
         print("--sft-target-run must be one run id, not a path", file=sys.stderr)
         return 2
-    if min(args.steps, args.grpo_steps, args.eval_draws, args.eval_sequences, args.score_workers,
-           args.pool_sandboxes_per_host, args.pool_max_hosts) <= 0:
-        print("training, evaluation and pool limits must be positive", file=sys.stderr)
+    if min(args.steps, args.eval_draws, args.dev_eval_draws, args.eval_sequences, args.score_workers,
+           args.pool_sandboxes_per_host, args.pool_max_hosts, args.grpo_prompts) <= 0 \
+            or args.grpo_steps < 0 or args.grpo_generations < 2:
+        print("training, evaluation and pool limits must be positive (--grpo-steps 0 skips GRPO; "
+              "--grpo-generations needs at least 2)",
+              file=sys.stderr)
         return 2
     # Capacity must cover the scorers, and a MULTI-HOST pool must additionally
     # keep one host of slack. The pool RAISES rather than waits once every host
@@ -255,11 +322,13 @@ def main(argv=None):
             "qwen_revision": args.qwen_revision, "work_repo": args.work_repo}
     if args.stage in BANKED:
         plan.update({"bank_path": args.bank_path, "steps": args.steps,
-                     "grpo_steps": args.grpo_steps,
-                     "eval_draws": args.eval_draws, "eval_sequences": args.eval_sequences,
+                     "grpo_steps": args.grpo_steps, "grpo_generations": args.grpo_generations,
+                     "grpo_prompts": args.grpo_prompts,
+                     "eval_draws": args.eval_draws, "dev_eval_draws": args.dev_eval_draws, "eval_sequences": args.eval_sequences,
                      "score_workers": args.score_workers,
                      "pool_sandboxes_per_host": args.pool_sandboxes_per_host,
                      "pool_max_hosts": args.pool_max_hosts, "seed": args.seed,
+                     "split_seed": args.split_seed,
                      "sft_target_run": args.sft_target_run or None})
     print(json.dumps(plan, indent=2))
     if not args.yes:

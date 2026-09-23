@@ -4,11 +4,26 @@ Imports remain CPU-only until a stage is explicitly executed.
 """
 from __future__ import annotations
 
+import json
+import math
+from pathlib import Path
 import random
 
 from pipeline.jsonio import append_jsonl
 from pipeline.training import Reward, TrainingError, messages
 from pipeline.training_contract import learning_rate
+
+#: THE SFT optimiser: one definition for `train_sft` and for the gradient smoke
+#: that runs before it. These are the values `train_sft` has always stepped --
+#: torch's AdamW defaults with weight decay 0.01 -- kept rather than "fixed" to
+#: the (0.9, 0.95) / 0.1 the smoke and the retired runner used, because moving
+#: them would make arm A drift from what it was declared as, for a knob nobody
+#: measured here. Weight decay is minor; what matters is that it is ONE value
+#: across arms and that `experiment.json` says which (`sft_optimizer`).
+SFT_OPTIMIZER = {"betas": (0.9, 0.999), "eps": 1e-8, "weight_decay": 0.01}
+#: Gradient clipping for SFT and GRPO alike, stated rather than inherited from a
+#: library default that can move under a pin bump.
+MAX_GRAD_NORM = 1.0
 
 
 def balanced_cases(cases):
@@ -23,9 +38,18 @@ def balanced_cases(cases):
 def sft_batches(cases, examples, steps, batch_size, seed):
     """Deterministic family cycles: every family appears before any repeats.
 
-    Within a family one example is sampled per cycle. This preserves equal
-    family mass without the round-02 failure mode where with-replacement draws
-    could omit a small family entirely during a short run.
+    Within a family one example is taken per cycle, WITHOUT replacement: each
+    family is a seeded shuffled queue that is popped and reshuffled only once
+    it is empty, so every example of a family is seen before any is seen twice.
+    Across families this preserves equal family mass without the round-02
+    failure mode where with-replacement draws could omit a small family
+    entirely during a short run; within a family it removes the same failure
+    one level down -- `rng.choice` saw only about 63% of a large family's
+    distinct cases in one pass's worth of draws.
+
+    Only positions are drawn, never values, so the schedule depends on the
+    family of each item and nothing inside it: `supervised_plan` relies on
+    that to plan with cases where `run()` trains on their examples.
     """
     if len(cases) != len(examples):
         raise TrainingError("SFT cases/examples differ; do not silently change the curriculum")
@@ -38,14 +62,40 @@ def sft_batches(cases, examples, steps, batch_size, seed):
     schedule = []
     needed = int(steps) * int(batch_size)
     keys = list(families)
+    queues = {family: [] for family in keys}
     while len(schedule) < needed:
         cycle = keys[:]
         rng.shuffle(cycle)
         for family in cycle:
-            schedule.append(rng.choice(families[family]))
+            if not queues[family]:
+                queues[family] = list(range(len(families[family])))
+                rng.shuffle(queues[family])
+            schedule.append(families[family][queues[family].pop()])
             if len(schedule) == needed:
                 break
     return [schedule[i:i + batch_size] for i in range(0, needed, batch_size)]
+
+
+def informative_cases(rollouts_path, cases):
+    """The train cases whose probe group had reward variation (0 < p < 1).
+
+    "Informative" is `probe_report`'s own definition -- more than one distinct
+    reward among the NON-truncated draws -- so the filter and the admission
+    gate cannot disagree about which cases count. A group whose draws all agree
+    has zero advantage under GRPO and contributes no gradient; the probe has
+    already paid to find those groups, so skipping them is free. Order is the
+    input order, and an empty result refuses rather than training on nothing.
+    """
+    rewards = {}
+    for line in Path(rollouts_path).read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            row = json.loads(line)
+            if not row["truncated"]:
+                rewards.setdefault(row["case_id"], set()).add(row["reward"])
+    kept = [case for case in cases if len(rewards.get(case["case_id"], ())) > 1]
+    if not kept:
+        raise TrainingError("the probe found no informative train case; nothing for GRPO to learn from")
+    return kept
 
 
 def supervised_tokens(batches):
@@ -60,7 +110,7 @@ def train_sft(model, tok, args, train_cases, examples, core, torch, effective, c
     device = model.device
     core.set_train_mode(model)
     params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.AdamW(params, lr=effective["learning_rate"], weight_decay=0.01)
+    optimizer = torch.optim.AdamW(params, lr=effective["learning_rate"], **SFT_OPTIMIZER)
     batches = batches or sft_batches(train_cases, examples, steps, args.batch_size, args.seed)
     seen_tokens = 0
     for step, batch in enumerate(batches, 1):
@@ -88,9 +138,13 @@ def train_sft(model, tok, args, train_cases, examples, core, torch, effective, c
                     live[leaf] = live.get(leaf, False) or (param.grad is not None and bool(param.grad.abs().sum() > 0))
             if not live or not all(live.values()):
                 raise TrainingError("dead adapter projections: " + str(live))
-        torch.nn.utils.clip_grad_norm_(params, 1.0, error_if_nonfinite=True)
+        # The pre-clip norm is the one number that tells a flat loss from a
+        # starved one (norm near zero) or a clipped-every-step one (norm pinned
+        # above the threshold); it was computed every step and thrown away.
+        grad_norm = torch.nn.utils.clip_grad_norm_(params, MAX_GRAD_NORM, error_if_nonfinite=True)
         optimizer.step()
         append_jsonl(args.output / "loss.jsonl", {"step": step, "loss": loss_sum, "learning_rate": lr,
+            "grad_norm": float(grad_norm),
             "supervised_tokens": nlabels, "supervised_tokens_total": seen_tokens})
         if step % every == 0 or step == steps:
             # A registered dose trains to completion. Selection is post hoc and
@@ -109,10 +163,18 @@ def train_grpo(model, tok, args, bundle, train_cases, verifier, effective, polic
     from datasets import Dataset
     from transformers import TrainerCallback
     from trl import GRPOConfig, GRPOTrainer
-    class DevGate(TrainerCallback):
+    loss_path = args.output / "loss.jsonl"
+
+    class CheckpointCallback(TrainerCallback):
+        """Refuse a non-finite gradient, save on the cadence, log every step.
+
+        It does not clip: the trainer already has, at `max_grad_norm`, before
+        this hook runs. A norm taken at +inf changes no gradient and still
+        raises on a NaN or an inf, which is the only job left here.
+        """
         def on_pre_optimizer_step(self, args, state, control, **kwargs):
             torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad],
-                                          1.0, error_if_nonfinite=True)
+                                          math.inf, error_if_nonfinite=True)
             return control
 
         def on_step_end(self, args, state, control, **kwargs):
@@ -120,10 +182,32 @@ def train_grpo(model, tok, args, bundle, train_cases, verifier, effective, polic
             if state.global_step % every == 0 or state.global_step == steps:
                 checkpoint(state.global_step)
             return control
+
+        def on_log(self, args, state, control, logs=None, **kwargs):
+            # TRL keeps `log_history` in memory and `save_strategy="no"` never
+            # writes it, so a GRPO stage left no per-step record at all and the
+            # grpo option of `loss-summary.yml` had nothing to read. Numbers
+            # only -- the file sits beside SFT's `loss.jsonl` and is read the
+            # same way, and a log key must never become a channel for case text.
+            row = {key: value for key, value in sorted((logs or {}).items())
+                   if isinstance(value, (int, float)) and not isinstance(value, bool)}
+            # Per-step rows only: the trainer's end-of-run summary (train_loss,
+            # train_runtime, ...) has no `loss`, and a reader that takes the
+            # last row as the last step would read it as one.
+            if "loss" in row:
+                append_jsonl(loss_path, dict(row, step=state.global_step))
+            return control
+    # One optimizer step = `grpo_prompts` prompt groups of `generations` draws,
+    # one sequence per forward (per-example, as SFT: no padding-free packing).
+    # TRL's generation batch defaults to per-device x accumulation, so the
+    # whole step's completions are drawn and scored together and each group
+    # stays contiguous for `Reward`'s group checks.
+    sequences = args.grpo_prompts * args.generations
     config = GRPOConfig(
         output_dir=str(args.output / "trainer"), max_steps=steps,
         learning_rate=effective["learning_rate"], per_device_train_batch_size=1,
-        gradient_accumulation_steps=args.generations, num_generations=args.generations,
+        gradient_accumulation_steps=sequences, num_generations=args.generations,
+        max_grad_norm=MAX_GRAD_NORM,
         max_completion_length=max_tokens, temperature=policy["temperature"],
         top_p=policy["top_p"], top_k=policy["top_k"], min_p=policy["min_p"],
         repetition_penalty=policy["repetition_penalty"],
@@ -143,14 +227,14 @@ def train_grpo(model, tok, args, bundle, train_cases, verifier, effective, polic
     reward = Reward(bundle["cases"], verifier, args.output / "blocked-witnesses.jsonl",
                     eos_token_id=tok.eos_token_id,
                     rollout_path=args.output / "rollouts.jsonl",
-                    generations=args.generations, max_no_signal=0 if args.smoke else args.max_no_signal,
+                    generations=args.generations,
                     score_workers=args.score_workers)
     expected_prompts = [tok.apply_chat_template(messages(c), tokenize=False,
                         add_generation_prompt=True, enable_thinking=False) for c in train_cases]
     trainer = GRPOTrainer(model=model, args=config, processing_class=tok,
                           train_dataset=Dataset.from_list([
                               {"prompt": messages(c), "case_id": c["case_id"]} for c in balanced_cases(train_cases)]),
-                          reward_funcs=reward, callbacks=[DevGate()])
+                          reward_funcs=reward, callbacks=[CheckpointCallback()])
     actual_prompts = [tok.apply_chat_template(messages(c), tokenize=False,
                       add_generation_prompt=True, chat_template=trainer.chat_template,
                       **trainer.chat_template_kwargs) for c in train_cases]

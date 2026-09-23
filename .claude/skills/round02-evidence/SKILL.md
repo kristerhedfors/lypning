@@ -174,9 +174,16 @@ cost is the whole argument for the rule.
 **Never printed at all:** `adapter_model.safetensors` (weights — never even
 downloaded), `rollouts.jsonl`, `probe-rollouts.jsonl`, `evaluations.jsonl`,
 `execution-witnesses.jsonl`, `bundle.json`, and every `cases.jsonl` /
-`*-prompts.jsonl` / `*-sft.jsonl`. Line-count them; that is what the `line
-counts` section of `s0_inventory.py` is for, and note that counting them
-downloads them (§3).
+`*-prompts.jsonl`, plus the `*-sft.jsonl` views in bundles prepared before
+2026-09-22 (newer bundles no longer write them). Line-count them; that is what
+the `line counts` section of `s0_inventory.py` is for, and note that counting
+them downloads them (§3).
+
+**Printed whole, and wider since 2026-09-22:** `metrics.json` and `best.json`
+now carry `case_clusters` — per-case draw/correct/native counts in private
+case order plus a digest of the case set, no ids or text — so eval-2's per-case
+outcome distribution reaches the public log through `s0_inventory.SMALL`.
+Whether to allow that or strip the key is an open operator decision.
 
 ## 6. The log is public. Check before you print.
 

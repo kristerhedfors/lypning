@@ -32,15 +32,34 @@ The stack needs review and a new pinned engine/image before paid work;
 conformance failures and the required candidate checks. Step 2 is next, subject
 to those checks and the existing cost approval.
 
+**State on 2026-09-22 (evening): Step 2 is in progress with paid rungs.** Codex
+ran the Cerebras smoke (`35751938025`, 64 cases × 2 arms × k=4), graded it
+pooled with controls (`35759939928`: native +14.78pp, correct −9.01pp;
+neither route earned), and completed the 192-case target rung
+(`35767396604`, 1,536/1,536, not yet graded); the approval is not recorded in
+this tree. The S4 refactor that followed fixed the split seed at 1111, made
+the Step 2 decision coverage-only, put a 1,000-distinct-case floor on the
+target curriculum (no existing rung clears it), enforced the torch-reference
+kernel and set arm C's GRPO recipe. The review
+`training/reviews/2026-09-22-claude-step2-s4-review.md` says **revise
+(prepare)**. Next free actions, in order: grade `35767396604` **once**
+(coverage-only, `QWEN_REV` tokenizer, `target_arms` chosen first — a second
+grade overwrites); `s4-target-preflight` on it (expected to refuse on the case
+floor); measure step-0 vs step-N draw coupling in seed 1111's
+`sft/evaluations.jsonl`; count byte-identical completions between the smoke
+and the rung's first 64 cases (does the provider honour `seed`). Then the
+operator decides a full-split target rung and the dev-selection draws
+(`launch.py --dev-eval-draws` / `DEV_EVAL_DRAWS`, 4 or 16; default 4). No GPU job before that.
+
 ## The steps, and the rule for taking one
 
 | # | step | cost | state lives in |
 |---|---|---|---|
 | 0 | Read what was paid for — per-step dev metrics, probe rollouts, eval-2 family sizes | $0 | `PLAN.md` table |
 | 1 | Fix the instrument — selector, stopping, macro floor, LoRA learning rates, eval cost, engine fixes | $0 | |
-| 2 | Positive control — stage 0b, bare vs `prompts/subset-spec.md`, k = 16 | ~$126 at 512 output tokens; ~$225 at allowance | |
+| 2 | Positive control — stage 0b, bare vs `prompts/subset-spec.md`; only k = 16 decides | ~$126 at 512 output tokens; ~$225 at allowance (full); rungs so far in `PLAN.md` | |
 | 3 | Build contrastive targets — correct-native vs correct-but-refused pairs per prompt | tokens | |
-| 4 | S4 re-specified — RFT arm, preference arm if supply, dosed GRPO; three seeds | ~$60–90 | |
+| 4 | S4 re-specified — RFT arm, preference arm if supply, dosed GRPO; three seeds | up to ~$180 (720m ≈ $60 per seed job) | |
 
 **Continue the first `in progress` step; otherwise take the first `open` step.
 Do only that step.** Each step's
@@ -60,6 +79,8 @@ operator's and lives in `ROUND_READINESS.md`.
 - Run seeds 2222/3333 of seed 1111's configuration — they would replicate a
   blind selector, and `arm_check.py` would let them.
 - Switch the kernel: it is an arm identity (+1.57pp on identical weights).
+- Grade a Step 2 run twice, or lower the curriculum case floor to fit a
+  target set.
 - Widen `s0_inventory.py`'s `SMALL` tuple to read Step 0. Write a summary that
   prints aggregates in the job, as `loss_summary.py` does — the follower
   streams into a **public** log and a bundle was printed into one on 2026-09-18.

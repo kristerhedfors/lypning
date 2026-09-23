@@ -7,8 +7,9 @@
 # the private artifact repo, are reviewed (data_loop), prepared through the
 # pool (training-prepare: the train bank as a pilot, the eval-2 bank as a
 # benchmark), and run in NEXT_ROUND.md's order: base on dev, bounded SFT,
-# reload the selected adapter, probe it on train cases only, GRPO only if the
-# probe is admitted, matched test-split evaluations per arm, and the eval-2
+# reload the selected adapter, probe it on train cases only, GRPO only if
+# GRPO_STEPS asks for it and the probe is admitted, matched test-split
+# evaluations per arm, and the eval-2
 # benchmark whole with --eval-draws EVAL_DRAWS per arm. Reports compare
 # base-vs-sft and base-vs-grpo on the test split and on the benchmark.
 #
@@ -24,14 +25,25 @@
 #   BANK_PATH    directory in WORK_REPO holding eval2.jsonl, train.jsonl, evidence-*/
 #   HF_TOKEN     job secret; the trainer holds it, candidates never see it
 #   STEPS        SFT optimizer steps (default 250; SFT's token floor still decides)
-#   GRPO_STEPS   GRPO optimizer steps (default 20)
+#   GRPO_STEPS   GRPO optimizer steps (default 0: probe only, no GRPO -- S4 arm A)
 #   EVAL_DRAWS   matched-seed draws per case on the eval-2 benchmark (default 16)
-#   SEED         review, preparation and training seed (default 1111)
+#   SEED         training seed: initialisation, data order, draws (default 1111)
+#   SPLIT_SEED   review and preparation seed, i.e. the train/dev/test split
+#                (default 1111 for EVERY training seed; launch.py says why)
 set -euo pipefail
 : "${SPACE_REPO:?}" "${SPACE_REV:?}" "${QWEN_REV:?}" "${WORK_REPO:?}" "${BANK_PATH:?}" "${HF_TOKEN:?}"
 STEPS="${STEPS:-250}"
-GRPO_STEPS="${GRPO_STEPS:-20}"
+GRPO_STEPS="${GRPO_STEPS:-0}"
+# Probe and GRPO share one group size (the probe contract binds them). 4 keeps
+# arm A's probe comparable with seed 1111's; arm C dispatches 8 (`PLAN.md`).
+GRPO_GENERATIONS="${GRPO_GENERATIONS:-4}"
+GRPO_PROMPTS="${GRPO_PROMPTS:-4}"         # prompt groups per GRPO optimizer step
 EVAL_DRAWS="${EVAL_DRAWS:-16}"
+# Draws per dev case in the stages that SELECT a checkpoint (base-dev, sft,
+# its reload, grpo). Separate from EVAL_DRAWS, which only the eval-2 stages
+# read. 4 is what every earlier job used; the case-clustered selector has
+# little power there (`PLAN.md` Step 1), and raising it is an arm change.
+DEV_EVAL_DRAWS="${DEV_EVAL_DRAWS:-4}"
 EVAL_SEQUENCES="${EVAL_SEQUENCES:-256}"   # sequences per generate call in evaluation
 SCORE_WORKERS="${SCORE_WORKERS:-16}"      # concurrent verifier scorings (one pool host serves 50)
 export NTX_POOL_SANDBOXES_PER_HOST="${NTX_POOL_SANDBOXES_PER_HOST:-4}"
@@ -39,6 +51,9 @@ export NTX_POOL_MAX_HOSTS="${NTX_POOL_MAX_HOSTS:-4}"
 BUNDLES_FROM="${BUNDLES_FROM:-}"          # reuse the bundles an earlier job prepared, e.g. round-02/<job>
 SFT_TARGET_RUN="${SFT_TARGET_RUN:-}"      # graded positive-control run; empty retains authored references
 SEED="${SEED:-1111}"
+# Exported: the reused-bundle check and `targets_fit_split` read it from Python,
+# and a default assigned here but not exported is a KeyError there.
+export SPLIT_SEED="${SPLIT_SEED:-1111}"
 cd "$(dirname "$0")/../.."
 export PYTHONPATH=src:training LYPNING_CAPTURE=0 LYPNING_HARVEST=0 PIP_DISABLE_PIP_VERSION_CHECK=1
 ROUND=work/round-02
@@ -46,7 +61,7 @@ JOB="${JOB_ID:-local}"
 export NTX_POOL_TAG="$JOB"   # this run's sandbox pool is its own; see hf_sandbox_runner.pool_name
 STAGE=start
 mkdir -p "$ROUND"
-echo "== round-02 pilot on $(hostname) job=$JOB commit=$(git rev-parse HEAD) sft_steps=$STEPS grpo_steps=$GRPO_STEPS eval_draws=$EVAL_DRAWS eval_sequences=$EVAL_SEQUENCES score_workers=$SCORE_WORKERS pool_sandboxes_per_host=$NTX_POOL_SANDBOXES_PER_HOST pool_max_hosts=$NTX_POOL_MAX_HOSTS seed=$SEED bundles_from=${BUNDLES_FROM:-none} sft_target_run=${SFT_TARGET_RUN:-authored-references}"
+echo "== round-02 pilot on $(hostname) job=$JOB commit=$(git rev-parse HEAD) sft_steps=$STEPS grpo_steps=$GRPO_STEPS grpo_generations=$GRPO_GENERATIONS grpo_prompts=$GRPO_PROMPTS eval_draws=$EVAL_DRAWS dev_eval_draws=$DEV_EVAL_DRAWS eval_sequences=$EVAL_SEQUENCES score_workers=$SCORE_WORKERS pool_sandboxes_per_host=$NTX_POOL_SANDBOXES_PER_HOST pool_max_hosts=$NTX_POOL_MAX_HOSTS seed=$SEED split_seed=$SPLIT_SEED bundles_from=${BUNDLES_FROM:-none} sft_target_run=${SFT_TARGET_RUN:-authored-references}"
 echo "== python: $(python3 -c 'import sys; print(sys.version)')"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || echo "== no GPU visible"
 
@@ -84,7 +99,7 @@ finish() {
   local status=complete
   [ "$code" -eq 0 ] || status=failed
   echo "== finish: status=$status stage=$STAGE exit=$code"
-  if ! STATUS="$status" EXIT_CODE="$code" STAGE="$STAGE" STEPS="$STEPS" GRPO_STEPS="$GRPO_STEPS" EVAL_DRAWS="$EVAL_DRAWS" SEED="$SEED" \
+  if ! STATUS="$status" EXIT_CODE="$code" STAGE="$STAGE" STEPS="$STEPS" GRPO_STEPS="$GRPO_STEPS" GRPO_GENERATIONS="$GRPO_GENERATIONS" GRPO_PROMPTS="$GRPO_PROMPTS" EVAL_DRAWS="$EVAL_DRAWS" DEV_EVAL_DRAWS="$DEV_EVAL_DRAWS" SEED="$SEED" SPLIT_SEED="$SPLIT_SEED" \
       EVAL_SEQUENCES="$EVAL_SEQUENCES" SCORE_WORKERS="$SCORE_WORKERS" BUNDLES_FROM="$BUNDLES_FROM" SFT_TARGET_RUN="$SFT_TARGET_RUN" \
       NTX_POOL_SANDBOXES_PER_HOST="$NTX_POOL_SANDBOXES_PER_HOST" NTX_POOL_MAX_HOSTS="$NTX_POOL_MAX_HOSTS" \
       python3 - <<'PYEOF'
@@ -97,6 +112,18 @@ def digest(path):
         return json.load(open(path))["digest"]
     except (OSError, KeyError, ValueError):
         return None
+def read(path):
+    try:
+        return json.load(open(path))
+    except (OSError, ValueError):
+        return {}
+# What the arm IS, beyond the knobs: the targets it trained on, the rates the
+# trainer resolved and the kernel it ran (`.github/scripts/arm_check.py` reads
+# every one). Taken from the stage's own experiment.json, which records what
+# happened, not from this script's intent; a stage that never ran leaves None.
+sft = read("work/round-02/sft/experiment.json")
+grpo = read("work/round-02/grpo/experiment.json")
+targets = read("work/round-02/sft-targets/sft-report.json")
 manifest = {"job": job, "status": os.environ["STATUS"], "exit_code": int(os.environ["EXIT_CODE"]),
             "last_stage": os.environ["STAGE"],
             "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
@@ -104,12 +131,23 @@ manifest = {"job": job, "status": os.environ["STATUS"], "exit_code": int(os.envi
             "qwen_revision": os.environ["QWEN_REV"], "flavor": os.environ.get("ACCELERATOR", ""),
             "bank_path": os.environ["BANK_PATH"], "steps": int(os.environ["STEPS"]),
             "grpo_steps": int(os.environ["GRPO_STEPS"]),
-            "eval_draws": int(os.environ["EVAL_DRAWS"]), "seed": int(os.environ["SEED"]),
+            "grpo_generations": int(os.environ["GRPO_GENERATIONS"]),
+            "grpo_prompts": int(os.environ["GRPO_PROMPTS"]),
+            "eval_draws": int(os.environ["EVAL_DRAWS"]), "dev_eval_draws": int(os.environ["DEV_EVAL_DRAWS"]), "seed": int(os.environ["SEED"]),
+            "split_seed": int(os.environ["SPLIT_SEED"]),
             "eval_sequences": int(os.environ["EVAL_SEQUENCES"]), "score_workers": int(os.environ["SCORE_WORKERS"]),
             "pool_sandboxes_per_host": int(os.environ["NTX_POOL_SANDBOXES_PER_HOST"]),
             "pool_max_hosts": int(os.environ["NTX_POOL_MAX_HOSTS"]),
             "bundles_from": os.environ.get("BUNDLES_FROM") or None,
             "sft_target_run": os.environ.get("SFT_TARGET_RUN") or None,
+            "sft_sha256": targets.get("sft_sha256"),
+            # Which Step 2 arms the targets were harvested from. `sft_sha256`
+            # already separates two target sets; this says what they were.
+            "sft_target_arms": targets.get("arms"),
+            "sft_learning_rate": (sft.get("effective") or {}).get("learning_rate"),
+            "grpo_learning_rate": (grpo.get("effective") or {}).get("learning_rate"),
+            "kernels": sft.get("kernels"),
+            "kernel_binding": sft.get("kernel_binding"),
             "pilot_bundle_digest": digest("work/round-02/pilot/bundle.json"),
             "eval2_bundle_digest": digest("work/round-02/eval2/bundle.json"),
             "grpo_skipped": os.path.exists("work/round-02/grpo-skipped.json")}
@@ -154,6 +192,10 @@ for attempt in 1 2 3 4; do
   sleep $((attempt * 30))
 done
 python3 -c 'import torch, transformers, peft, trl, huggingface_hub; print("== torch", torch.__version__, "cuda", torch.cuda.is_available(), "| transformers", transformers.__version__, "| trl", trl.__version__, "| hub", huggingface_hub.__version__)'
+# The kernel is part of the arm (`STATUS.md` §2). transformers binds the
+# gated-delta rule at import, so ask now, in minute one, rather than in the
+# first trainer stage an hour later; `train_verified.run` asks again in-process.
+NTX_USE_FLA=0 PYTHONPATH="$PYTHONPATH:training/gpu" python3 -c 'import sys, kernel_block; why = kernel_block.refusal(); print("== kernel:", why or "torch reference"); sys.exit(1 if why else 0)'
 
 # 2. The engine: the same bytes the verifier image carries, from the same commit.
 STAGE=engine
@@ -169,6 +211,84 @@ PYEOF
 export LYPNING_L_BIN="$PWD/$ROUND/engine-home/bin/lypning-l"
 run "$LYPNING_L_BIN" --version
 run sha256sum "$LYPNING_L_BIN"
+
+# 2b. The rejection targets, right after the engine and before anything slow.
+# They came from the same private artifact repository, were execution-graded
+# before this job, and remain private. Their engine lineage is checked HERE,
+# against the bytes just downloaded: the trainer checks it again, but only at
+# the plan stage, after the bank, review and ~45 minutes of GPU-idle
+# preparation had been billed. `s4_target_floor.py` makes the same comparison
+# in CI against the Space's engine, for nothing; this is the last free chance.
+SFT_TARGET_ARGS=()
+if [ -n "$SFT_TARGET_RUN" ]; then
+  STAGE=sft-targets
+  export SFT_TARGET_RUN
+  python3 - <<'PYEOF'
+import hashlib, json, os, shutil
+from huggingface_hub import HfApi, snapshot_download
+repo = os.environ["WORK_REPO"]
+run = os.environ["SFT_TARGET_RUN"]
+if "/" in run or ".." in run:
+    raise SystemExit("SFT_TARGET_RUN must be one run id, not a path")
+api = HfApi()
+info = api.repo_info(repo, repo_type="dataset")
+if info.private is not True:
+    raise SystemExit("refusing to read SFT targets from a non-private repository")
+prefix = "positive-control/%s/grade" % run
+root = snapshot_download(repo, repo_type="dataset", revision=info.sha,
+                         allow_patterns=[prefix + "/sft.jsonl", prefix + "/sft-report.json"],
+                         local_dir="work/round-02/targets-download")
+source = os.path.join(root, prefix)
+target = "work/round-02/sft-targets"
+os.makedirs(target, exist_ok=False)
+for name in ("sft.jsonl", "sft-report.json"):
+    path = os.path.join(source, name)
+    if not os.path.isfile(path):
+        raise SystemExit("private target run is missing grade/" + name)
+    shutil.copy2(path, os.path.join(target, name))
+report = json.load(open(os.path.join(target, "sft-report.json")))
+want = (report.get("lineage") or {}).get("engine_sha256")
+with open(os.environ["LYPNING_L_BIN"], "rb") as fh:
+    got = hashlib.sha256(fh.read()).hexdigest()
+if want != got:
+    raise SystemExit("ENGINE LINEAGE: targets of %s were graded by engine %s, this job's engine "
+                     "is %s; the trainer would refuse them at the plan stage" % (run, want, got))
+print("== downloaded private graded SFT targets for %s; engine lineage %s matches" % (run, got[:16]))
+PYEOF
+  SFT_TARGET_ARGS=(--sft-targets "$ROUND/sft-targets/sft.jsonl")
+fi
+
+# Every target case must be a TRAIN case of the split this job trains on, and
+# the trainer refuses the first one that is not -- at the plan stage. The split
+# is known the moment the cases are, so this asks before preparation, on the
+# reviewed train bank split at SPLIT_SEED, or on the reused bundle as prepared.
+targets_fit_split() {
+  [ -n "$SFT_TARGET_RUN" ] || return 0
+  echo "== every target case is a train case at split seed $SPLIT_SEED, and the curriculum clears its floors"
+  PYTHONPATH="$PYTHONPATH:training/gpu" python3 - "$1" <<'PYEOF'
+import json, os, sys
+from pipeline.jsonio import read_jsonl
+from pipeline.training_data import split_cases
+from train_verified import curriculum_floor
+source = sys.argv[1]
+if source.endswith("bundle.json"):
+    cases = json.load(open(source))["cases"]
+else:
+    cases = split_cases(read_jsonl(source), int(os.environ["SPLIT_SEED"]))
+train = {c["case_id"]: c for c in cases if c["split"] == "train"}
+rows = read_jsonl("work/round-02/sft-targets/sft.jsonl")
+outside = sorted({r.get("case_id") for r in rows} - set(train))
+if outside:
+    raise SystemExit("%d target case(s) are not train cases of this split; were the targets "
+                     "graded at another split seed?" % len(outside))
+# The trainer's plan stage refuses the same floors, but only after preparation;
+# the CI route checks them for free (`s4_target_floor.py`), a hand launch here.
+floor = curriculum_floor([train[r["case_id"]] for r in rows])
+if floor["problems"]:
+    raise SystemExit("; ".join(floor["problems"]))
+print("== %d target rows over %d train cases fit the split" % (len(rows), len({r["case_id"] for r in rows})))
+PYEOF
+}
 
 # 3. Identity handshake, then authored execution witnesses through the pool,
 #    logged to the round directory so the report can cite them: no GPU imports.
@@ -228,10 +348,14 @@ for name in ("pilot", "eval2"):
         moved = sorted(k for k in set(bundle.get("identity") or {}) | set(identity)
                        if (bundle.get("identity") or {}).get(k) != identity.get(k))
         raise SystemExit("%s bundle was prepared against another engine identity; differs in %s" % (name, ", ".join(moved)))
+    if bundle.get("seed") != int(os.environ["SPLIT_SEED"]):
+        raise SystemExit("%s bundle was split at seed %s; this job trains on split seed %s"
+                         % (name, bundle.get("seed"), os.environ["SPLIT_SEED"]))
     shutil.copytree(d, os.path.join("work/round-02", name))
     print("== %s bundle from %s: digest %s, purpose %s, cases %d"
           % (name, src, bundle["digest"], bundle.get("purpose"), len(bundle["cases"])))
 PYEOF
+targets_fit_split "$ROUND/pilot/bundle.json"
 else
 # 4. The banks: eval2.jsonl, train.jsonl and the evidence snapshots they cite,
 #    from the private dataset repo only. The download is never uploaded back.
@@ -307,77 +431,43 @@ done
 #    bank is a pilot (controls in every split); eval-2 is a benchmark (whole).
 STAGE=review
 run python3 -m pipeline.data_loop --cases "$BANK_DIR/train.jsonl" ${SNAPSHOTS[@]+"${SNAPSHOTS[@]}"} \
-  --purpose pilot --seed "$SEED" --output "$ROUND/reviewed-train"
+  --purpose pilot --seed "$SPLIT_SEED" --output "$ROUND/reviewed-train"
 run python3 -m pipeline.data_loop --cases "$BANK_DIR/eval2.jsonl" ${SNAPSHOTS[@]+"${SNAPSHOTS[@]}"} \
-  --purpose benchmark --seed "$SEED" --output "$ROUND/reviewed-eval2"
+  --purpose benchmark --seed "$SPLIT_SEED" --output "$ROUND/reviewed-eval2"
+targets_fit_split "$ROUND/reviewed-train/cases.jsonl"
 
 # 6. Prepare both bundles through the pool: references verified, populations checked.
 STAGE=prepare
 run python3 -m pipeline.cli training-prepare \
   --cases "$ROUND/reviewed-train/cases.jsonl" --review "$ROUND/reviewed-train/review.json" \
   --purpose pilot --execution-kind hf-sandbox-pool --execution-image "hf.co/spaces/$SPACE_REPO" \
-  --execution-revision "$SPACE_REV" --engine "$LYPNING_L_BIN" --seed "$SEED" --output "$ROUND/pilot" --score-workers "$SCORE_WORKERS"
+  --execution-revision "$SPACE_REV" --engine "$LYPNING_L_BIN" --seed "$SPLIT_SEED" --output "$ROUND/pilot" --score-workers "$SCORE_WORKERS"
 run python3 -m pipeline.cli training-prepare \
   --cases "$ROUND/reviewed-eval2/cases.jsonl" --review "$ROUND/reviewed-eval2/review.json" \
   --purpose benchmark --execution-kind hf-sandbox-pool --execution-image "hf.co/spaces/$SPACE_REPO" \
-  --execution-revision "$SPACE_REV" --engine "$LYPNING_L_BIN" --seed "$SEED" --output "$ROUND/eval2" --score-workers "$SCORE_WORKERS"
-fi
-
-# 6b. Optional context-distillation targets. They came from the same private
-# artifact repository, were execution-graded before this job, and remain
-# private. The trainer rechecks their digest, bare prompts, populations and
-# engine lineage before loading model weights.
-SFT_TARGET_ARGS=()
-if [ -n "$SFT_TARGET_RUN" ]; then
-  STAGE=sft-targets
-  export SFT_TARGET_RUN
-  python3 - <<'PYEOF'
-import os, shutil
-from huggingface_hub import HfApi, snapshot_download
-repo = os.environ["WORK_REPO"]
-run = os.environ["SFT_TARGET_RUN"]
-if "/" in run or ".." in run:
-    raise SystemExit("SFT_TARGET_RUN must be one run id, not a path")
-api = HfApi()
-info = api.repo_info(repo, repo_type="dataset")
-if info.private is not True:
-    raise SystemExit("refusing to read SFT targets from a non-private repository")
-prefix = "positive-control/%s/grade" % run
-root = snapshot_download(repo, repo_type="dataset", revision=info.sha,
-                         allow_patterns=[prefix + "/sft.jsonl", prefix + "/sft-report.json"],
-                         local_dir="work/round-02/targets-download")
-source = os.path.join(root, prefix)
-target = "work/round-02/sft-targets"
-os.makedirs(target, exist_ok=False)
-for name in ("sft.jsonl", "sft-report.json"):
-    path = os.path.join(source, name)
-    if not os.path.isfile(path):
-        raise SystemExit("private target run is missing grade/" + name)
-    shutil.copy2(path, os.path.join(target, name))
-print("== downloaded private graded SFT targets for", run)
-PYEOF
-  SFT_TARGET_ARGS=(--sft-targets "$ROUND/sft-targets/sft.jsonl")
+  --execution-revision "$SPACE_REV" --engine "$LYPNING_L_BIN" --seed "$SPLIT_SEED" --output "$ROUND/eval2" --score-workers "$SCORE_WORKERS"
 fi
 
 # 7. The stages, in NEXT_ROUND.md's order. One set of common flags for every one.
 TV=(python3 training/gpu/train_verified.py)
 COMMON=(--isolated-worker --engine "$LYPNING_L_BIN" --revision "$QWEN_REV" --seed "$SEED"
         --eval-sequences "$EVAL_SEQUENCES" --score-workers "$SCORE_WORKERS")
+DEV=(--eval-draws "$DEV_EVAL_DRAWS")
 PILOT="$ROUND/pilot/bundle.json"
 EVAL2="$ROUND/eval2/bundle.json"
 SFT_TRAIN=(--steps "$STEPS" --eval-every 50 --rank 16)
-GRPO_TRAIN=(--steps "$GRPO_STEPS" --eval-every 50 --rank 16)
+GRPO_TRAIN=(--steps "$GRPO_STEPS" --eval-every 50 --rank 16 --grpo-prompts "$GRPO_PROMPTS")
 
 # 7a. Plan first (no GPU imports), then the unadapted dev control.
 STAGE=plan
-run "${TV[@]}" sft --plan --bundle "$PILOT" --output "$ROUND/sft-plan" "${COMMON[@]}" "${SFT_TRAIN[@]}" "${SFT_TARGET_ARGS[@]}" --batch-size 4
+run "${TV[@]}" sft --plan --bundle "$PILOT" --output "$ROUND/sft-plan" "${COMMON[@]}" "${DEV[@]}" "${SFT_TRAIN[@]}" "${SFT_TARGET_ARGS[@]}" --batch-size 4
 STAGE=base-dev
-run "${TV[@]}" eval --bundle "$PILOT" --output "$ROUND/base-dev" "${COMMON[@]}"
+run "${TV[@]}" eval --bundle "$PILOT" --output "$ROUND/base-dev" "${COMMON[@]}" "${DEV[@]}"
 checkpoint
 
 # 7b. Bounded SFT; best.json selects the adapter, step 0 included, never the last checkpoint.
 STAGE=sft
-run "${TV[@]}" sft --bundle "$PILOT" --output "$ROUND/sft" "${COMMON[@]}" "${SFT_TRAIN[@]}" "${SFT_TARGET_ARGS[@]}" --batch-size 4
+run "${TV[@]}" sft --bundle "$PILOT" --output "$ROUND/sft" "${COMMON[@]}" "${DEV[@]}" "${SFT_TRAIN[@]}" "${SFT_TARGET_ARGS[@]}" --batch-size 4
 SFT_STEP=$(python3 -c 'import json; print(json.load(open("work/round-02/sft/best.json"))["step"])')
 SFT_ADAPTER="$ROUND/sft/adapter-$SFT_STEP"
 echo "== sft selected step $SFT_STEP: $SFT_ADAPTER"
@@ -386,41 +476,47 @@ checkpoint
 
 # 7c. Reload the selected adapter and reproduce its dev record.
 STAGE=sft-dev-reload
-run "${TV[@]}" eval --adapter "$SFT_ADAPTER" --bundle "$PILOT" --output "$ROUND/sft-dev-reload" "${COMMON[@]}"
+run "${TV[@]}" eval --adapter "$SFT_ADAPTER" --bundle "$PILOT" --output "$ROUND/sft-dev-reload" "${COMMON[@]}" "${DEV[@]}"
 checkpoint
 
 # 7d. Probe the exact selected policy on TRAIN cases only; no optimizer updates.
 STAGE=probe
-run "${TV[@]}" probe --adapter "$SFT_ADAPTER" --bundle "$PILOT" --output "$ROUND/probe" "${COMMON[@]}" --generations 4
+run "${TV[@]}" probe --adapter "$SFT_ADAPTER" --bundle "$PILOT" --output "$ROUND/probe" "${COMMON[@]}" --generations "$GRPO_GENERATIONS"
 checkpoint
 
-# 7e. GRPO only if the probe is admitted (probe_report: at least two informative
-#     groups and a correct draw). Otherwise a marker says why, and the round
-#     evaluates the better base/SFT arm.
+# 7e. GRPO only if it was asked for (GRPO_STEPS > 0) AND the probe is admitted
+#     (probe_report: at least two informative groups and a correct draw).
+#     Otherwise a marker says why, and the round evaluates the base and SFT
+#     arms only. GRPO_STEPS=0 is S4 arm A: the probe above still ran, because
+#     it is arm C's admission evidence, and its verdict goes in the marker.
 STAGE=grpo-gate
 GRPO_ADAPTER=""
 echo "== read $ROUND/probe/probe.json: exit 0 admits GRPO, exit 3 skips it, anything else fails"
 set +e
-python3 - <<'PYEOF'
-import json
+GRPO_STEPS="$GRPO_STEPS" python3 - <<'PYEOF'
+import json, os
 report = json.load(open("work/round-02/probe/probe.json"))
 verdict = {"admitted": bool(report.get("admitted")), "informative_groups": report.get("informative_groups"),
            "groups": report.get("groups"), "correct_draws": report.get("correct_draws"),
            "truncated_draws": report.get("truncated_draws"), "draws": report.get("draws")}
 print("== probe verdict:", json.dumps(verdict))
-if not verdict["admitted"]:
+if int(os.environ["GRPO_STEPS"]) == 0:
+    verdict["why"] = ("GRPO skipped: arm A only (GRPO_STEPS=0); the probe ran as arm C's "
+                      "admission evidence and its verdict is recorded here")
+elif not verdict["admitted"]:
     verdict["why"] = ("GRPO skipped: probe not admitted; needs at least two informative train groups "
                       "(non-truncated reward variation) and at least one correct draw")
+if "why" in verdict:
     json.dump(verdict, open("work/round-02/grpo-skipped.json", "w"), indent=2)
     print("==", verdict["why"])
-raise SystemExit(0 if verdict["admitted"] else 3)
+raise SystemExit(3 if "why" in verdict else 0)
 PYEOF
 GATE=$?
 set -e
 if [ "$GATE" -eq 0 ]; then
   STAGE=grpo
   run "${TV[@]}" grpo --adapter "$SFT_ADAPTER" --probe "$ROUND/probe/probe.json" --bundle "$PILOT" \
-    --output "$ROUND/grpo" "${COMMON[@]}" "${GRPO_TRAIN[@]}" --generations 4
+    --output "$ROUND/grpo" "${COMMON[@]}" "${DEV[@]}" "${GRPO_TRAIN[@]}" --generations "$GRPO_GENERATIONS"
   GRPO_STEP=$(python3 -c 'import json; print(json.load(open("work/round-02/grpo/best.json"))["step"])')
   GRPO_ADAPTER="$ROUND/grpo/adapter-$GRPO_STEP"
   echo "== grpo selected step $GRPO_STEP: $GRPO_ADAPTER"

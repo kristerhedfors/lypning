@@ -38,6 +38,25 @@ ADMISSION = {"pilot": validate_pilot, "benchmark": validate_benchmark}
 #: Under v2 one such program ended the probe of job 6aaa73e9 at its first chunk.
 POLICY = "l-correctness-v3"
 SYSTEM = "Write a Python standard-library program. Return exactly one fenced python code block."
+#: The modules whose bytes ARE the verifier, hashed into `verifier_sha256`: a
+#: bundle is reusable only by code that scores exactly as the code that
+#: prepared it did. `sandbox.py` and `child_exec.py` are hashed separately under
+#: their own identity keys. `hf_sandbox_runner.py` is the runner every pilot and
+#: benchmark bundle actually executes through (`execution.kind ==
+#: "hf-sandbox-pool"`), and `container_worker.py` is the program that runs each
+#: candidate inside that sandbox. Until 2026-09-22 neither was here, so a change
+#: to how a candidate is executed or its result reported left every prepared
+#: bundle's identity untouched. Adding them is a POLICY-visible identity change:
+#: a bundle prepared before it no longer loads and must be re-prepared.
+VERIFIER_MODULES = ("training.py", "training_types.py", "training_data.py", "data_loop.py",
+                    "container_runner.py", "hf_sandbox_runner.py", "container_worker.py")
+
+
+def verifier_sha256(directory=None):
+    """One digest over `VERIFIER_MODULES`, read from `directory` (default: here)."""
+    here = Path(directory) if directory is not None else Path(__file__).parent
+    return sha256_of({name: hashlib.sha256((here / name).read_bytes()).hexdigest()
+                      for name in VERIFIER_MODULES})
 
 
 def engine_identity(binary):
@@ -58,8 +77,7 @@ def engine_identity(binary):
     return {"engine": "lypning-l", "version": version,
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             "oracle": sys.version, "policy": POLICY,
-            "verifier_sha256": sha256_of({name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
-                for name in ("training.py", "training_types.py", "training_data.py", "data_loop.py", "container_runner.py")}),
+            "verifier_sha256": verifier_sha256(),
             "sandbox_sha256": hashlib.sha256(Path(sandbox.__file__).read_bytes()).hexdigest(),
             "child_exec_sha256": hashlib.sha256(Path(sandbox.__file__).with_name("child_exec.py").read_bytes()).hexdigest()}
 
@@ -68,6 +86,22 @@ def messages(case):
     # No reference, expected output, engine hints, or refusal feedback in prompts.
     return [{"role": "system", "content": SYSTEM},
             {"role": "user", "content": case["task"]}]
+
+
+def assistant_turn(program):
+    """The assistant message an SFT target supervises: one fenced python block.
+
+    Built here, once, so every SFT row, every supervised-token bound and every
+    exported target wraps a program identically; four hand-written copies of
+    this string could each drift on trailing-newline handling and the plan
+    bound would stop describing the rows it bounds. It is the inverse of
+    `program_from_completion` for any program the verifier could score:
+    `program_from_completion(assistant_turn(p)) == p.rstrip()` whenever `p`
+    holds no triple backtick of its own. Trailing whitespace goes because the
+    fence's closing newline replaces it; leading whitespace stays, since it can
+    be the program's own indentation.
+    """
+    return "```python\n" + program.rstrip() + "\n```"
 
 
 def _sized(value):
@@ -296,16 +330,18 @@ def prepare(cases, binary, output, seed=1111, timeout_s=5.0, memory_mb=1024, pur
     # Publish the manifest LAST: interruption leaves a non-loadable incomplete
     # directory, never a manifest claiming all exports are complete.
     output.mkdir(parents=True, exist_ok=False)
+    # Prompt views only: line-countable audit evidence that holds no solution.
+    # Until 2026-09-22 this also wrote `train-sft.jsonl` and `dev-sft.jsonl`.
+    # No stage read either -- train_verified rebuilds its SFT rows from
+    # `bundle["cases"]` -- and `dev-sft.jsonl` was a second, ready-to-train copy
+    # of the SELECTION split's references. `bundle.json` itself still carries
+    # every split's reference (the verifier needs them), so a bundle directory
+    # stays private material: this drops an unread SFT-shaped export, not the
+    # references.
     for split in ("train", "dev", "test"):
         subset = [c for c in cases if c["split"] == split]
         write_jsonl(output / (split + "-prompts.jsonl"),
                     ({"case_id": c["case_id"], "prompt": messages(c)} for c in subset))
-        # Never export test solutions as SFT rows; a benchmark is all held out.
-        if split != "test" and purpose != "benchmark":
-            write_jsonl(output / (split + "-sft.jsonl"),
-                        ({"case_id": c["case_id"], "messages": messages(c) + [{
-                            "role": "assistant", "content": "```python\n" + c["reference"].rstrip() + "\n```"}]}
-                         for c in subset))
     write_json(output / "bundle.json", payload)
     return payload
 
@@ -403,7 +439,7 @@ class Reward:
     __name__ = "verified_lypning_l"
 
     def __init__(self, cases, verifier, witness_path=None, eos_token_id=None, rollout_path=None,
-                 generations=None, max_no_signal=0, score_workers=16):
+                 generations=None, score_workers=16):
         self.cases = {c["case_id"]: c for c in cases if c["split"] == "train"}
         self.score_workers = max(1, int(score_workers))
         self.verifier = verifier
@@ -411,8 +447,23 @@ class Reward:
         self.eos_token_id = eos_token_id
         self.rollout_path = rollout_path
         self.generations = generations
-        self.max_no_signal = max_no_signal
-        self.no_signal = 0
+        # A group with fewer than two distinct non-truncated rewards has zero
+        # reward spread, so its advantages are all zero and it carries no
+        # gradient (DAPO's dynamic-sampling observation, arXiv 2504.11343).
+        # This used to ABORT the run after `max_no_signal` such groups in a
+        # row. At seed 1111's 21% informative rate a 20-group run has
+        # probability 0.79**20, about 0.009, at any starting point: roughly one
+        # expected abort per 500 groups, which is the arm-C dose itself, so the
+        # guard would have ended a healthy run by chance. It is a MEASUREMENT
+        # now: counted here, logged as a fraction, never raised. Whether RL may
+        # start at all is the probe's admission gate, which runs before this.
+        self.groups = 0
+        self.no_signal_groups = 0
+
+    @property
+    def no_signal_fraction(self):
+        """Cumulative fraction of scored GRPO groups with no reward spread."""
+        return self.no_signal_groups / self.groups if self.groups else None
 
     def __call__(self, completions, case_id, **kwargs):
         if len(completions) != len(case_id):
@@ -455,6 +506,7 @@ class Reward:
                     "capabilities": self.cases[cid].get("capabilities", []),
                     "truncated": truncated, "completion_tokens": len(token_ids[i]) if token_ids is not None else None,
                     **asdict(score)})
+        batch_groups = batch_no_signal = 0
         if self.generations:
             if len(scores) % self.generations:
                 raise TrainingError("partial GRPO generation group")
@@ -462,12 +514,18 @@ class Reward:
                 end = start + self.generations
                 if len(set(case_id[start:end])) != 1:
                     raise TrainingError("GRPO group mixes task IDs")
+                # Truncated completions are masked out of the loss, so they
+                # cannot supply the spread that makes a group informative.
                 live = {r for r, truncated in zip(rewards[start:end], truncated_flags[start:end]) if not truncated}
-                self.no_signal = self.no_signal + 1 if len(live) < 2 else 0
-                if self.max_no_signal and self.no_signal >= self.max_no_signal:
-                    raise TrainingError("RL has no usable reward variation; stop and review probe/data/SFT")
+                batch_groups += 1
+                batch_no_signal += len(live) < 2
+            self.groups += batch_groups
+            self.no_signal_groups += batch_no_signal
         log_metric = kwargs.get("log_metric")
         if log_metric and scores:
             log_metric("verified/correct", sum(s.correct for s in scores) / len(scores))
             log_metric("verified/correct_native", sum(s.native for s in scores) / len(scores))
+            if batch_groups:
+                log_metric("verified/frac_no_signal_groups", batch_no_signal / batch_groups)
+                log_metric("verified/no_signal_fraction", self.no_signal_fraction)
         return rewards

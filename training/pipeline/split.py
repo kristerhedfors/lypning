@@ -1,5 +1,13 @@
 """Step 1's last act: a 70/30 stratified split, and a lock that makes "frozen" true.
 
+LEGACY: the ntx-era split (see :mod:`sample` for the whole path), marked
+2026-09-22. The task-first training path splits by family components in
+``training_data.split_cases`` and never reads this lock. One name here is
+still live: :data:`SIMILARITY_CEILING` is the threshold ``eval2_leaks`` and the
+``leaks`` / ``eval2-leaks`` CLI defaults import, and it stays in this module
+because dated records (PREREGISTRATION, AUDIT) cite it as
+``split.SIMILARITY_CEILING``; moving it would falsify those citations.
+
 A held-out split that is frozen by intention drifts the first time someone
 re-harvests. This one is frozen by a file: ``holdout.lock.json`` records every
 held-out case id together with the SHA-256 of its canonical record, plus a
@@ -288,9 +296,10 @@ def sft_solves_holdout(rows: List[Dict[str, Any]],
                                  "program": program})
     solving = set(h["program"] for h in hits)
     # `rows` counts lines read; `programs_probed` counts what was actually run.
-    # A bundle's `train-sft.jsonl` carries `{case_id, messages}` and no
-    # `program`, so every row is dropped above and the empty `solved` list below
-    # means "nothing was executed", not "nothing passed".
+    # A `{case_id, messages}` row -- the shape of the `train-sft.jsonl` bundles
+    # carried until 2026-09-22 -- has no `program`, so every such row is dropped
+    # above and the empty `solved` list below means "nothing was executed", not
+    # "nothing passed".
     return {"rows": len(rows), "n_holdout": len(holdout), "inputs_probed": len(groups),
             "programs_probed": len(programs), "solved": hits,
             "rows_solving": sum(1 for r in rows if r.get("program") in solving),

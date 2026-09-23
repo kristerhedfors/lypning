@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import hashlib
-import importlib
 import importlib.metadata
 import json
 import os
@@ -79,24 +78,50 @@ def kernel_state():
     either adapter of 2026-09-14 moved it. A cross-arm read that straddles this
     line is not a comparison, and nothing else in the record would show it.
 
+    It asks in a CHILD interpreter, never in this one. It used to call
+    `importlib.import_module("fla")` here, and `train_verified.run` called it
+    before the `NTX_USE_FLA=0` blocker was installed: a meta-path finder is
+    never consulted for a module already in `sys.modules`, so on an image where
+    `fla` imported, observing the kernel is what un-blocked it, and the arm the
+    manifest declared as the torch reference could have run fla. An observation
+    must not change what it observes; a subprocess costs a few seconds once per
+    stage and leaves this process's `sys.modules` exactly as it found it.
+
     Never raises: this is an observation written into the manifest, and a round
     must not die because a kernel it can run without is missing. `NTX_USE_FLA`
     is reported beside it because `train_verified.run` sets it to "0", so an
     importable kernel can still be deliberately unused -- two different reasons
     for the same reference path, and the manifest should distinguish them.
+    What the model actually bound is a separate record (`kernel_block`).
     """
     state = {"NTX_USE_FLA": os.environ.get("NTX_USE_FLA", "1")}
     for dist, module in (("flash-linear-attention", "fla"),
                          ("causal_conv1d", "causal_conv1d")):
-        try:
-            importlib.import_module(module)
-        except BaseException as exc:                              # noqa: BLE001
-            # BaseException: a kernel import can fail on a missing CUDA symbol,
-            # which is not always an Exception subclass.
-            state[dist] = "unusable: %s" % type(exc).__name__
-        else:
-            state[dist] = "usable"
+        state[dist] = _importable(module)
     return state
+
+
+def _importable(module, timeout=600):
+    """'usable', or 'unusable: <ExceptionName>', from a fresh interpreter."""
+    import subprocess
+    import sys
+    try:
+        done = subprocess.run([sys.executable, "-c", "import " + module],
+                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.PIPE, timeout=timeout, check=False)
+    except BaseException as exc:                                  # noqa: BLE001
+        # BaseException: a spawn can fail in unusual ways, and an observation
+        # must not be able to end a metered round.
+        return "unusable: %s" % type(exc).__name__
+    if done.returncode == 0:
+        return "usable"
+    # The child's last traceback line is "<ExceptionName>: message"; only the
+    # name is kept, so the manifest cannot carry a path or a message.
+    lines = done.stderr.decode("utf-8", "replace").strip().splitlines()
+    name = lines[-1].split(":", 1)[0].strip() if lines else ""
+    if not name.replace(".", "").replace("_", "").isalnum():
+        name = "exit %d" % done.returncode
+    return "unusable: %s" % name.rsplit(".", 1)[-1]
 
 
 def decoding(max_tokens, *, greedy=False):

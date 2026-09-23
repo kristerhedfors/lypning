@@ -1,5 +1,13 @@
 """Get the program out of the reply, or say honestly that there wasn't one.
 
+LEGACY for training: the ntx-era extractor (see :mod:`sample` for the whole
+path), marked 2026-09-22. It is lenient -- the last python block, then a bare
+block, then bare text -- and is still used by ``evaluate``, the ``nt`` CLI and
+``stdlib_generate``. It is NOT what grades a training or evaluation draw on
+the task-first path: that is ``training.program_from_completion``, which
+fails closed on prose, several blocks or a truncated block. A program this
+module extracts may therefore score ``no-code`` there.
+
 Qwen3.8 is a reasoning model with thinking ON by default, so a raw completion
 is reasoning followed by an answer. Two ways that arrives: a server started
 with a reasoning parser (``--reasoning-parser qwen3`` on vLLM) splits it into

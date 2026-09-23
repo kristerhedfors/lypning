@@ -14,6 +14,37 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-22** — Refactor the S4 pipeline before arm A's first seed, and review Step 2
+([#112](https://github.com/kristerhedfors/lypning/pull/112))
+
+- Record Step 2's paid Cerebras rungs (PRs #103–#111), which Codex dispatched
+  under the per-rung ceilings; the approval is not recorded in this tree.
+  Smoke `35751938025` cost $1.20715678 charged or reserved. Its grade
+  `35759939928` pooled controls with coverage: native +14.78pp, correct
+  −9.01pp. Target rung `35767396604` completed 1,536/1,536 for $3.63061517
+  and is graded once, after this merges. Commit Codex's report verbatim with
+  an independent review,
+  `training/reviews/2026-09-22-claude-step2-s4-review.md`: revise (prepare),
+  no GPU spend yet.
+- Selection and the Step 2 decision now read the coverage population only.
+  The checkpoint margin is a paired, case-clustered standard error
+  (`training/tests/test_gate_admission.py`), and grading refuses incomplete
+  runs.
+- The split seed is fixed at 1111 for every training seed. Arm A launches
+  with GRPO dose 0 on h200 / 720m. The 1,000-case floor now counts distinct
+  target cases, which no existing rung reaches. `QWEN_REV` is pinned in
+  every round-02 workflow and the grader.
+- The torch-reference gated-delta kernel is enforced before the weight pull,
+  and the bound kernel is recorded. LoRA init is reseeded per seed. SFT rows
+  are drawn without replacement within each family.
+- Arm C's recipe is 4 prompts × 8 generations and LoRA LR 1e-5; the launcher
+  keeps 4 generations so the probe stays comparable with seed 1111's.
+  No-signal groups are logged as a fraction, never an abort. Dev-selection
+  draws get their own setting (`--dev-eval-draws`, default 4) and arm field.
+- `verifier_sha256` now covers the sandbox runner and container worker, so
+  bundles must be re-prepared. The legacy LoRA runner, `cheatscan.py` and
+  unread `*-sft.jsonl` views are removed.
+
 **2026-09-22** — Prepare the positive control on the actual training split
 ([#102](https://github.com/kristerhedfors/lypning/pull/102))
 

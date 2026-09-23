@@ -6,7 +6,7 @@
 > `a3-highgpu-8g`, the earlier target model, and `nt-gpu`, none of which is the
 > run. Two numbers on this page are actively wrong for the current target and
 > are left in place rather than silently patched: `exclude_modules:
-> ["*.out_proj"]` — correct for the earlier model, wrong for Qwen3.5, see `../SWITCH.md`
+> ["*.out_proj"]` — correct for the earlier model, wrong for Qwen3.8-27B (architecture class `qwen3_5`), see `../SWITCH.md`
 > — and the $29.52/hr rate. Do not launch from this file.
 >
 > The scripts this page describes (`launch.sh`, `startup.sh`, `reap.sh`,

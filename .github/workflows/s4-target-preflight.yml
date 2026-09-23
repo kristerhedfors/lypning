@@ -7,6 +7,15 @@ on:
         description: Graded positive-control run supplying private SFT targets
         required: true
         type: string
+      seed:
+        description: Training seed to count the schedule at (the split stays at 1111)
+        default: '1111'
+        type: choice
+        options: ['1111', '2222', '3333']
+      space_revision:
+        description: Verifier Space commit the pilot would pin; empty compares against the Space's head
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -15,8 +24,12 @@ env:
   HF_HOME: ${{ github.workspace }}/.hf
   PYTHONPATH: src:training
   QWEN_MODEL: Qwen/Qwen3.8-27B
+  # The same pin as round02.yml, for the same reason: the count is only the
+  # count of the pilot if it is taken against the pilot's base model.
+  QWEN_REV: 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0
   BANK_PATH: banks/v3-20260920b
   PILOT_STEPS: '300'
+  PILOT_SPLIT_SEED: '1111'
 
 jobs:
   token-floor:
@@ -31,29 +44,38 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -q 'transformers==5.17.0' 'huggingface-hub==1.31.0' jinja2
-      - name: Resolve the approved model to an immutable revision
-        id: model
+      # Not resolved: pinned, and checked. A Hub head that has moved past the
+      # pin fails here, as round02.yml's preflight does.
+      - name: The approved model revision is still the Hub's head
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          REVISION=$(python -c 'import os; from huggingface_hub import HfApi; print(HfApi(token=os.environ["HF_TOKEN"]).model_info(os.environ["QWEN_MODEL"]).sha)')
-          if ! echo "$REVISION" | grep -Eq '^[0-9a-f]{40}$'; then
-            echo 'model did not resolve to an immutable commit' >&2
+          HEAD=$(python -c 'import os; from huggingface_hub import HfApi; print(HfApi(token=os.environ["HF_TOKEN"]).model_info(os.environ["QWEN_MODEL"]).sha)')
+          if [ "$HEAD" != "$QWEN_REV" ]; then
+            echo "PINNED REVISION MOVED: QWEN_REV is $QWEN_REV and the Hub head is $HEAD" >&2
             exit 1
           fi
-          echo "revision=$REVISION" >> "$GITHUB_OUTPUT"
+          echo "pinned $QWEN_REV is the Hub head"
+      # Inputs travel through env, never by expansion into the script text:
+      # this step holds HF_TOKEN.
       - name: Count the exact schedule without submitting a job
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          TARGET_RUN: ${{ inputs.target_run }}
+          SEED: ${{ inputs.seed }}
+          SPACE_REV: ${{ inputs.space_revision }}
         run: |
           python .github/scripts/s4_target_floor.py \
-            --target-run '${{ inputs.target_run }}' \
+            --target-run "$TARGET_RUN" \
             --bank-path "$BANK_PATH" \
-            --revision '${{ steps.model.outputs.revision }}' \
+            --revision "$QWEN_REV" \
             --steps "$PILOT_STEPS" \
+            --seed "$SEED" --split-seed "$PILOT_SPLIT_SEED" \
+            --space-revision "$SPACE_REV" \
             --out "$RUNNER_TEMP/s4-target-floor.json"
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: s4-target-floor
           path: ${{ runner.temp }}/s4-target-floor.json
-          if-no-files-found: error
+          if-no-files-found: ignore

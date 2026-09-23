@@ -25,6 +25,29 @@ seeds; changing the chunking changes the sampling instrument.
 
 ## Current Step 2 admission — 2026-09-22
 
+**State at the end of 2026-09-22.** Paid Cerebras generation has run; no GPU job
+has been submitted. Codex dispatched the rungs under the per-rung ceilings in
+`step2-control.yml`; the approval is not recorded in this tree.
+
+| run | what | cost, charged or reserved | outcome |
+|---|---|---|---|
+| `35751938025` | smoke, 64 cases × 2 arms × k=4 | $1.20715678 of $5 | 512/512, zero retries |
+| `35759939928` | grade smoke (no provider, no GPU) | $0 | pooled with controls: native +14.78pp [+3.89, +26.81], correct −9.01pp [−17.34, −2.02]; neither route earned; 157 targets / 54 cases |
+| `35762924601` | S4 target preflight | $0 | 156,691 scheduled tokens vs 50,000, by repetition |
+| `35763603648` | targets, 192 × 2 × 4 at 60 rpm | $0.90358492 of $6 | stopped at 327/1,536; not gradeable |
+| `35767396604` | targets, 192 × 2 × 4 at 45 rpm | $3.63061517 of $6 | complete 1,536/1,536; **not yet graded** |
+
+Two further runs failed before spending (`35749197934`, `35758545464`). What
+remains before a GPU is booked is in the independent review,
+[`reviews/2026-09-22-claude-step2-s4-review.md`](reviews/2026-09-22-claude-step2-s4-review.md)
+(**revise, prepare**), and in `PLAN.md` Step 4: a coverage-only grade of
+`35767396604` and the floor read on it, the draw-coupling and provider-seed
+reads, and operator decisions on a full-split target rung — arm A now needs
+verified targets on ≥ 1,000 of the 1,355 train cases — and on the
+dev-selection draws. Bundles must be re-prepared before arm A's
+first seed (`verifier_sha256` and `code_sha256` changed). The text below is
+the morning's free-first record, kept as history.
+
 PRs #97–#101 are merged. The six-check free preflight
 [35683103077](https://github.com/kristerhedfors/lypning/actions/runs/35683103077)
 passed, with zero live HF jobs and no completed seeds to join on this bank.
@@ -45,7 +68,8 @@ diagnostics and preparation; hold paid inference and GPU training. No paid
 ceiling is approved. After free readiness is complete, present its result and
 the concrete scope/cost before requesting a paid ceiling. The previously
 offered $250 full comparison and $25 redesigned control remain unapproved
-options; **no paid provider call or GPU job has been dispatched**.
+options; at that point no paid provider call or GPU job had been dispatched
+(the rungs above followed the same day).
 Do not shrink the population, shorten the spec, lower k or substitute a model
 silently to fit the old estimate.
 
@@ -69,16 +93,20 @@ Partial results cannot create an admission proof. Free rerun
 2,412.9 seconds (40 minutes 13 seconds). Its provider/tokenizer plan and exact
 conformance reuse also passed; provider calls were zero. The public aggregate
 report proves validation completed, but does not replace the private admission
-proof required by generation. That proof remains on the disposable worker;
-the durable private handoff still needs implementation before a paid launch.
-The generation library reserves budget before each
+proof required by generation. The generation library reserves budget before each
 request, disables retries, and binds its input to a private runtime/reference
-proof. The manual dispatch, private evidence handoff and scope remain to be
-completed before any later paid launch. The 256-sequence GPU batch smoke
+proof. Since #103 the manual dispatch exists and admission evidence, completions
+and graded rows persist in the private dataset repo. The 256-sequence GPU batch smoke
 belongs before a later GPU training arm; Step 2 uses hosted inference and does
 not allocate a GPU.
 
 ## The bank a round would now read
+
+**2026-09-22.** `round02.yml`'s `BANK_PATH` is `banks/v3-20260920b`, the bank
+seed 1111 read; its seed-1111 train split is the 1,355 cases admitted by
+`35693996662`. The table and counts below are the 2026-09-19 cut and the
+authored-reference schedule — seed-1111 history. Arm A trains on target rows,
+counted by `s4-target-preflight`, not on these.
 
 `banks/v3-20260919` in the private artifact repo, cut from six batches by
 `bank-publish.yml` (run `35439152832`, 2026-09-19) and carved so the two halves
@@ -97,7 +125,8 @@ clearing `--steps` is 74.
 
 ## Where we are in one paragraph
 
-**Every preparation is done and the only step left is the operator's.** The
+*Superseded 2026-09-22 by "Current Step 2 admission" above; kept as the
+2026-09-19 record.* **Every preparation is done and the only step left is the operator's.** The
 bank exists, is carved, is published, and is priced; the launcher points at it;
 and the billed submit cannot start until a free job has counted the schedule it
 would bill. What remains unmeasured is the thing a round is for: whether
@@ -119,7 +148,7 @@ ceiling says an effect *can* exist, never that one will.
 | 7 | Carve `banks/v3/{train,eval2}.jsonl`, disjoint by family | **done** — `nt bank-carve`; validated against bank v2's union, which it carves back to its own hand-made 51/18 shape |
 | 8 | Publish to the Hub and point `BANK_PATH` at it | **done** — `banks/v3-20260919` pushed (run `35439152832`); `BANK_PATH` repointed |
 | 9 | The exact supervised-token count | **done, and it caught a refusal** — run `35434623069`: `--steps 250` exposes 46,535/45,952/44,940 against the 50,000 floor, so the pilot as configured would have been refused after the weights. `PILOT_STEPS` is now 300 and the billed submit needs a passing count |
-| 10 | Operator authorises the spend | **the only step left** — h200 ≈ $25/seed; a complete S4 is three seeds (1111, 2222, 3333) |
+| 10 | Operator authorises the spend | h200 at the 720m ceiling ≈ $60/seed (2026-09-22 amendment above; ≈ $25 at the old 300m); a complete S4 is three seeds (1111, 2222, 3333) |
 
 Two open items that block nothing above but change how a result reads:
 
@@ -127,10 +156,10 @@ Two open items that block nothing above but change how a result reads:
   No gate checks this and a family-clustered bootstrap will feel it. The carve
   makes it worse before it makes it better: it takes families away from the
   pilot for the benchmark, so the widened pool is what pays for both.
-- **One engine mismatch is filed and unfixed**: `sys.stdin.read(n)` ignores its
-  size argument and returns the whole remaining stream (`readline()` is
-  correct), in `data/engine-mismatches.jsonl`. Invariant 1 makes it interpreter
-  work, not training data.
+- **One engine mismatch was filed**: `sys.stdin.read(n)` ignored its size
+  argument and returned the whole remaining stream, in
+  `data/engine-mismatches.jsonl`. **Fixed 2026-09-22 in #101** (`PLAN.md` Step
+  1.6). Invariant 1 made it interpreter work, not training data.
 
 ## The stdlib corpus: an arm, not an ingredient
 

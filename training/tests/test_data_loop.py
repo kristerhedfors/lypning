@@ -76,20 +76,24 @@ def test_manual_plan_never_launches_or_invents_selected_adapters(tmp_path):
             plan(dict(config(), **changes), tmp_path)
 
 
-def test_plan_uses_selected_step_zero_and_requires_seal(tmp_path, monkeypatch):
-    from pipeline import round_plan
-    directory = tmp_path / "work/round-02/sft"
-    directory.mkdir(parents=True)
-    write_json(directory / "best.json", {"step": 0})
-    with pytest.raises((TrainingError, OSError)):
-        plan(config(), tmp_path)
-    seen = []
-    monkeypatch.setattr(round_plan, "adapter_identity", lambda p, r: seen.append(p))
-    result = plan(config(), tmp_path)
-    assert seen == [directory / "adapter-0"]
-    probe = next(a for a in result["actions"] if a["name"] == "probe")
-    assert probe["argv"][probe["argv"].index("--adapter") + 1].endswith("sft/adapter-0")
-    assert not any(a["name"].endswith("-test") for a in result["actions"])
+def test_plan_is_the_smoke_plan_and_never_reads_a_selection(tmp_path):
+    """round_plan serves round02_smoke.sh only; the pilot order is round02_pilot.sh.
+
+    A sealed-looking selection on disk -- even an unsealed one, which the old
+    selection-driven half refused -- neither adds the post-selection stages
+    nor is read at all: the plan is the same four actions and selection stays
+    pending, because this module no longer carries a copy of the pilot order.
+    """
+    before = plan(config(), tmp_path)
+    for stage in ("sft", "grpo"):
+        directory = tmp_path / "work/round-02" / stage
+        directory.mkdir(parents=True)
+        write_json(directory / "best.json", {"step": 0})
+    after = plan(config(), tmp_path)
+    assert [a["name"] for a in after["actions"]] == ["sft-smoke", "grpo-smoke", "base-dev", "sft"]
+    assert [a["argv"] for a in after["actions"]] == [a["argv"] for a in before["actions"]]
+    assert after["pending_selection"] == ["sft", "grpo"]
+    assert not any("--adapter" in a["argv"] for a in after["actions"])
 
 
 def test_review_and_execution_contract_survive_bundle_reload(tmp_path, monkeypatch):

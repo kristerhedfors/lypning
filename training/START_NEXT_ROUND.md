@@ -11,6 +11,18 @@ Fable's training writeups; Fable runs approved training loops. Read
 [FABLE_REPORT_TEMPLATE.md](FABLE_REPORT_TEMPLATE.md) at every handoff, including
 blocked/no-run outcomes. New harvesting data never mutates your active bundle.
 
+## Latest — 2026-09-22, evening: Step 2 has paid rungs; GPU held
+
+Start at [`PLAN.md`](PLAN.md) and the independent review
+[`reviews/2026-09-22-claude-step2-s4-review.md`](reviews/2026-09-22-claude-step2-s4-review.md).
+Step 2's Cerebras smoke and 192-case target rung have run (runs and costs in
+`PLAN.md` Step 2); the target rung `35767396604` is graded once, coverage-only,
+after the S4 refactor merges. The review's verdict is **revise (prepare)**: no
+GPU job until that grade and the floor read on it, the draw-coupling and
+provider-seed reads, and the operator's decisions on a full-split target rung
+and on the dev-selection draws. The section below is the
+morning's assignment, kept as history.
+
 ## Next session — 2026-09-22: follow `PLAN.md`
 
 Seed 1111 of round-02 on bank v3 ran on 2026-09-20/21 (job
@@ -267,9 +279,13 @@ PYTHONPATH=src:training python3.12 -m pipeline.round_plan \
   --config work/round-02/config.json --output work/round-02/plan-001.json
 ```
 
-Read each command before manual execution. Re-plan into a **new** file after a
-stage finishes; the planner reads sealed `adapter-N` selected by `best.json`,
-including step 0. It never substitutes the last checkpoint. Output existence is
+Read each command before manual execution. Since 2026-09-22 the planner serves
+the smoke only: it emits `sft-smoke`, `grpo-smoke`, `base-dev` and `sft`, reads
+no selection, and always reports `pending_selection` as `["sft", "grpo"]`. The
+stages that depend on a selection — `sft-dev-reload`, `probe`, GRPO and the test
+and eval-2 arms — run in the order `training/hf/round02_pilot.sh` gives them;
+follow that script, not a re-plan. Selection is post hoc from `best.json`,
+including step 0, and never substitutes the last checkpoint. Output existence is
 not completion, approval or passing evaluation. A failed/interrupted directory
 must be retained and a fresh round directory chosen for a new attempt.
 
