@@ -14,6 +14,22 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-23** — Count Step 3's contrastive pair supply from the graded rows (#TBD)
+
+- `.github/scripts/step3_pairs.py` and the free `step3-pairs.yml` read one
+  graded positive-control run's private `grade/rows.jsonl`. They count train
+  prompts that hold both a correct-native and a correct-fallback draw. The
+  count is per arm, same-arm, any-arm and context-distillation (a positive from
+  the spec-conditioned arm).
+- It also prints pair counts capped at 1/2/4 per prompt, the refusal kinds of
+  the paired negatives (engine literals only), families with a pair prompt,
+  and control prompts with a native-ran or fallback draw, never paired.
+- Seed 1111's probe rollouts are a separate source only when their case ids
+  join the run's; the join itself is always printed.
+- Aggregates only, through `public_view`. No case id, family, program or
+  refusal detail is printed, and malformed evidence fails closed. Tests use
+  fixtures: `training/tests/test_step3_pairs.py`. Nothing was dispatched.
+
 **2026-09-23** — Keep verification detail private; grade an engine mismatch as a counted status ([#117](https://github.com/kristerhedfors/lypning/pull/117))
 
 - `VerificationBlocked`'s message is a kind and a 12-hex digest only. The case
