@@ -153,6 +153,7 @@ def aggregate(cases, completions, rows, output, *, samples, run_id, lineage, tar
     """
     from pipeline.jsonio import sha256_of, write_json, write_jsonl
     from pipeline.positive_control_grade import population_comparison
+    from pipeline.public_view import public_view
     from pipeline.positive_control_targets import build_targets, normalise_arms
     from pipeline.training_metrics import summarize
     from pipeline.training_types import TrainingError
@@ -191,7 +192,7 @@ def aggregate(cases, completions, rows, output, *, samples, run_id, lineage, tar
                                            token_count=token_count, tokenizer=tokenizer)
     write_jsonl(output / 'sft.jsonl', targets)
     write_json(output / 'sft-report.json', target_report)
-    public = {
+    public = public_view({
         'schema': 1, 'cases': len(cases), 'families': comparison['families'],
         'independent_clusters': comparison['independent_clusters'],
         'samples_per_arm': samples, 'rows': len(rows),
@@ -206,7 +207,7 @@ def aggregate(cases, completions, rows, output, *, samples, run_id, lineage, tar
                     ('rows', 'cases_with_targets', 'families_with_targets', 'populations',
                      'eligible_before_cap', 'rejected', 'prompt_policy', 'selection_policy',
                      'arms', 'length_policy')},
-    }
+    })
     write_json(output / 'public-report.json', public)
     return public
 
@@ -340,8 +341,10 @@ def main():
         print("step2 merge failed during %s (%s); no private payload printed."
               % (phase, type(exc).__name__), file=sys.stderr)
         return 1
-    print(json.dumps({"merged_run": run_id, "shards": len(shards), "cases": public["cases"],
-                      "rows": public["rows"], "targets": public["targets"]}, sort_keys=True))
+    from pipeline.public_view import public_view
+    print(json.dumps(public_view({"merged_run": run_id, "shards": len(shards), "cases": public["cases"],
+                                  "rows": public["rows"], "targets": public["targets"]}),
+                     sort_keys=True))
     return 0
 
 

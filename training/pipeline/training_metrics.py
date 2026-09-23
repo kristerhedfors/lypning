@@ -74,10 +74,11 @@ def case_clusters(rows):
     A case's k draws share its difficulty, so they are not k independent
     observations; the unit of replication is the case. These counts are what
     a case-clustered standard error, and a paired one, are computed from
-    (`paired_standard_error`). Counts rather than case IDs, because
-    `metrics.json` and `best.json` are printed whole into a PUBLIC Actions log
-    (`.github/scripts/s0_inventory.py`): `digest` names the (family, case) set
-    so two evaluations can be proved to pair, without publishing either.
+    (`paired_standard_error`). Counts rather than case IDs, and `digest`
+    names the (family, case) set so two evaluations can be proved to pair
+    without either artifact holding the other's IDs. The counts are PRIVATE
+    (operator decision, 2026-09-23): the artifacts keep them, and every printer
+    that reaches a public Actions log strips them with `pipeline.public_view`.
     Families and cases are sorted, so the same set gives the same order in
     every evaluation. A row without a case ID is its own case, as in
     `summarize`'s `cases` count.

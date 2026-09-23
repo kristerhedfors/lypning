@@ -36,6 +36,7 @@ import json
 import os
 from pathlib import Path
 
+from pipeline.public_view import public_view
 from pipeline.training_contract import BASE_MODEL, MIN_SUPERVISED_TOKENS, PROTOCOL_TRAIN_SEEDS
 from pipeline.training_data import split_cases, validate_pilot
 from pipeline.training import chat_prompt_token_ids, messages
@@ -191,10 +192,11 @@ def main(argv=None):
         'target_digest': admitted['sft_sha256'],
     }
     public.update(floor_report(cases, rows, examples, args.steps, args.batch_size, args.seed))
-    print(json.dumps(public, indent=2, sort_keys=True))
+    print(json.dumps(public_view(public), indent=2, sort_keys=True))
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(json.dumps(public, indent=2, sort_keys=True) + '\n')
+        # Uploaded as a PUBLIC Actions artifact: the same view as the log.
+        args.out.write_text(json.dumps(public_view(public), indent=2, sort_keys=True) + '\n')
     return 0 if public['clears'] else 1
 
 

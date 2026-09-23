@@ -71,6 +71,19 @@ No GPU job has been submitted. The independent review of that work is
 `35767396604` and `s4-target-preflight` on it, the draw-coupling and
 provider-seed reads (review §6.3–§6.4), and an operator decision on a
 full-split target rung and on the dev-selection draws.
+The review's publication decision on `case_clusters` is **decided 2026-09-23:
+private** — artifacts keep it, every public printer strips it (`pipeline.public_view`).
+The two free reads are done (2026-09-23).
+- **Provider seed:** Actions `35849850561`. Cerebras honours the request seed:
+  every shared (case, draw, arm) key across the 2026-09-22 runs returned a
+  byte-identical completion. A re-draw at the same seed re-buys the same text.
+- **Draw coupling:** Actions `35849854123`, on seed 1111's
+  `sft/evaluations.jsonl`. Step-0 versus step-N agreement exceeds independence
+  by −0.0016 to +0.0049, so the dev draws are effectively independent. That is
+  the regime where the Step 1 simulation puts selection power below 80% at
+  4 draws and at 75–98% at 16.
+- **Recommendation:** `PILOT_DEV_EVAL_DRAWS=16`. It is not yet set, because it
+  multiplies dev-eval GPU time and belongs to the operator's GPU approval.
 
 ### Step 0 — Read what was paid for ($0, CI reads, aggregates only)
 

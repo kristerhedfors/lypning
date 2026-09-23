@@ -17,6 +17,7 @@ from collections import Counter
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "training"))
+from pipeline.public_view import public_view
 from pipeline.training_metrics import summarize
 
 JOB = "6ab01cbb51992417dfccd64c"
@@ -249,7 +250,7 @@ def main():
                        for stage, steps in STEPS.items()}
         # Only fixed stage labels and bounded integer steps, never arbitrary
         # artifact paths. Distinguish a report's planned step from a saved one.
-        print("Saved adapter steps: " + json.dumps(saved_steps, sort_keys=True))
+        print("Saved adapter steps: " + json.dumps(public_view(saved_steps), sort_keys=True))
         data, hashes = {}, {}
         for name in FILES:
             phase = name
@@ -262,7 +263,9 @@ def main():
         phase = "validation and aggregation"
         result = summarise(data, saved_steps)
         result.update(job=JOB, repository=REPO, revision=revision, sha256=hashes)
-        print(json.dumps(result, sort_keys=True, indent=2, allow_nan=False))
+        # `summarize` puts per-case `case_clusters` counts in every
+        # `by_population` slice; they stay private (2026-09-23).
+        print(json.dumps(public_view(result), sort_keys=True, indent=2, allow_nan=False))
         return 0
     except Exception as exc:
         print("Step 0 read failed during %s; no private payload printed." % phase, file=sys.stderr)
@@ -270,7 +273,7 @@ def main():
         # the exception value, source text, stack locals or private labels.
         lines = [frame.lineno for frame in traceback.extract_tb(exc.__traceback__)
                  if frame.filename == __file__]
-        print("Reader source lines: " + json.dumps(lines), file=sys.stderr)
+        print("Reader source lines: " + json.dumps(public_view(lines)), file=sys.stderr)
         return 1
 
 

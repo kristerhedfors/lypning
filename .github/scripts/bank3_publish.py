@@ -20,6 +20,9 @@ import os
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "training"))
+from pipeline.public_view import public_view  # noqa: E402
+
 #: What a batch carries. `cases.jsonl` is the bank (schema-3, both populations);
 #: `unrepaired.jsonl` is the capability request the next engine round reads;
 #: `witnesses.jsonl` is engine bugs, kept because invariant 1 says a mismatch
@@ -115,8 +118,9 @@ def main() -> int:
                          commit_message="bank-v3 batch %s: %d cases (%s)"
                          % (args.batch, len(cases),
                             ", ".join("%s %d" % kv for kv in sorted(populations.items()))))
-    print(json.dumps({"repo": repo, "batch": target, "cases": len(cases),
-                      "populations": populations, "files": counts}, indent=2, sort_keys=True))
+    print(json.dumps(public_view({"repo": repo, "batch": target, "cases": len(cases),
+                                  "populations": populations, "files": counts}),
+                     indent=2, sort_keys=True))
     return 0
 
 

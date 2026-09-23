@@ -179,11 +179,14 @@ downloaded), `rollouts.jsonl`, `probe-rollouts.jsonl`, `evaluations.jsonl`,
 the `line counts` section of `s0_inventory.py` is for, and note that counting
 them downloads them (§3).
 
-**Printed whole, and wider since 2026-09-22:** `metrics.json` and `best.json`
-now carry `case_clusters` — per-case draw/correct/native counts in private
-case order plus a digest of the case set, no ids or text — so eval-2's per-case
-outcome distribution reaches the public log through `s0_inventory.SMALL`.
-Whether to allow that or strip the key is an open operator decision.
+**Printed whole, minus one key:** `metrics.json` and `best.json` carry
+`case_clusters` since 2026-09-22 — per-case draw/correct/native counts in
+private case order plus a digest of the case set. The operator decided on
+2026-09-23 that it stays private: the artifacts keep it, and every public
+printer, `s0_inventory.SMALL` included, strips it through
+`training/pipeline/public_view.py`. A new reader that prints one of these
+objects goes through `public_view` too; `training/tests/test_public_view.py`
+refuses one that does not.
 
 ## 6. The log is public. Check before you print.
 

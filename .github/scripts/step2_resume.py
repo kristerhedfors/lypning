@@ -31,6 +31,7 @@ from pathlib import Path
 import shutil
 import sys
 
+from pipeline.public_view import public_view
 from pipeline.positive_control_resume import (PLANNED_IDENTITY, RUN_ID, ResumeError,
                                               chain_links, check_identity, check_not_forked,
                                               check_target, parse_run_id, plan,
@@ -213,7 +214,7 @@ def main(argv=None, environ=None):
         print("step2 resume failed during %s (%s); no private payload printed."
               % (phase, type(exc).__name__), file=sys.stderr)
         return 1
-    print(json.dumps(report, sort_keys=True))
+    print(json.dumps(public_view(report), sort_keys=True))
     for reason in why:
         print("step2 resume refused: %s" % reason, file=sys.stderr)
     return int(bool(why))

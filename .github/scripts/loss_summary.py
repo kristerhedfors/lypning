@@ -30,7 +30,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "training"))
+from pipeline.public_view import public_view  # noqa: E402
 
 
 def summarise(rows):
@@ -87,7 +91,7 @@ def main() -> int:
         rows = [json.loads(line) for line in fh if line.strip()]
 
     print("== %s" % path)
-    stats = summarise(rows)
+    stats = public_view(summarise(rows))
     if stats is None:
         print("   no loss rows; the stage wrote nothing to read")
         return 1
