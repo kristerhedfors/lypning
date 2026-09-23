@@ -54,7 +54,7 @@ Advance a step by editing this table in the same PR as the work.
 | 0 | Read what was paid for | $0 | did dev native move inside the selector's blind spot? | done (2026-09-21, [read](reports/2026-09-21-codex-step0-read.md), GH 35575454075) |
 | 1 | Fix the instrument | $0 | nothing else is readable until it is | done (2026-09-22, implementation in PRs #97–#101; validation limits below) |
 | 2 | Positive control (S1 / stage 0b) | ~$126 at 512 output tokens/request; ~$225 at allowance (full k=16); rungs so far $5.74 charged or reserved | distillation route, rejection-filtered distillation, or contrastive route | in progress (2026-09-22: smoke generated and graded, pooled; 192-case target rung `35767396604` complete and **not yet graded**; rungs below; [review](reviews/2026-09-22-claude-step2-s4-review.md): revise) |
-| 3 | Build contrastive targets | tokens | is there enough pair supply for a preference arm? | open |
+| 3 | Build contrastive targets | tokens | is there enough pair supply for a preference arm? | in progress (2026-09-23: free reader `step3-pairs.yml` added; not yet dispatched, no count) |
 | 4 | S4, re-specified, three seeds | up to ~$180 (three h200 seed jobs capped at 720m, ~$60 each) | the first result the instrument can read | open |
 
 **Operator direction, 2026-09-22: free first.** Continue Step 2's free checks
@@ -308,6 +308,20 @@ population and is withdrawn.
 
 **Decision.** Fewer than ~300 pairs → the preference arm is under-powered;
 carry the signal in RL (Step 4 arm C) instead of a preference arm.
+
+**The count is a free CI read (2026-09-23, not yet dispatched).**
+`.github/workflows/step3-pairs.yml` takes a graded run id — the merged full
+split `full-merged-0527b3cd2c0d8916bebd086abcc46459d7ae46b1-35912725289` — and
+prints aggregates only (`.github/scripts/step3_pairs.py`). It reports pair
+prompts per arm (`bare`, `subset-spec`), `same_arm`, `any_arm` and
+`context_distillation` (a positive drawn with the spec in context). It also
+gives pair counts capped at 1/2/4 per prompt, the refusal kinds of the paired
+negatives, families with a pair prompt, and the controls, which are never
+paired. Seed 1111's probe rollouts become a separate `probe` source only when
+their case ids join the run's with family and population unchanged; the join
+is printed either way, with `same_engine_as_run` — a probe label is seed 1111's
+engine's, so on a different engine its columns are that engine's pairs. Rows carry no program text, so every pair count is an
+upper bound on distinct programs.
 
 ### Step 4 — S4, re-specified (three seeds; up to ~$180 at the 720m ceiling)
 

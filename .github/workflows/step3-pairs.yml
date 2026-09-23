@@ -1,0 +1,52 @@
+name: Step 3 contrastive pair supply (free; no GPU, no provider)
+
+# Free. Reads one graded positive-control run's private rows -- the merged
+# full split `full-merged-0527b3cd2c0d8916bebd086abcc46459d7ae46b1-35912725289`
+# is the first -- and, when their case ids join, seed 1111's probe rollouts,
+# and prints only aggregates: train prompts holding both a correct-native
+# and a correct-fallback draw, per source and arm mode, capped pair counts,
+# refusal kinds of the negatives, family coverage, and controls counted
+# apart. `training/PLAN.md` Step 3 decides on the pair-prompt count.
+# Nothing is written to the Hub, no container runs, and no case id, family
+# name, program or refusal detail reaches this public log.
+on:
+  workflow_dispatch:
+    inputs:
+      merged_run:
+        description: Graded positive-control run id (positive-control/<run>/grade/rows.jsonl)
+        required: true
+        type: string
+      include_probe:
+        description: Also read seed 1111's probe rollouts as a separate source when they join
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  pairs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      HF_HUB_DISABLE_PROGRESS_BARS: "1"
+      HF_HUB_VERBOSITY: error
+      LYPNING_CAPTURE: "0"
+      LYPNING_HARVEST: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q "huggingface-hub==1.31.0" pytest
+      - name: Check the counting and publication boundary
+        run: python -m pytest training/tests/test_step3_pairs.py -q
+      - name: Read the private rows and print only aggregates
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          STEP3_RUN_ID: ${{ inputs.merged_run }}
+          STEP3_INCLUDE_PROBE: ${{ inputs.include_probe }}
+        run: python .github/scripts/step3_pairs.py
