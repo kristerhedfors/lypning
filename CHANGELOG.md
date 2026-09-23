@@ -14,6 +14,22 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-23** — Arm A's approved configuration, an h200 hardware smoke, and an optional split eval-2 job ([#121](https://github.com/kristerhedfors/lypning/pull/121))
+
+- `round02.yml`: `PILOT_STEPS` 1050 (one pass over 4,197 target rows),
+  `PILOT_DEV_EVAL_DRAWS` 16, new `PILOT_EVAL_EVERY` 350 wired to the job's SFT
+  cadence and recorded as arm field `eval_every`; `PILOT_EVAL2` stays `same-job`.
+- New `hwsmoke` stage (h200, 90m, no bank): loads through `train_verified`'s
+  own loaders, times 256- and 128-sequence generation, a forced full-length
+  256 call, and SFT steps at ~1,024- and ~256-token rows, and projects every
+  stage of the arm against 720m (`training/hf/projection.py`), as a
+  measured reading with an upper and a lower bound. Each measurement is saved
+  before it starts; a failure or the job's timeout is recorded, not lost.
+- New `eval2` stage: runs a `separate` pilot's step 7g in a second job after
+  refusing any identity field that moved; `arm_check` joins the pair.
+- Fix: `experiment.json` now records `purpose`, without which every SFT adapter
+  was refused at `sft-eval2`.
+
 **2026-09-23** — Close Step 2 (flat) and Step 3 (below 300 pairs); arm A targets ready ([#120](https://github.com/kristerhedfors/lypning/pull/120))
 
 - Full-split Step 2 over all 1,355 train cases (merge `35912725289`):

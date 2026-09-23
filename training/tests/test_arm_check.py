@@ -147,3 +147,57 @@ def test_one_arm_is_selected_by_its_fields_and_the_rest_are_not_compared():
     for bad in ("seed=1111", "no-equals"):
         want, problem = arm.parse_pairs([bad], "--select")
         assert want is None and "--select" in problem
+
+
+def test_the_sft_cadence_is_an_arm_field_and_an_old_one_is_unrecorded():
+    """Seed 1111 ran every 25, the script then hard-coded 50, arm A runs 350."""
+    arm = load()
+    assert "eval_every" in arm.ARM_FIELDS
+    assert arm.arm_value(manifest(), "eval_every") == arm.UNRECORDED
+    assert set(arm.differences([arm_a(eval_every=350), arm_a(seed=2222, job="j2", eval_every=50)])) \
+        == {"eval_every"}
+
+
+def deferred(seed=1111, job="p1", **over):
+    """A pilot launched with EVAL2_MODE=separate, and the eval-2 job that finishes it."""
+    return arm_a(seed=seed, job=job, eval_every=350, eval2_mode="separate", eval2_deferred=True, **over)
+
+
+def follower(of="p1", job="e1", status="complete", **over):
+    base = {"job": job, "kind": "eval2", "eval2_of": of, "status": status, "seed": 1111,
+            "eval_draws": 16, "eval_sequences": 128, "pool_sandboxes_per_host": 4,
+            "space_revision": "a" * 40, "qwen_revision": "b" * 40,
+            "bank_path": "banks/v3-20260920b", "split_seed": 1111}
+    base.update(over)
+    return base
+
+
+def test_a_split_pair_is_one_seed_and_the_eval2_job_is_never_a_seed_of_its_own():
+    arm = load()
+    pair, orphans = arm.joined([deferred(), follower()])
+    assert orphans == [] and len(pair) == 1
+    assert pair[0]["status"] == "ok" and pair[0]["eval2_job"] == "e1" and pair[0]["seed"] == 1111
+    # A same-job seed and a split seed of one arm are replicates of one arm.
+    same = arm_a(seed=2222, job="p2", eval_every=350, eval2_mode="same-job")
+    seeds, _ = arm.joined([deferred(), follower(), same])
+    assert arm.differences(seeds) == {}, "where eval-2 ran is scheduling, not the arm"
+
+
+def test_a_deferred_pilot_without_a_completed_eval2_is_not_complete():
+    arm = load()
+    for followers in ([], [follower(status="failed")], [follower(of="someone-else")]):
+        pair, _ = arm.joined([deferred()] + followers)
+        assert pair[0]["status"] == "eval2-pending" and pair[0]["status"] not in arm.OK
+    failed, _ = arm.joined([deferred(status="failed"), follower()])
+    assert failed[0]["status"] == "failed"
+    _, orphans = arm.joined([follower(of="gone")])
+    assert [o["job"] for o in orphans] == ["e1"]
+
+
+def test_a_split_pair_that_disagrees_is_named_and_not_evidence():
+    arm = load()
+    for field, value in (("seed", 2222), ("eval_sequences", 256), ("space_revision", "d" * 40),
+                         ("pool_sandboxes_per_host", 2), ("bank_path", "banks/other")):
+        pair, _ = arm.joined([deferred(), follower(**{field: value})])
+        assert pair[0]["status"] == "split-mismatch" and pair[0]["split_mismatch"] == [field], field
+        assert pair[0]["status"] not in arm.OK

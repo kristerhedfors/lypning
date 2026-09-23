@@ -91,7 +91,8 @@ def args(stage, **overrides):
                 eval_sequences=launch.DEFAULT_EVAL_SEQUENCES, score_workers=launch.DEFAULT_SCORE_WORKERS,
                 pool_sandboxes_per_host=launch.DEFAULT_POOL_SANDBOXES_PER_HOST,
                 pool_max_hosts=launch.DEFAULT_POOL_MAX_HOSTS,
-                bundles_from="", sft_target_run="")
+                bundles_from="", sft_target_run="", eval_every=launch.DEFAULT_EVAL_EVERY,
+                eval2="same-job", eval2_of="")
     base.update(overrides)
     return SimpleNamespace(**base)
 
@@ -107,6 +108,7 @@ def test_pilot_env_wires_the_bank_and_its_knobs_as_strings():
                    "BANK_PATH": "banks/2026-09-16", "STEPS": "40", "GRPO_STEPS": "0",
                    "GRPO_GENERATIONS": "4", "GRPO_PROMPTS": "4",
                    "EVAL_DRAWS": "8", "DEV_EVAL_DRAWS": "4", "SEED": "2222", "SPLIT_SEED": "1111",
+                   "EVAL_EVERY": "50", "EVAL2_MODE": "same-job",
                    "EVAL_SEQUENCES": "256", "SCORE_WORKERS": "12",
                    "NTX_POOL_SANDBOXES_PER_HOST": "4", "NTX_POOL_MAX_HOSTS": "4",
                    "BUNDLES_FROM": "", "SFT_TARGET_RUN": ""}
@@ -450,3 +452,97 @@ def test_a_banked_stage_defaults_to_the_h200_and_the_decided_ceiling(monkeypatch
     assert launch.main(pilot_argv("--timeout", "721m")) == 2
     err = capsys.readouterr()
     assert "720m ceiling" in err.err and err.out == ""
+
+
+# --- the hardware smoke and the split eval-2 (2026-09-23) -------------------
+
+PILOT_JOB = "6ab01cbb51992417dfccd64c"
+
+
+def stage_argv(stage, *extra):
+    return [stage, "--branch", "b", "--commit", "c" * 40, "--space", "o/space",
+            "--space-revision", "a" * 40, "--qwen-revision", "b" * 40, "--work-repo", "o/work"] + list(extra)
+
+
+def test_the_new_stages_map_to_scripts_that_exist():
+    root = Path(__file__).resolve().parents[2]
+    assert launch.STAGES["hwsmoke"] == "training/hf/round02_hwsmoke.sh"
+    assert launch.STAGES["eval2"] == "training/hf/round02_eval2.sh"
+    for stage, script in launch.STAGES.items():
+        assert (root / script).is_file(), script
+        assert launch.bootstrap(stage, "b", "c" * 40).endswith(script)
+    assert set(launch.STAGE_LIMITS) == set(launch.STAGES)
+
+
+def test_the_hardware_smoke_is_an_h200_capped_at_90_minutes_and_needs_no_bank(monkeypatch, capsys):
+    import json
+    import sys
+    import types
+
+    monkeypatch.setenv("HF_TOKEN", "t")
+    monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(HfApi=HardwareApi))
+    assert launch.main(stage_argv("hwsmoke")) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert (plan["flavor"], plan["timeout"], plan["timeout_seconds"]) == ("h200", "90m", 5400)
+    assert "bank_path" not in plan and "eval2_of" not in plan
+    assert launch.main(stage_argv("hwsmoke", "--timeout", "91m")) == 2
+    err = capsys.readouterr()
+    assert "90m ceiling of the hwsmoke stage" in err.err and err.out == ""
+    env = launch.job_env(args("hwsmoke", bank_path="ignored"))
+    assert env == {"SPACE_REPO": "o/space", "SPACE_REV": "a" * 40, "QWEN_REV": "b" * 40,
+                   "WORK_REPO": "o/work"}, "no bank, no pool, no seed reaches the smoke"
+
+
+EVAL2_OF_BAD = ("", "6ab01cbb", "6AB01CBB51992417DFCCD64C", "round-02/" + PILOT_JOB, PILOT_JOB + "0",
+                PILOT_JOB + "\n", PILOT_JOB + "\nbanks/v3-20260920b", "../" + PILOT_JOB)
+
+
+def test_an_eval2_launch_names_one_pilot_job_and_nothing_else(monkeypatch, capsys):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    for bad in EVAL2_OF_BAD:
+        assert launch.main(stage_argv("eval2", "--eval2-of", bad)) == 2, repr(bad)
+        err = capsys.readouterr()
+        assert "--eval2-of" in err.err and err.out == "", repr(bad)
+    assert launch.main(stage_argv("eval2", "--eval2-of", PILOT_JOB)) == 2
+    assert "HF_TOKEN" in capsys.readouterr().err, "a job id is admitted, and no bank is needed"
+    # Only the eval2 stage takes one.
+    assert launch.main(pilot_argv("--eval2-of", PILOT_JOB)) == 2
+    assert "only for the eval2 stage" in capsys.readouterr().err
+
+
+def test_an_eval2_launch_carries_the_pool_and_the_evaluation_fields_and_their_ceilings(monkeypatch, capsys):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    env = launch.job_env(args("eval2", eval2_of=PILOT_JOB, seed=2222, eval_sequences=256,
+                              score_workers=48, pool_max_hosts=16))
+    assert env == {"SPACE_REPO": "o/space", "SPACE_REV": "a" * 40, "QWEN_REV": "b" * 40,
+                   "WORK_REPO": "o/work", "EVAL2_OF": PILOT_JOB, "EVAL_DRAWS": "16", "SEED": "2222",
+                   "EVAL_SEQUENCES": "256", "SCORE_WORKERS": "48",
+                   "NTX_POOL_SANDBOXES_PER_HOST": "4", "NTX_POOL_MAX_HOSTS": "16"}
+    assert "BANK_PATH" not in env and "STEPS" not in env
+    good = ("--eval2-of", PILOT_JOB)
+    for extra, message in ((("--seed", "4444"), "pre-registered"),
+                           (("--pool-sandboxes-per-host", "8", "--pool-max-hosts", "8",
+                             "--score-workers", "12"), "--pool-sandboxes-per-host must not exceed"),
+                           (("--pool-max-hosts", "17"), "cost ceiling"),
+                           (("--timeout", "721m"), "720m ceiling"),
+                           (("--eval-draws", "0"), "must be positive")):
+        assert launch.main(stage_argv("eval2", *(good + extra))) == 2
+        assert message in capsys.readouterr().err, extra
+
+
+def test_a_pilot_carries_its_cadence_and_eval2_mode(monkeypatch, capsys):
+    import pytest
+
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    env = launch.job_env(args("pilot", bank_path="banks/x", eval_every=350, eval2="separate"))
+    assert (env["EVAL_EVERY"], env["EVAL2_MODE"]) == ("350", "separate")
+    assert launch.main(pilot_argv("--eval-every", "350", "--eval2", "separate")) == 2
+    assert "HF_TOKEN" in capsys.readouterr().err
+    assert launch.main(pilot_argv("--eval-every", "0")) == 2
+    assert "must be positive" in capsys.readouterr().err
+    # The split carries base and SFT only; a GRPO arm keeps its eval-2 in its job.
+    assert launch.main(pilot_argv("--eval2", "separate", "--grpo-steps", "300")) == 2
+    assert "--grpo-steps 0" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        launch.main(pilot_argv("--eval2", "later"))
+    capsys.readouterr()

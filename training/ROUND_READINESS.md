@@ -239,9 +239,11 @@ install, the bank download, bundle preparation, the unadapted base-dev arm and
 55.6 GB of weights, three times over. The `--plan` upper bound for the same
 schedule is 134,384 and passes.
 
-`PILOT_STEPS` is 300. The smallest clearing value on that bank was 269/273/279
-by seed; **a different bank needs its own count**, which is what the job is for
-— bank v3's rows are not these rows.
+`PILOT_STEPS` was 300 through seed 1111, and is 1,050 since 2026-09-23: one
+pass over arm A's 4,197 target rows at batch 4 (`PLAN.md` Step 4). The
+smallest clearing value on that bank was 269/273/279 by seed; **a different
+bank needs its own count**, which is what the job is for — bank v3's rows are
+not these rows.
 
 ## What is deliberately not claimed here
 

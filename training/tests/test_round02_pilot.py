@@ -198,3 +198,48 @@ def test_every_selecting_stage_uses_the_same_dev_draws_and_eval2_keeps_its_own()
         assert '"${DEV[@]}"' not in line(name) and '--eval-draws "$EVAL_DRAWS"' in line(name), name
     finish = TEXT[TEXT.index("finish() {"):TEXT.index("trap 'finish $?' EXIT")]
     assert '"dev_eval_draws": int(os.environ["DEV_EVAL_DRAWS"])' in finish
+
+
+def test_the_sft_cadence_is_dispatched_and_recorded_not_hard_coded():
+    """`--eval-every 50` was a literal in SFT_TRAIN; arm A evaluates every 350."""
+    sft_train = re.search(r"SFT_TRAIN=\(([^)]*)\)", TEXT).group(1)
+    assert '--eval-every "$EVAL_EVERY"' in sft_train and "--eval-every 50" not in sft_train
+    assert 'EVAL_EVERY="${EVAL_EVERY:-50}"' in TEXT
+    finish = TEXT[TEXT.index("finish() {"):TEXT.index("trap 'finish $?' EXIT")]
+    for key in ('"eval_every": int(os.environ["EVAL_EVERY"])', '"eval2_mode": os.environ["EVAL2_MODE"]',
+                '"eval2_deferred": os.path.exists("work/round-02/eval2-deferred.json")',
+                '"sft_selected_step"'):
+        assert key in finish, key
+    assert 'EVAL_EVERY="$EVAL_EVERY" EVAL2_MODE="$EVAL2_MODE"' in finish
+
+
+def head_probe(tmp_path, **env_over):
+    head = TEXT[TEXT.index("set -euo pipefail"):TEXT.index('cd "$(dirname "$0")/../.."')]
+    env = dict(os.environ)
+    env.update({k: "x" for k in ("SPACE_REPO", "SPACE_REV", "QWEN_REV", "WORK_REPO",
+                                 "BANK_PATH", "HF_TOKEN")})
+    env.update(env_over)
+    return subprocess.run(["bash", "-c", head + 'echo "$EVAL2_MODE $EVAL_EVERY"\n'], env=env,
+                          capture_output=True, text=True, timeout=60, cwd=tmp_path)
+
+
+def test_the_eval2_mode_is_validated_before_anything_is_billed(tmp_path):
+    ok = head_probe(tmp_path)
+    assert ok.returncode == 0 and ok.stdout.strip().endswith("same-job 50"), ok.stdout
+    assert head_probe(tmp_path, EVAL2_MODE="separate", EVAL_EVERY="350").stdout.strip() \
+        .endswith("separate 350")
+    bad = head_probe(tmp_path, EVAL2_MODE="later")
+    assert bad.returncode == 2 and "same-job or separate" in bad.stdout
+    grpo = head_probe(tmp_path, EVAL2_MODE="separate", GRPO_STEPS="300")
+    assert grpo.returncode == 2 and "GRPO_STEPS=0" in grpo.stdout
+
+
+def test_every_gpu_job_installs_the_same_pins_through_one_installer():
+    hf = ROOT / "training" / "hf"
+    for name in ("round02_pilot.sh", "round02_hwsmoke.sh", "round02_eval2.sh"):
+        text = (hf / name).read_text(encoding="utf-8")
+        assert "bash training/hf/pinned_deps.sh" in text, name
+        assert "pip install" not in text, name
+    deps = (hf / "pinned_deps.sh").read_text(encoding="utf-8")
+    assert 'open("training/gpu/train_verified.py")' in deps and "exit 123" in deps
+    assert "kernel_block.refusal()" in deps

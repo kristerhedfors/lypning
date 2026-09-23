@@ -450,12 +450,16 @@ def check_prompt_budget(tok, cases, max_new_tokens, max_seq):
             raise TrainingError("prompt + completion budget exceeds --max-seq: " + case_ref(case["case_id"]))
 
 
-def run(args, bundle, adapter_info):
-    verifier = Verifier(args.engine, **bundle["limits"], identity=bundle["identity"],
-                        runner=execution_runner(bundle["execution"], bundle["identity"],
-                                                stage="grpo"))
-    versions = runtime_versions()
-    effective = schedule(args)
+# THE LOADING PATH, one definition. `run` below and the hardware smoke
+# (`training/hf/hwsmoke.py`) both call these, in this order, so what the smoke
+# measures is the model every stage trains and evaluates -- not a neighbour of
+# it loaded by a second copy of the code. Each is a function of the revision
+# and nothing in a bundle, so the smoke needs no bank.
+def block_fused_kernels():
+    """Force the torch-reference gated-delta rule; returns `kernel_state()`.
+
+    Must run before anything imports transformers or `fla`.
+    """
     # Block fused kernels before importing transformers, preserving the existing
     # exact Qwen class and per-leaf LoRA gradient smoke checks.
     os.environ["NTX_USE_FLA"] = "0"
@@ -474,12 +478,13 @@ def run(args, bundle, adapter_info):
     # does not settle it: on 2026-09-20 the pin held and transformers still ran
     # all 48 gated-delta-net layers on the reference path. `kernel_state` asks in
     # a child interpreter, so asking cannot change the answer here.
-    kernels = kernel_state()
-    import lypning_lora as core
-    import torch
-    from huggingface_hub import snapshot_download
-    from peft import PeftModel
-    from transformers import AutoConfig, AutoTokenizer, Qwen3_5ForConditionalGeneration, set_seed
+    return kernel_state()
+
+
+def refuse_import_binding():
+    """Refuse a gated-delta rule that transformers bound to anything but the reference."""
+    import kernel_block
+    from transformers import Qwen3_5ForConditionalGeneration
 
     # transformers resolves the gated-delta rule when the modeling module is
     # IMPORTED, so the binding the loaded model will have is already decided
@@ -491,6 +496,88 @@ def run(args, bundle, adapter_info):
         raise TrainingError("gated-delta-net resolved to something other than the torch "
                             "reference at import: " + json.dumps(import_binding, sort_keys=True))
 
+
+def load_tokenizer(revision):
+    """The pinned tokenizer, left-padded, with the EOS the SFT labels and TRL agree on."""
+    from transformers import AutoTokenizer
+
+    tok = AutoTokenizer.from_pretrained(BASE_MODEL, revision=revision)
+    tok.padding_side = "left"
+    if tok.pad_token_id is None:
+        tok.pad_token = tok.eos_token
+    if tok.eos_token_id is None or tok.encode("<|im_end|>", add_special_tokens=False) != [tok.eos_token_id]:
+        raise TrainingError("Qwen assistant terminator must equal tokenizer EOS for SFT/TRL agreement")
+    return tok
+
+
+def download_base(revision):
+    """The pinned checkpoint's local snapshot directory (the 55 GB pull)."""
+    from huggingface_hub import snapshot_download
+
+    return snapshot_download(BASE_MODEL, revision=revision,
+                             allow_patterns=["*.json", "*.jinja", "*.txt", "*.safetensors"])
+
+
+def load_base_model(path, dtype):
+    """Qwen3_5ForConditionalGeneration on GPU 0, refused on any key mismatch."""
+    from transformers import Qwen3_5ForConditionalGeneration
+
+    model, loading = Qwen3_5ForConditionalGeneration.from_pretrained(
+        path, dtype=dtype, attn_implementation="sdpa", device_map={"": 0},
+        output_loading_info=True)
+    if any(loading.get(k) for k in ("missing_keys", "unexpected_keys", "mismatched_keys", "error_msgs")):
+        raise TrainingError("checkpoint loading failed: " + str(loading))
+    checkpoint = set(json.loads((Path(path) / "model.safetensors.index.json").read_text())["weight_map"])
+    have = set(model.state_dict())
+    ignore = [re.compile(p) for p in (model._keys_to_ignore_on_load_unexpected or [])]
+    if have - checkpoint or any(not any(p.search(k) for p in ignore) for k in checkpoint - have):
+        raise TrainingError("checkpoint/model class key mismatch")
+    return model
+
+
+def attach_fresh_lora(model, rank, seed, core):
+    """A new rank-`rank` adapter drawn from `seed`, checked on the object."""
+    from transformers import set_seed
+
+    # Reseed IMMEDIATELY before the adapter is initialised. `set_seed` above
+    # is followed by the gradient smoke, which reseeds to 0 and consumes a
+    # fixed amount of randomness, so without this every protocol seed drew
+    # the same `lora_A` and seeds 1111/2222/3333 differed only in batch
+    # order -- three replicates of one initialisation, not three replicates.
+    set_seed(seed)
+    return core.attach_lora(model, rank, 2 * rank, 0.0)
+
+
+def refuse_bound_kernels(model):
+    """The kernel the loaded model will CALL; refused unless it is the torch reference."""
+    import kernel_block
+
+    # What the loaded model will CALL, read off the model after load: the
+    # switch and the blocker are requests, this is the answer. Refused rather
+    # than only recorded when it is not the torch reference, because a run on
+    # another kernel is another arm (`STATUS.md` §2), and reading that from the
+    # manifest after the dose has been paid for is too late.
+    kernel_binding = kernel_block.bound_kernels(model)
+    if not kernel_block.reference_only(kernel_binding):
+        raise TrainingError("gated-delta-net is not bound to the torch reference: "
+                            + json.dumps(kernel_binding, sort_keys=True))
+    return kernel_binding
+
+
+def run(args, bundle, adapter_info):
+    verifier = Verifier(args.engine, **bundle["limits"], identity=bundle["identity"],
+                        runner=execution_runner(bundle["execution"], bundle["identity"],
+                                                stage="grpo"))
+    versions = runtime_versions()
+    effective = schedule(args)
+    kernels = block_fused_kernels()
+    import lypning_lora as core
+    import torch
+    from peft import PeftModel
+    from transformers import AutoConfig, Qwen3_5ForConditionalGeneration, set_seed
+
+    refuse_import_binding()
+
     if not args.smoke and not torch.cuda.is_available():
         raise TrainingError("CUDA required for a real 27B run")
     if not args.smoke and not torch.cuda.is_bf16_supported():
@@ -498,12 +585,7 @@ def run(args, bundle, adapter_info):
     set_seed(args.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.bfloat16 if device == "cuda" else torch.float32
-    tok = AutoTokenizer.from_pretrained(BASE_MODEL, revision=args.revision)
-    tok.padding_side = "left"
-    if tok.pad_token_id is None:
-        tok.pad_token = tok.eos_token
-    if tok.eos_token_id is None or tok.encode("<|im_end|>", add_special_tokens=False) != [tok.eos_token_id]:
-        raise TrainingError("Qwen assistant terminator must equal tokenizer EOS for SFT/TRL agreement")
+    tok = load_tokenizer(args.revision)
     train_cases = [c for c in bundle["cases"] if c["split"] == "train"]
     dev_cases = evaluation_cases(bundle, args.eval_split)
     check_prompt_budget(tok, train_cases + dev_cases, args.max_new_tokens, args.max_seq)
@@ -544,46 +626,25 @@ def run(args, bundle, adapter_info):
         model = Qwen3_5ForConditionalGeneration(cfg).to(device=device, dtype=dtype)
         set_seed(args.seed)
     else:
-        path = snapshot_download(BASE_MODEL, revision=args.revision,
-                                 allow_patterns=["*.json", "*.jinja", "*.txt", "*.safetensors"])
-        model, loading = Qwen3_5ForConditionalGeneration.from_pretrained(
-            path, dtype=dtype, attn_implementation="sdpa", device_map={"": 0},
-            output_loading_info=True)
-        if any(loading.get(k) for k in ("missing_keys", "unexpected_keys", "mismatched_keys", "error_msgs")):
-            raise TrainingError("checkpoint loading failed: " + str(loading))
-        checkpoint = set(json.loads((Path(path) / "model.safetensors.index.json").read_text())["weight_map"])
-        have = set(model.state_dict())
-        ignore = [re.compile(p) for p in (model._keys_to_ignore_on_load_unexpected or [])]
-        if have - checkpoint or any(not any(p.search(k) for p in ignore) for k in checkpoint - have):
-            raise TrainingError("checkpoint/model class key mismatch")
+        model = load_base_model(download_base(args.revision), dtype)
     if args.adapter:
         # Continue the SAME adapter so its saved weights include the SFT warm
         # start and reload on the pinned base without a hidden merged parent.
         model = PeftModel.from_pretrained(model, str(args.adapter), is_trainable=args.stage == "grpo")
     elif args.stage in ("sft", "grpo"):
-        # Reseed IMMEDIATELY before the adapter is initialised. `set_seed` above
-        # is followed by the gradient smoke, which reseeds to 0 and consumes a
-        # fixed amount of randomness, so without this every protocol seed drew
-        # the same `lora_A` and seeds 1111/2222/3333 differed only in batch
-        # order -- three replicates of one initialisation, not three replicates.
-        set_seed(args.seed)
-        model = core.attach_lora(model, args.rank, 2 * args.rank, 0.0)
+        model = attach_fresh_lora(model, args.rank, args.seed, core)
     if args.stage in ("sft", "grpo"):
         core.check_adapted_modules(model)
-    # What the loaded model will CALL, read off the model after load: the
-    # switch and the blocker are requests, this is the answer. Refused rather
-    # than only recorded when it is not the torch reference, because a run on
-    # another kernel is another arm (`STATUS.md` §2), and reading that from the
-    # manifest after the dose has been paid for is too late.
-    kernel_binding = kernel_block.bound_kernels(model)
-    if not kernel_block.reference_only(kernel_binding):
-        raise TrainingError("gated-delta-net is not bound to the torch reference: "
-                            + json.dumps(kernel_binding, sort_keys=True))
+    kernel_binding = refuse_bound_kernels(model)
     model.config.pad_token_id = tok.pad_token_id
     model.generation_config.pad_token_id = tok.pad_token_id
     args.output.mkdir(parents=True, exist_ok=False)
     manifest = {"base_model": BASE_MODEL, "revision": args.revision, "stage": args.stage,
-                "bundle_digest": bundle["digest"], "adapter": adapter_info,
+                "bundle_digest": bundle["digest"],
+                # `adapter_lineage_admitted` admits a pilot-trained adapter on
+                # the eval-2 benchmark by THIS field; unwritten, every SFT
+                # adapter was refused at sft-eval2, a stage no job had reached.
+                "purpose": bundle["purpose"], "adapter": adapter_info,
                 "smoke": args.smoke, "seed": args.seed,
                 "planned_supervised_tokens": planned_tokens,
                 "effective": schedule(args),

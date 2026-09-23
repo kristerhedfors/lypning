@@ -98,6 +98,16 @@ arm field `dev_eval_draws`). `launch.py` also takes `--grpo-generations` and
 `--grpo-informative-only`, so arm C needs a workflow
 edit. One seed. Read the next section before you type that marker.
 
+Since 2026-09-23 the pilot also passes `--eval-every "${PILOT_EVAL_EVERY}"`
+(350; an arm field) and `--eval2 "${PILOT_EVAL2}"` (`same-job` or `separate`).
+Two more dispatch-only stages, each billed only with `submit=SUBMIT`:
+`hwsmoke` (h200, 90m ceiling, no bank) measures generation at 256/128
+sequences plus one 256 call forced to full length, and SFT seconds per step,
+then projects the approved arm against 720m (`training/hf/projection.py`;
+`projection_bounds.upper` prices every call at full length). `eval2` (`eval2_of` = a completed pilot
+job that ran `separate`) runs that job's step 7g after `split_eval2.py`
+verifies every identity field (`PLAN.md` Step 4).
+
 ## What it costs, and what one job is not
 
 `h200` is **$5.00/hour** (`training/RUNBOOK.md` §1, `hf jobs hardware` read
