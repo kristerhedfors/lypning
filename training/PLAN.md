@@ -319,7 +319,8 @@ gives pair counts capped at 1/2/4 per prompt, the refusal kinds of the paired
 negatives, families with a pair prompt, and the controls, which are never
 paired. Seed 1111's probe rollouts become a separate `probe` source only when
 their case ids join the run's with family and population unchanged; the join
-is printed either way. Rows carry no program text, so every pair count is an
+is printed either way, with `same_engine_as_run` — a probe label is seed 1111's
+engine's, so on a different engine its columns are that engine's pairs. Rows carry no program text, so every pair count is an
 upper bound on distinct programs.
 
 ### Step 4 — S4, re-specified (three seeds; up to ~$180 at the 720m ceiling)

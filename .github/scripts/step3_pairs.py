@@ -13,7 +13,8 @@ Sources are columns, never pooled silently:
 - ``probe``: seed 1111's probe rollouts (the base policy on the train prompts
   of seed 1111's pilot), included only when their case ids join the run's and
   every shared case agrees on family and population. The join is reported
-  whether or not it holds.
+  whether or not it holds, and so is whether the probe was graded by the
+  run's engine (``same_engine_as_run``): a probe label is its own engine's.
 
 A pair whose positive comes from ``subset-spec`` is a context-distillation
 pair: the positive was drawn with the subset spec in context, and training
@@ -60,8 +61,18 @@ CAPS = (1, 2, 4)
 #: under-powered.
 PAIR_PROMPT_THRESHOLD = 300
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}")
-REFUSAL = re.compile(r"lypning-l: unsupported: ([a-z][a-z0-9-]*): [^\n]+")
+#: The verifier's own refusal grammar (`training.Verifier.score`), read after
+#: its ``strip()``: any kind without a colon, then an optional detail. The
+#: engine writes dynamic kinds -- ``dict_keys-method``, ``_Environ-method``,
+#: ``TextIOWrapper-method`` (`ops.rs` ``missing_method_err``) -- that a stricter
+#: pattern would reject, failing the whole read on a draw the grader accepted.
+REFUSAL = re.compile(r"lypning-l: unsupported: ([^:\n]+):(?: [^\n]*)?")
 PROBE_PATH = "round-02/%s/probe/probe-rollouts.jsonl" % PROBE_JOB
+#: Where each source's engine identity is recorded: the merged run's target
+#: report lineage, and seed 1111's pilot bundle (the probe's verifier engine).
+RUN_ENGINE_PATH = "positive-control/%s/grade/sft-report.json"
+PROBE_ENGINE_PATH = "round-02/%s/pilot/bundle.json" % PROBE_JOB
+SHA256 = re.compile(r"[0-9a-f]{64}")
 
 #: A mode is a set of pools; a pool pairs positives from some sources with
 #: negatives from some sources, within one prompt. A prompt is a pair prompt
@@ -101,6 +112,8 @@ def refusal_kinds(row, allowed):
         require(type(item[0]) is int and isinstance(item[1], str))
         match = REFUSAL.fullmatch(item[1].strip())
         require(match is not None)
+        # Only an engine literal becomes a label; a dynamic kind can carry a
+        # program's own type name, so it is folded, never printed.
         kinds.add(match.group(1) if match.group(1) in allowed else "other-kind")
     return frozenset(kinds)
 
@@ -159,8 +172,17 @@ def index_rows(rows, sources, allowed, cases=None):
     return cases, k
 
 
-def join_probe(step2, probe):
-    """How seed 1111's probe case set meets the run's; aggregates only."""
+def join_probe(step2, probe, engines=None):
+    """How seed 1111's probe case set meets the run's; aggregates only.
+
+    ``engines`` is (run engine sha256, probe engine sha256), either None when
+    unrecorded. A probe draw's native/fallback label is its own engine's: when
+    the engines differ, an old refusal may run natively now, so the probe
+    columns are that engine's pairs, not this run's. Reported, never hidden.
+    """
+    run_engine, probe_engine = engines or (None, None)
+    same_engine = (None if run_engine is None or probe_engine is None
+                   else run_engine == probe_engine)
     shared = set(step2) & set(probe)
     disagree = sum(step2[c]["family"] != probe[c]["family"]
                    or step2[c]["population"] != probe[c]["population"] for c in shared)
@@ -170,6 +192,7 @@ def join_probe(step2, probe):
             "run_only_cases": len(set(step2) - set(probe)),
             "identical_case_sets": set(step2) == set(probe),
             "shared_cases_disagreeing_on_family_or_population": disagree,
+            "same_engine_as_run": same_engine,
             "included": usable}
 
 
@@ -249,9 +272,17 @@ def any_arm_split(cases):
 
 
 def controls(cases, sources):
-    """Control prompts per source: ran natively, fell back, or both. Never paired."""
+    """Control prompts per source: ran natively, fell back, or both. Never paired.
+
+    ``any_arm`` pools the two Step 2 arms whatever else is read, so it means
+    the same with or without the probe; ``any_source`` adds the probe over the
+    control prompts it shares with the run.
+    """
     out = {}
-    for label, group in [(s, (s,)) for s in sources] + [("any", sources)]:
+    groups = [(s, (s,)) for s in sources] + [("any_arm", ARMS)]
+    if PROBE in sources:
+        groups.append(("any_source", sources))
+    for label, group in groups:
         prompts = [c for c in cases.values()
                    if c["population"] == "fallback-control" and all(s in c for s in group)]
         ran = fell = both = 0
@@ -283,7 +314,7 @@ def statuses(cases, sources):
     return out
 
 
-def summarise(step2_rows, probe_rows=None):
+def summarise(step2_rows, probe_rows=None, engines=None):
     """Aggregates over one graded run and, when it joins, seed 1111's probe."""
     allowed = known_kinds()
     cases, k = index_rows(step2_rows, ARMS, allowed)
@@ -298,7 +329,7 @@ def summarise(step2_rows, probe_rows=None):
         result["probe"] = {"included": False, "reason": "not read"}
     else:
         probe, probe_k = index_rows(probe_rows, (PROBE,), allowed)
-        join = dict(join_probe(cases, probe), samples_per_case=probe_k)
+        join = dict(join_probe(cases, probe, engines), samples_per_case=probe_k)
         result["probe"] = join
         if join["included"]:
             for case_id, case in cases.items():
@@ -321,6 +352,13 @@ def summarise(step2_rows, probe_rows=None):
 
 def read_jsonl(raw):
     return [json.loads(line) for line in raw.splitlines() if line.strip()]
+
+
+def engine_of(document, keys):
+    """A recorded engine sha256 at ``keys`` inside ``document``, or None."""
+    for key in keys:
+        document = document.get(key) if isinstance(document, dict) else None
+    return document if isinstance(document, str) and SHA256.fullmatch(document) else None
 
 
 def main():
@@ -347,14 +385,26 @@ def main():
         wanted = {"rows": rows_path}
         if with_probe and PROBE_PATH in files:
             wanted["probe"] = PROBE_PATH
+        # Each source's engine identity, read only to compare; absent is None.
+        identity = {"run_engine": (RUN_ENGINE_PATH % run, ("lineage", "engine_sha256")),
+                    "probe_engine": (PROBE_ENGINE_PATH, ("identity", "sha256"))}
+        if "probe" in wanted:
+            for name, (path, _) in identity.items():
+                if path in files:
+                    wanted[name] = path
+        engines = {}
         for name, path in wanted.items():
             phase = "download " + name
             raw = Path(hf_hub_download(repo, path, repo_type="dataset", revision=info.sha,
                                        token=token)).read_bytes()
             hashes[name] = hashlib.sha256(raw).hexdigest()
-            data[name] = read_jsonl(raw)
+            if name in identity:
+                engines[name] = engine_of(json.loads(raw), identity[name][1])
+            else:
+                data[name] = read_jsonl(raw)
         phase = "validation and counting"
-        result = summarise(data["rows"], data.get("probe"))
+        result = summarise(data["rows"], data.get("probe"),
+                           (engines.get("run_engine"), engines.get("probe_engine")))
         if "probe" not in data:
             result["probe"] = {"included": False,
                                "reason": "not requested" if not with_probe else "absent"}

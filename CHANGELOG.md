@@ -25,7 +25,8 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   the paired negatives (engine literals only), families with a pair prompt,
   and control prompts with a native-ran or fallback draw, never paired.
 - Seed 1111's probe rollouts are a separate source only when their case ids
-  join the run's; the join itself is always printed.
+  join the run's; the join itself is always printed, and so is whether the
+  probe was graded by the run's engine.
 - Aggregates only, through `public_view`. No case id, family, program or
   refusal detail is printed, and malformed evidence fails closed. Tests use
   fixtures: `training/tests/test_step3_pairs.py`. Nothing was dispatched.

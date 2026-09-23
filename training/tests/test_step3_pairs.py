@@ -121,7 +121,8 @@ def test_controls_are_counted_apart_and_never_paired():
         "control_prompts": 2, "prompts_with_native_ran_draw": 1,
         "prompts_with_fallback_draw": 2, "prompts_with_both": 1,
         "draws": {"correct_fallback": 2, "correct_native_ran": 1, "not_correct": 1}}
-    assert result["controls"]["any"]["prompts_with_native_ran_draw"] == 1
+    assert result["controls"]["any_arm"]["prompts_with_native_ran_draw"] == 1
+    assert "any_source" not in result["controls"]
     assert result["controls"]["subset-spec"]["prompts_with_fallback_draw"] == 0
     assert result["statuses"]["bare"]["fallback-control"] == {"correct-control": 3,
                                                               "incorrect": 1}
@@ -156,6 +157,10 @@ def test_probe_joins_as_its_own_source():
     # Step 2 modes are unchanged by the probe.
     assert cov["any_arm"]["pair_prompts"] == 3
     assert result["controls"]["probe"]["prompts_with_fallback_draw"] == 1
+    # any_arm keeps its Step 2 meaning when the probe joins; any_source adds it.
+    assert result["controls"]["any_arm"] == m.summarise(rows)["controls"]["any_arm"]
+    assert result["controls"]["any_source"]["prompts_with_fallback_draw"] == 2
+    assert result["probe"]["same_engine_as_run"] is None
     assert result["statuses"]["probe"]["coverage"] == {N: 1, F: 2, I: 5}
 
 
@@ -169,6 +174,7 @@ def test_probe_on_another_split_is_reported_and_left_out():
                                "probe_only_cases": 1, "run_only_cases": 6,
                                "identical_case_sets": False,
                                "shared_cases_disagreeing_on_family_or_population": 0,
+                               "same_engine_as_run": None,
                                "included": False, "samples_per_case": 2}
     assert "probe" not in result["coverage"] and "probe" not in result["controls"]
 
@@ -215,7 +221,9 @@ def fake_hub(monkeypatch, tmp_path, files):
     local = {}
     for name, rows in files.items():
         path = tmp_path / name.replace("/", "__")
-        path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+        text = (json.dumps(rows) if isinstance(rows, dict)
+                else "".join(json.dumps(r) + "\n" for r in rows))
+        path.write_text(text, encoding="utf-8")
         local[name] = str(path)
     api = SimpleNamespace(whoami=lambda: {"name": "owner"},
                           list_repo_files=lambda *a, **k: sorted(files),
@@ -241,6 +249,63 @@ def test_main_prints_aggregates_and_no_case(monkeypatch, tmp_path, capsys):
     assert printed["run"] == RUN and printed["probe"]["included"]
     assert set(printed["sha256"]) == {"rows", "probe"}
     assert printed["coverage"]["any_source"]["pair_prompts"] == 4
+    assert printed["probe"]["same_engine_as_run"] is None
+
+
+@pytest.mark.parametrize("probe_engine,expected", [("e" * 64, True), ("f" * 64, False),
+                                                   (PRIVATE, None)])
+def test_main_reports_whether_the_probe_shares_the_run_engine(monkeypatch, tmp_path, capsys,
+                                                              probe_engine, expected):
+    rows = fixture()
+    probe = probe_rows(rows, {s: [(N, ()), (F, ("module",))] for s in ("c0", "c1")})
+    fake_hub(monkeypatch, tmp_path, {
+        "positive-control/%s/grade/rows.jsonl" % RUN: rows, m.PROBE_PATH: probe,
+        m.RUN_ENGINE_PATH % RUN: {"lineage": {"engine_sha256": "e" * 64}, "private": PRIVATE},
+        m.PROBE_ENGINE_PATH: {"identity": {"sha256": probe_engine},
+                              "cases": [{"case_id": PRIVATE}]}})
+    assert m.main() == 0, capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert PRIVATE not in captured.out + captured.err
+    printed = json.loads(captured.out)
+    assert printed["probe"]["same_engine_as_run"] is expected
+    assert set(printed["sha256"]) == {"rows", "probe", "run_engine", "probe_engine"}
+
+
+def test_engine_identity_is_not_read_without_the_probe(monkeypatch, tmp_path, capsys):
+    fake_hub(monkeypatch, tmp_path, {
+        "positive-control/%s/grade/rows.jsonl" % RUN: fixture(),
+        m.RUN_ENGINE_PATH % RUN: {"lineage": {"engine_sha256": "e" * 64}}})
+    assert m.main() == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert set(printed["sha256"]) == {"rows"} and printed["probe"]["reason"] == "absent"
+
+
+@pytest.mark.parametrize("kind", ["dict_keys-method", "_Environ-method", "TextIOWrapper-method",
+                                  "NoneType-method", PRIVATE + "Point-method"])
+def test_dynamic_engine_kinds_fold_to_other_kind_and_never_print(monkeypatch, tmp_path,
+                                                                 capsys, kind):
+    """The engine writes `<type>-method` kinds; the grader accepted them, so must this."""
+    rows = fixture()
+    for row in rows:
+        if row["case_id"] == PRIVATE + "c2" and row["status"] == F:
+            row["score"]["refusals"] = [[0, "lypning-l: unsupported: %s: %s.x()" % (kind, PRIVATE)]]
+    fake_hub(monkeypatch, tmp_path, {"positive-control/%s/grade/rows.jsonl" % RUN: rows})
+    assert m.main() == 0, capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert kind not in captured.out + captured.err and PRIVATE not in captured.out
+    printed = json.loads(captured.out)
+    assert printed["coverage"]["bare"]["negatives"]["draws_by_kind"] == {"module": 1,
+                                                                         "other-kind": 1}
+
+
+def test_a_refusal_whose_detail_was_stripped_away_still_parses():
+    # The verifier stores `stderr.strip()`: a whitespace-only detail leaves `kind:`.
+    rows = fixture()
+    for row in rows:
+        if row["case_id"] == PRIVATE + "c2" and row["status"] == F:
+            row["score"]["refusals"] = [[0, "lypning-l: unsupported: module:"]]
+    negatives = m.summarise(rows)["coverage"]["bare"]["negatives"]
+    assert negatives["draws_by_kind"] == {"module": 2}
 
 
 def test_main_without_probe_and_on_an_absent_run(monkeypatch, tmp_path, capsys):
