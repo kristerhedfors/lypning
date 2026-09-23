@@ -6,10 +6,11 @@
 # execution witnesses through the pool. Then the reviewed banks come down from
 # the private artifact repo, are reviewed (data_loop), prepared through the
 # pool (training-prepare: the train bank as a pilot, the eval-2 bank as a
-# benchmark), and run in NEXT_ROUND.md's order: base on dev, bounded SFT,
-# reload the selected adapter, probe it on train cases only, GRPO only if
-# GRPO_STEPS asks for it and the probe is admitted, matched test-split
-# evaluations per arm, and the eval-2
+# benchmark), and run in NEXT_ROUND.md's order: base on dev, bounded SFT
+# (its step 0 read from base-dev when the fresh LoRA is a proven no-op),
+# reload the selected adapter, and -- only if GRPO_STEPS asks for GRPO -- probe
+# it on train cases and run GRPO if the probe is admitted; then matched
+# test-split evaluations per arm, and the eval-2
 # benchmark whole with --eval-draws EVAL_DRAWS per arm. Reports compare
 # base-vs-sft and base-vs-grpo on the test split and on the benchmark.
 #
@@ -25,7 +26,7 @@
 #   BANK_PATH    directory in WORK_REPO holding eval2.jsonl, train.jsonl, evidence-*/
 #   HF_TOKEN     job secret; the trainer holds it, candidates never see it
 #   STEPS        SFT optimizer steps (default 250; SFT's token floor still decides)
-#   GRPO_STEPS   GRPO optimizer steps (default 0: probe only, no GRPO -- S4 arm A)
+#   GRPO_STEPS   GRPO optimizer steps (default 0: no probe, no GRPO -- S4 arm A)
 #   EVAL_DRAWS   matched-seed draws per case on the eval-2 benchmark (default 16)
 #   SEED         training seed: initialisation, data order, draws (default 1111)
 #   SPLIT_SEED   review and preparation seed, i.e. the train/dev/test split
@@ -39,8 +40,8 @@ set -euo pipefail
 : "${SPACE_REPO:?}" "${SPACE_REV:?}" "${QWEN_REV:?}" "${WORK_REPO:?}" "${BANK_PATH:?}" "${HF_TOKEN:?}"
 STEPS="${STEPS:-250}"
 GRPO_STEPS="${GRPO_STEPS:-0}"
-# Probe and GRPO share one group size (the probe contract binds them). 4 keeps
-# arm A's probe comparable with seed 1111's; arm C dispatches 8 (`PLAN.md`).
+# Probe and GRPO share one group size (the probe contract binds them). 4 is
+# seed 1111's; arm C dispatches 8 (`PLAN.md`). Arm A runs neither.
 GRPO_GENERATIONS="${GRPO_GENERATIONS:-4}"
 GRPO_PROMPTS="${GRPO_PROMPTS:-4}"         # prompt groups per GRPO optimizer step
 EVAL_DRAWS="${EVAL_DRAWS:-16}"
@@ -180,7 +181,9 @@ manifest = {"job": job, "status": os.environ["STATUS"], "exit_code": int(os.envi
             "kernel_binding": sft.get("kernel_binding"),
             "pilot_bundle_digest": digest("work/round-02/pilot/bundle.json"),
             "eval2_bundle_digest": digest("work/round-02/eval2/bundle.json"),
-            "grpo_skipped": os.path.exists("work/round-02/grpo-skipped.json")}
+            "grpo_skipped": os.path.exists("work/round-02/grpo-skipped.json"),
+            # Arm A skips the probe outright; the marker says so and why.
+            "probe_skipped": bool(read("work/round-02/grpo-skipped.json").get("probe_skipped"))}
 json.dump(manifest, open("work/round-02/job-manifest.json", "w"), indent=2)
 print("== manifest:", json.dumps(public_view(manifest)))
 info = api.repo_info(os.environ["WORK_REPO"], repo_type="dataset")
@@ -479,8 +482,12 @@ run "${TV[@]}" eval --bundle "$PILOT" --output "$ROUND/base-dev" "${COMMON[@]}" 
 checkpoint
 
 # 7b. Bounded SFT; best.json selects the adapter, step 0 included, never the last checkpoint.
+#     Step 0 is the fresh LoRA, which is the base when its B matrices are zero:
+#     --reuse-step0 records base-dev's draws as step 0 (reuse.json says so)
+#     after checking that proof and that base-dev ran in THIS job under the
+#     same contract, draws, chunking, seed, bundle and engine; no proof, no reuse.
 STAGE=sft
-run "${TV[@]}" sft --bundle "$PILOT" --output "$ROUND/sft" "${COMMON[@]}" "${DEV[@]}" "${SFT_TRAIN[@]}" "${SFT_TARGET_ARGS[@]}" --batch-size 4
+run "${TV[@]}" sft --bundle "$PILOT" --output "$ROUND/sft" --reuse-step0 "$ROUND/base-dev" "${COMMON[@]}" "${DEV[@]}" "${SFT_TRAIN[@]}" "${SFT_TARGET_ARGS[@]}" --batch-size 4
 SFT_STEP=$(python3 -c 'import json; print(json.load(open("work/round-02/sft/best.json"))["step"])')
 SFT_ADAPTER="$ROUND/sft/adapter-$SFT_STEP"
 echo "== sft selected step $SFT_STEP: $SFT_ADAPTER"
@@ -492,35 +499,47 @@ STAGE=sft-dev-reload
 run "${TV[@]}" eval --adapter "$SFT_ADAPTER" --bundle "$PILOT" --output "$ROUND/sft-dev-reload" "${COMMON[@]}" "${DEV[@]}"
 checkpoint
 
-# 7d. Probe the exact selected policy on TRAIN cases only; no optimizer updates.
+# 7d. GRPO_STEPS=0 is S4 arm A: no probe and no GRPO. The probe is not arm C's
+#     admission evidence either: its contract (`probe_contract`) binds the
+#     exact adapter, code_sha256, seed and group size, so a later arm C job --
+#     another commit, possibly another starting adapter, 8 generations --
+#     cannot validate against it and re-probes in its own job. The marker says
+#     so; nothing is generated.
+GRPO_ADAPTER=""
+if [ "$GRPO_STEPS" = 0 ]; then
+  STAGE=grpo-gate
+  python3 - <<'PYEOF'
+import json
+from pipeline.public_view import public_view
+marker = {"why": "arm A only; the probe binds adapter and code, so arm C re-probes in its own job",
+          "probe_skipped": True, "grpo_steps": 0}
+json.dump(marker, open("work/round-02/grpo-skipped.json", "w"), indent=2)
+print("== probe and GRPO skipped:", json.dumps(public_view(marker)))
+PYEOF
+  checkpoint
+else
+# 7d'. Probe the exact selected policy on TRAIN cases only; no optimizer updates.
 STAGE=probe
 run "${TV[@]}" probe --adapter "$SFT_ADAPTER" --bundle "$PILOT" --output "$ROUND/probe" "${COMMON[@]}" --generations "$GRPO_GENERATIONS"
 checkpoint
 
-# 7e. GRPO only if it was asked for (GRPO_STEPS > 0) AND the probe is admitted
-#     (probe_report: at least two informative groups and a correct draw).
-#     Otherwise a marker says why, and the round evaluates the base and SFT
-#     arms only. GRPO_STEPS=0 is S4 arm A: the probe above still ran, because
-#     it is arm C's admission evidence, and its verdict goes in the marker.
+# 7e. GRPO only if the probe is admitted (probe_report: at least two
+#     informative groups and a correct draw). Otherwise a marker says why, and
+#     the round evaluates the base and SFT arms only.
 STAGE=grpo-gate
-GRPO_ADAPTER=""
 echo "== read $ROUND/probe/probe.json: exit 0 admits GRPO, exit 3 skips it, anything else fails"
 set +e
-GRPO_STEPS="$GRPO_STEPS" python3 - <<'PYEOF'
-import json, os
+python3 - <<'PYEOF'
+import json
 from pipeline.public_view import public_view
 report = json.load(open("work/round-02/probe/probe.json"))
 verdict = {"admitted": bool(report.get("admitted")), "informative_groups": report.get("informative_groups"),
            "groups": report.get("groups"), "correct_draws": report.get("correct_draws"),
            "truncated_draws": report.get("truncated_draws"), "draws": report.get("draws")}
 print("== probe verdict:", json.dumps(public_view(verdict)))
-if int(os.environ["GRPO_STEPS"]) == 0:
-    verdict["why"] = ("GRPO skipped: arm A only (GRPO_STEPS=0); the probe ran as arm C's "
-                      "admission evidence and its verdict is recorded here")
-elif not verdict["admitted"]:
+if not verdict["admitted"]:
     verdict["why"] = ("GRPO skipped: probe not admitted; needs at least two informative train groups "
                       "(non-truncated reward variation) and at least one correct draw")
-if "why" in verdict:
     json.dump(verdict, open("work/round-02/grpo-skipped.json", "w"), indent=2)
     print("==", verdict["why"])
 raise SystemExit(3 if "why" in verdict else 0)
@@ -541,6 +560,7 @@ elif [ "$GATE" -eq 3 ]; then
 else
   echo "== probe.json could not be read (exit $GATE)"
   exit "$GATE"
+fi
 fi
 
 # 7f. Matched test-split evaluation per arm on the pilot bundle.

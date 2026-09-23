@@ -404,10 +404,11 @@ green before the second seed is billed.
   `hf_sandbox_runner.py` and `container_worker.py`, and `code_sha256` changed;
   every existing bundle is refused.
 - **Launcher.** GRPO dose defaults to 0 in `launch.py`, the job script and
-  `round02.yml`, so arm A never bills GRPO; the probe still runs as arm C's
-  admission evidence. A banked stage defaults to h200 / 720m. `QWEN_REV` is
+  `round02.yml`, so arm A never bills GRPO. This bullet said the probe still
+  ran as arm C's admission evidence; that did not survive (2026-09-24, below).
+  A banked stage defaults to h200 / 720m. `QWEN_REV` is
   pinned in every round-02 workflow. The launcher's `--grpo-generations`
-  (default 4, which keeps arm A's probe comparable with seed 1111's) and
+  (default 4, seed 1111's) and
   `--grpo-prompts` (default 4) reach both the probe and GRPO and are arm
   fields; arm C passes `--grpo-generations 8` and budgets the job timeout
   for 16–32 sequences per step. `round02.yml` carries them as
@@ -434,8 +435,9 @@ Nothing below has been dispatched.
   `full-merged-0527b3cd2c0d8916bebd086abcc46459d7ae46b1-35913600534`
   (`bare,subset-spec`, 1,291 cases, 4,197 rows); `PILOT_STEPS` 1,050, one pass
   at batch 4; `PILOT_DEV_EVAL_DRAWS` 16; `PILOT_EVAL_EVERY` 350, so SFT
-  evaluates at steps 0, 350, 700 and 1,050. Step 0 is a fresh dev pass, not
-  a reuse of base-dev. `PILOT_GRPO_STEPS` 0. `eval_every` is now an arm field.
+  evaluates at steps 0, 350, 700 and 1,050. Step 0 is base-dev's evaluation,
+  reused (2026-09-24, below), not a fresh dev pass. `PILOT_GRPO_STEPS` 0.
+  `eval_every` is now an arm field.
 - **Hardware smoke first** (`stage: hwsmoke`, h200, 90m ceiling, no bank). It
   loads the model through `train_verified`'s own loaders, times one 256- and
   one 128-sequence `generate` call with the pilot's decoding, one 256 call
@@ -446,8 +448,8 @@ Nothing below has been dispatched.
   stage of the approved job against the 720m ceiling, measured plus an upper
   and a lower bound; read the upper one before choosing `PILOT_EVAL2`. The
   projection's prep and scoring terms are stated constants, not measurements.
-- **Split, if the projection needs it.** `PILOT_EVAL2` stays `same-job` until
-  the smoke has been read. `separate` ends the pilot job after the test split
+- **Split, if the projection needs it.** `PILOT_EVAL2` stayed `same-job` until
+  the smoke had been read; it is `separate` now (below). `separate` ends the pilot job after the test split
   with `eval2-deferred.json`. A `stage: eval2` dispatch (`eval2_of` = that
   job) then runs step 7g's commands in a second job. It refuses unless
   bundle, engine, Space, Qwen revision, trainer code, seed, draws, chunking
@@ -456,6 +458,71 @@ Nothing below has been dispatched.
 - **Latent bug fixed.** `experiment.json` never recorded `purpose`, so
   `adapter_lineage_admitted` refused every SFT adapter at `sft-eval2`, a
   stage no job had reached. It is written now.
+
+**What the h200 smoke measured, and the pilot fitted to it (2026-09-24).**
+The hardware smoke ran as HF job `6ab4582d6b030d633f68c90e` (Actions
+`35930577878`, 2026-09-24, commit `83b62d1`), with no out-of-memory error.
+On the short public starter prompts a 256-sequence `generate` call took
+44.8 s (longest draw 147 tokens) and a 128-sequence call took 16.1 s. The
+256 call forced to 1,024 tokens took 359.4 s, which is 0.351 s per decode
+step. Peak memory was 104.9 GB for the pilot-decoding call and 120.7 GB for
+the full-length call. SFT at batch 4 took 7.29 s/step on 1,024-token rows
+(61.5 GB peak) and 4.22 s/step on 256-token rows. Load took 8.6 s and the
+download 34.8 s.
+The smoke's own projection of the job as it then stood was 788 min in one job
+(527 pilot + 271 eval-2 at the measured reading), over 720m, and it did not
+fit even split at the upper reading. Arm A's configuration is unchanged
+(target run `…-35913600534`, 1,050 steps, cadence 350, 16 dev draws,
+GRPO 0). Three changes to how the job runs it:
+
+- **No probe in arm A.** With `GRPO_STEPS` 0 `round02_pilot.sh` runs no probe
+  and writes `grpo-skipped.json` with the reason "arm A only; the probe binds
+  adapter and code, so arm C re-probes in its own job" and `probe_skipped`,
+  which the manifest records. The earlier reason for probing, "arm C's
+  admission evidence", does not hold. `probe_contract` binds
+  `adapter_sha256`, `code_sha256`, `seed` and `generations`, and
+  `validate_probe` refuses any other contract. An arm C job starts from the
+  better of A/B, runs at a later commit and uses 8 generations, so it cannot
+  reuse an arm-A probe and has to probe again in its own job. The change
+  saves 5,420 draws.
+- **SFT step 0 from base-dev.** `train_verified sft --reuse-step0
+  <base-dev>` records step 0 from base-dev's draws, in
+  `evaluation_reuse.reuse_step_zero`. It does this only when the fresh LoRA is
+  a verified no-op (`fresh_lora_is_noop`: finite tensors, zero B). It also
+  needs base-dev to be the unadapted standalone evaluation of the same job
+  (`job_id`) under the same runtime contract, kernel binding, draws,
+  chunking, seed, bundle and engine. Any mismatch raises. `reuse.json` keeps
+  the provenance, as the eval-2 reuse does. The gate's baseline and
+  `best.json` are what a fresh step 0 would give, pinned in
+  `training/tests/test_evaluation_reuse.py`. This saves 4,896 draws.
+- **`PILOT_EVAL2` is `separate`.**
+
+The projection (`training/hf/projection.py`, re-run 2026-09-24 from the
+smoke's numbers, which are pinned in `training/tests/test_hwsmoke.py` as
+`SMOKE_6AB4582D`) now has a fourth reading, `realistic`. In it a call lasts
+until its expected longest draw: 1,024 tokens with probability
+1-(1-p)^batch, otherwise 600, at 0.351 s per step. SFT is priced at
+165-token rows, which clamps to the 256-row measurement. Its constants are
+assumptions, not measurements. p = 0.0016 is seed 1111's base-dev truncation
+rate, 165 is the mean from Step 2's bare arm (2026-09-23), and the 600-token
+tail is a guess. The budget is 648 min (720m less 10%).
+
+| reading | pilot job | eval-2 job | one job | verdict |
+|---|---|---|---|---|
+| measured | 422.6 | 271.4 | 683.4 | split fits |
+| realistic | 764.4 | 638.3 | 1,392.1 | pilot does not fit |
+| upper (every call full-length) | 1,002.8 | 807.5 | 1,799.7 | does not fit |
+| lower (256-token SFT rows) | 368.8 | 271.4 | 629.6 | one job fits |
+
+**Read the realistic row before dispatch.** The pilot job is 116 min over
+budget there, and 44 min over the 720m ceiling. Scoring accounts for 195.0 of
+those minutes (27,000 draws at 20.8 worker-s each over 48 workers). That
+scoring rate is a stated constant from job `6aaa4b2c` (2026-09-16): the smoke
+has no pool and did not measure it. At the realistic reading with scoring
+taken out, the pilot is 569.4 min. So whether arm A's pilot fits one 720m job
+turns on pooled scoring throughput, and no run in this tree has measured it.
+The eval-2 job fits at the realistic reading (638.3), with a 10-min margin.
+No launch decision is taken here.
 
 ## Kill criteria (unchanged, `LADDER.md` §6)
 

@@ -12,8 +12,8 @@ it names at commit `4c2429c`, 2026-09-18; line numbers are from then.
 
 **2026-09-22 — what changed before S4 arm A** (`training/PLAN.md` Step 4):
 
-- `launch.py` defaults: `DEFAULT_GRPO_STEPS = 0` (arm A never bills GRPO; the
-  probe still runs and `grpo-skipped.json` says "arm A only"), a banked stage
+- `launch.py` defaults: `DEFAULT_GRPO_STEPS = 0` (arm A never bills GRPO; since
+  2026-09-24 it skips the probe too, and `grpo-skipped.json` says "arm A only"), a banked stage
   defaults to **h200 / 720m** and refuses a longer timeout, and `--seed` /
   `--split-seed` must be protocol seeds.
 - **Split seed fixed at 1111.** `round02.yml` has a `seed` dispatch input

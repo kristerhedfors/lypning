@@ -14,6 +14,22 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-24** — Fit arm A's pilot to the h200 smoke: no probe, SFT step 0 from base-dev, eval-2 split ([#TBD](https://github.com/kristerhedfors/lypning/pull/TBD))
+
+- `round02_pilot.sh`: with `GRPO_STEPS` 0 no probe runs; `grpo-skipped.json`
+  says why (a probe binds adapter and code, so arm C re-probes in its own job)
+  and the manifest records `probe_skipped`.
+- `train_verified sft --reuse-step0 <base-dev>`: step 0 is recorded from the
+  same job's base-dev draws when the fresh LoRA is a verified no-op and the
+  runtime contract, draws, chunking, seed, bundle and engine match
+  (`evaluation_reuse.reuse_step_zero`, provenance in `reuse.json`);
+  `experiment.json` records `job_id`. Changes `code_sha256`.
+- `round02.yml`: `PILOT_EVAL2` is `separate`.
+- `projection.py`: models both changes and adds a `realistic` reading (a call
+  lasts its expected longest draw; stated constants p, mean and tail length);
+  `--reading all` prints the four readings side by side. `PLAN.md` Step 4
+  holds the re-run from smoke job `6ab4582d6b030d633f68c90e` (2026-09-24).
+
 **2026-09-23** — Arm A's approved configuration, an h200 hardware smoke, and an optional split eval-2 job ([#121](https://github.com/kristerhedfors/lypning/pull/121))
 
 - `round02.yml`: `PILOT_STEPS` 1050 (one pass over 4,197 target rows),

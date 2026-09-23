@@ -84,11 +84,18 @@ def test_a_flat_rate_projects_draws_over_rate_exactly():
         projection.flat_rate(0)
 
 
-def hand_total(dpm, step_s, load_min, download_min):
-    """The approved arm-A job, counted by hand at a flat rate."""
+def hand_total(dpm, step_s, load_min, download_min, probe=False, sft_evaluations=3):
+    """The approved arm-A job, counted by hand at a flat rate.
+
+    Arm A: no probe, and SFT generates three dev evaluations (350, 700, 1,050);
+    step 0 is base-dev's. `probe=True, sft_evaluations=4` is the job before
+    2026-09-24, which the hardware smoke projected.
+    """
     dev = 306 * 16 / dpm
-    pilot = (projection.PREP_MINUTES + download_min + (load_min + dev) + (load_min + 4 * dev + 1050 * step_s / 60)
-             + (load_min + dev) + (load_min + 1355 * 4 / dpm) + 2 * (load_min + 315 * 4 / dpm))
+    pilot = (projection.PREP_MINUTES + download_min + (load_min + dev)
+             + (load_min + sft_evaluations * dev + 1050 * step_s / 60)
+             + (load_min + dev) + ((load_min + 1355 * 4 / dpm) if probe else 0)
+             + 2 * (load_min + 315 * 4 / dpm))
     eval2 = 2 * (load_min + 803 * 16 / dpm)
     return pilot, eval2
 
@@ -125,13 +132,29 @@ def test_the_projection_counts_every_stage_the_job_runs():
     pilot, eval2 = hand_total(40, 20.0, 3.0, 5.0)
     assert [s["stage"] for s in got["stages"]] == ["prep", "base-dev", "sft", "sft-dev-reload",
                                                    "probe", "test", "eval2"]
-    assert got["sft_evaluations"] == 4
+    assert got["sft_evaluations"] == 4 and got["sft_generated_evaluations"] == 3
     assert got["split"]["pilot_minutes"] == pytest.approx(pilot, abs=0.5)
     assert got["same_job_minutes"] == pytest.approx(pilot + eval2, abs=0.5)
     assert got["split"]["eval2_minutes"] == pytest.approx(projection.EVAL2_PREP_MINUTES + 5.0 + eval2, abs=0.5)
-    draws = {s["stage"]: s["draws"] for s in got["stages"]}
+    stages = {s["stage"]: s for s in got["stages"]}
+    draws = {name: stage["draws"] for name, stage in stages.items()}
+    # Arm A: step 0 is base-dev's draws, and the probe does not run.
     assert (draws["base-dev"], draws["sft"], draws["probe"], draws["test"], draws["eval2"]) == \
-        (4896, 4 * 4896, 5420, 2 * 315 * 4, 2 * 803 * 16)
+        (4896, 3 * 4896, 0, 2 * 315 * 4, 2 * 803 * 16)
+    assert stages["probe"]["skipped"] and stages["probe"]["minutes"] == 0
+    assert (stages["sft"]["evaluations"], stages["sft"]["generated_evaluations"],
+            stages["sft"]["reused_evaluations"]) == (4, 3, 1)
+
+
+def test_the_probe_and_a_fresh_step_zero_are_counted_when_the_plan_asks_for_them():
+    """GRPO_STEPS > 0 runs the probe; without reuse SFT generates step 0 too."""
+    got = projection.project(projection.flat_rate(40), 20.0, 3.0, 5.0,
+                             {"grpo_steps": 300, "reuse_step0": 0}, score_worker_seconds=0.0)
+    pilot, _ = hand_total(40, 20.0, 3.0, 5.0, probe=True, sft_evaluations=4)
+    assert got["split"]["pilot_minutes"] == pytest.approx(pilot, abs=0.5)
+    draws = {s["stage"]: s["draws"] for s in got["stages"]}
+    assert (draws["sft"], draws["probe"]) == (4 * 4896, 5420)
+    assert "GRPO steps not modelled" in got["assumes"]
 
 
 def test_the_verdict_is_same_job_split_or_neither():
@@ -164,6 +187,9 @@ def test_the_projections_plan_is_the_workflows_arm():
     assert plan["eval_sequences"] == launch.DEFAULT_EVAL_SEQUENCES
     assert plan["probe_cases"] * plan["probe_draws"] == 5420
     assert plan["eval2_draws"] == 16 and plan["test_draws"] == 4 and plan["arms"] == 2
+    assert plan["grpo_steps"] == env("PILOT_GRPO_STEPS") == 0, "arm A: no probe"
+    assert plan["reuse_step0"] == 1 and '--reuse-step0 "$ROUND/base-dev"' in \
+        (HF / "round02_pilot.sh").read_text(encoding="utf-8")
     assert projection.JOB_CEILING_MINUTES * 60 == launch.timeout_seconds(launch.BANKED_TIMEOUT)
 
 
@@ -192,6 +218,119 @@ def test_a_projection_reads_a_hwsmoke_report_and_skips_what_did_not_fit(tmp_path
     assert projection.main(["--hwsmoke", str(path), "--eval-every", "525"]) == 0
     printed = json.loads(capsys.readouterr().out)
     assert printed["sft_evaluations"] == 3 and printed["plan"]["eval_every"] == 525
+
+
+# --- the h200 smoke's own numbers ------------------------------------------------
+
+#: What the h200 hardware smoke measured: HF job 6ab4582d6b030d633f68c90e,
+#: Actions run 35930577878, 2026-09-24, commit 83b62d1. Aggregates only, copied
+#: from the `== hwsmoke:` line of that public log; the projections below are
+#: re-derived from these numbers, never quoted.
+SMOKE_6AB4582D = {
+    "job": "6ab4582d6b030d633f68c90e", "load_seconds": 8.6, "download_seconds": 34.8,
+    "generation": [
+        {"sequences": 256, "max_new_tokens": 1024, "full_length": False, "seconds": 44.82,
+         "max_completion_tokens": 147, "mean_completion_tokens": 63.3, "truncated": 0,
+         "peak_memory_bytes": 104861628416},
+        {"sequences": 128, "max_new_tokens": 1024, "full_length": False, "seconds": 16.12,
+         "max_completion_tokens": 90, "mean_completion_tokens": 59.3, "truncated": 0,
+         "peak_memory_bytes": 79976356864}],
+    "generation_full_length": {"sequences": 256, "max_new_tokens": 1024, "full_length": True,
+                               "seconds": 359.44, "max_completion_tokens": 1024, "truncated": 256,
+                               "peak_memory_bytes": 120700543488},
+    "sft": {"batch_size": 4, "assistant_tokens": 1024, "seconds_per_step": 7.289,
+            "peak_memory_bytes": 61525806080},
+    "sft_typical": {"batch_size": 4, "assistant_tokens": 256, "seconds_per_step": 4.218,
+                    "peak_memory_bytes": 58140779520},
+}
+#: The job as the smoke projected it: the probe ran and SFT generated step 0.
+BEFORE = {"grpo_steps": 300, "reuse_step0": 0}
+
+
+def test_the_fixture_reproduces_what_the_smoke_itself_printed():
+    """The smoke's own `hwsmoke.json` projection, from these numbers and the old plan.
+
+    Printed by the job: same-job 788.1, split 527.3 + 271.4 (measured); upper
+    2126.0 (1329.1 + 807.5); lower 734.3 (473.5 + 271.4). If the fixture or the
+    arithmetic drifted, the new numbers below would mean nothing.
+    """
+    want = {"measured": (788.1, 527.3, 271.4), "upper": (2126.0, 1329.1, 807.5),
+            "lower": (734.3, 473.5, 271.4)}
+    for reading, (same, pilot, eval2) in want.items():
+        got = projection.from_hwsmoke(SMOKE_6AB4582D, BEFORE, reading=reading)
+        assert (got["same_job_minutes"], got["split"]["pilot_minutes"],
+                got["split"]["eval2_minutes"]) == pytest.approx((same, pilot, eval2), abs=0.15), reading
+
+
+def test_arm_a_without_the_probe_and_with_step_zero_reused_from_the_smokes_numbers():
+    """The numbers `PLAN.md` Step 4 quotes, re-derived: pilot job and eval-2 job minutes."""
+    table = projection.readings(SMOKE_6AB4582D)
+    got = {r: (row["pilot_minutes"], row["eval2_minutes"]) for r, row in table.items()}
+    assert got == {"measured": pytest.approx((422.6, 271.4), abs=0.15),
+                   "realistic": pytest.approx((764.4, 638.3), abs=0.15),
+                   "upper": pytest.approx((1002.8, 807.5), abs=0.15),
+                   "lower": pytest.approx((368.8, 271.4), abs=0.15)}
+    assert table["measured"]["verdict"] == "separate"
+    assert table["upper"]["verdict"] == table["realistic"]["verdict"] == "does-not-fit"
+    # The realistic pilot is over the 648-minute budget, and the stated scoring
+    # constant is 195 of its minutes: 27,000 draws x 20.8 worker-s / 48 workers.
+    assert table["realistic"]["pilot_minutes"] > table["realistic"]["budget_minutes"] == 648.0
+    assert table["realistic"]["scoring_minutes"]["pilot"] == pytest.approx(27000 * 20.8 / 48 / 60, abs=0.1)
+    assert table["realistic"]["eval2_minutes"] <= 648.0
+    # Removing the probe and step 0 takes 10,316 draws off the pilot job at every reading.
+    for reading in ("measured", "realistic", "upper", "lower"):
+        before = projection.from_hwsmoke(SMOKE_6AB4582D, BEFORE, reading=reading)
+        assert before["split"]["pilot_minutes"] > table[reading]["pilot_minutes"], reading
+        drawn = sum(s["draws"] for s in before["stages"] if s["job"] == "pilot")
+        now = sum(s["draws"] for s in projection.from_hwsmoke(SMOKE_6AB4582D, reading=reading)["stages"]
+                  if s["job"] == "pilot")
+        assert drawn - now == 5420 + 4896
+
+
+def test_the_realistic_call_lasts_its_expected_longest_draw():
+    # 1-(1-0.0016)^256: about one 256-draw call in three reaches the cap.
+    assert projection.capped_call_probability(256, 0.0016) == pytest.approx(0.3363, abs=1e-4)
+    assert projection.capped_call_probability(1, 0.0016) == pytest.approx(0.0016)
+    assert projection.expected_call_tokens(256) == pytest.approx(0.3363 * 1024 + 0.6637 * 600, abs=0.1)
+    assert projection.expected_call_tokens(32) < projection.expected_call_tokens(256) < 1024
+    assert projection.expected_call_tokens(256, truncation_p=0.0) == 600
+    rate = projection.realistic_rate(359.44 / 1024)
+    assert rate(256) == pytest.approx(359.44 / 1024 * projection.expected_call_tokens(256))
+    assert rate(256) < 359.44, "below the forced full-length call, which is the upper reading"
+    for bad in (dict(truncation_p=1.0), dict(tail_tokens=100), dict(tail_tokens=2000),
+                dict(mean_tokens=0)):
+        with pytest.raises(ValueError):
+            projection.realistic_rate(0.35, **bad)
+    with pytest.raises(ValueError):
+        projection.realistic_rate(0.0)
+
+
+def test_the_realistic_sft_step_is_read_at_the_mean_row_length_and_never_extrapolated():
+    assert projection.sft_seconds_at(SMOKE_6AB4582D, 165) == 4.218, "below 256: the 256 measurement"
+    assert projection.sft_seconds_at(SMOKE_6AB4582D, 2048) == 7.289
+    assert projection.sft_seconds_at(SMOKE_6AB4582D, 640) == pytest.approx((4.218 + 7.289) / 2)
+    with pytest.raises(ValueError):
+        projection.sft_seconds_at({}, 165)
+    got = projection.from_hwsmoke(SMOKE_6AB4582D, reading="realistic")
+    assert got["sft_seconds_per_step"] == 4.22
+    stated = got["realistic_assumptions"]
+    assert (stated["truncation_p"], stated["mean_completion_tokens"], stated["tail_tokens"]) == (
+        projection.TRUNCATION_P, projection.MEAN_COMPLETION_TOKENS, projection.TAIL_TOKENS) == (0.0016, 165, 600)
+    assert stated["seconds_per_decode_step"] == pytest.approx(0.351, abs=1e-3)
+    with pytest.raises(ValueError):
+        projection.from_hwsmoke(smoke_report(), reading="realistic")      # no full-length call
+
+
+def test_the_cli_prints_every_reading_side_by_side(tmp_path, capsys):
+    path = tmp_path / "hwsmoke.json"
+    path.write_text(json.dumps(SMOKE_6AB4582D))
+    assert projection.main(["--hwsmoke", str(path), "--reading", "all"]) == 0
+    table = json.loads(capsys.readouterr().out)
+    assert set(table) == {"measured", "upper", "lower", "realistic"}
+    assert "assumptions" in table["realistic"] and "assumptions" not in table["measured"]
+    assert projection.main(["--hwsmoke", str(path), "--reading", "realistic", "--tail-tokens", "1024"]) == 0
+    worst = json.loads(capsys.readouterr().out)
+    assert worst["realistic_assumptions"]["expected_call_tokens_256"] == 1024.0
 
 
 # --- the hardware smoke ---------------------------------------------------------
@@ -457,7 +596,8 @@ def test_every_measurement_is_saved_before_it_starts_and_one_failure_does_not_st
     assert "in_progress" not in report and report["status"] == "failed"
     assert report["errors"] == ["generation-128"]
     assert report["verdict"] == {"eval_sequences_256_fits": True, "sft_batch_4_fits": True}
-    assert report["projection"]["verdict"] and set(report["projection_bounds"]) == {"upper", "lower"}
+    assert report["projection"]["verdict"] and set(report["projection_bounds"]) == {"upper", "lower",
+                                                                                     "realistic"}
     assert report["projection_bounds"]["upper"]["same_job_minutes"] > report["projection"]["same_job_minutes"]
     assert report["kernel_binding"] == {"chunk_gated_delta_rule": "torch"}
 

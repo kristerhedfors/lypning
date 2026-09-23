@@ -315,7 +315,10 @@ def test_arm_a_is_the_operator_approved_configuration():
     assert env_value("PILOT_DEV_EVAL_DRAWS") == "16"
     assert env_value("PILOT_EVAL_EVERY") == "350"
     assert env_value("PILOT_GRPO_STEPS") == "0"
-    assert env_value("PILOT_EVAL2") == "same-job", "the split is chosen after the smoke, not here"
+    # Chosen after the h200 smoke (job 6ab4582d6b030d633f68c90e, 2026-09-24):
+    # even without the probe and with step 0 reused, the whole arm in one job
+    # is over the 648-minute budget at every reading but the lower one.
+    assert env_value("PILOT_EVAL2") == "separate"
     assert load_by_path("projection").sft_evaluations(1050, 350) == 4, "steps 0, 350, 700, 1050"
     submit = job(ROUND02, "submit")
     assert '--eval-every "${PILOT_EVAL_EVERY}" --eval2 "${PILOT_EVAL2}"' in submit

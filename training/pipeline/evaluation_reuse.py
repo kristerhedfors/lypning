@@ -2,6 +2,14 @@
 
 Step zero in GRPO is its SFT parent, which need not be the unadapted base.
 A checkpoint number alone is never evidence of equivalence.
+
+Two reuses share one proof. `reuse_evaluation`: a standalone eval of a sealed
+step-0 adapter reads its parent's eval (the eval-2 arms). `reuse_step_zero`:
+an SFT stage whose freshly attached LoRA is a verified no-op records step 0
+from the unadapted base-dev evaluation its own job just ran, instead of
+generating the same draws again. Either way the source must be a complete
+evaluation under the same runtime contract, arguments and cases, and the
+provenance is written beside the copied draws.
 """
 from __future__ import annotations
 
@@ -18,6 +26,13 @@ CONTRACT_KEYS = ("base_model", "revision", "bundle_digest", "smoke", "decoding",
                  "enable_thinking", "tokenizer_sha256", "model_config_sha256", "code_sha256",
                  "versions", "hardware", "kernels", "contract_version", "metric_policy")
 ARGUMENT_KEYS = ("seed", "eval_split", "eval_draws", "greedy", "eval_sequences", "score_workers")
+#: What SFT step-0 reuse checks beyond the eval-2 reuse's keys. The stages
+#: differ (eval vs sft), so what the model CALLS, when it stops and which bundle
+#: purpose it read are compared outright, and `job_id` makes "the same job"
+#: a recorded fact rather than an assumption about how the script was run.
+STEP0_CONTRACT_KEYS = CONTRACT_KEYS + ("purpose", "kernel_binding", "eos_token_id",
+                                       "presence_penalty", "job_id")
+STEP0_ARGUMENT_KEYS = ARGUMENT_KEYS + ("engine", "bundle", "max_new_tokens")
 
 
 def fresh_lora_is_noop(model):
@@ -54,10 +69,50 @@ def reuse_evaluation(source, output, manifest, cases):
         raise TrainingError("evaluation reuse needs the checkpoint's equivalent parent policy")
     if prior.get("stage") != "eval" or manifest.get("stage") != "eval":
         raise TrainingError("evaluation reuse needs standalone evaluation logs")
-    for key in CONTRACT_KEYS:
+    metrics = _complete_evaluation(source, prior, manifest, cases, CONTRACT_KEYS, ARGUMENT_KEYS)
+    _copy_with_provenance(source, output, proof)
+    write_json(output / "metrics.json", metrics)
+    return True
+
+
+def reuse_step_zero(source, output, manifest, cases, noop):
+    """SFT step 0 from this job's base-dev evaluation; None means measure it afresh.
+
+    `noop` is `fresh_lora_is_noop(model)`, taken on the stage's model before
+    any optimizer step: without it there is no proof and step 0 is generated
+    (None). With it, the source must be the UNADAPTED standalone dev
+    evaluation of the same job under the same runtime contract, draws,
+    chunking, seed, bundle and engine; any mismatch raises, never falls back
+    silently. Returns the step-0 metrics, recomputed from the copied draws and
+    equal to the source's saved `metrics.json`, which is exactly what
+    `measure(0)` returns: the CheckpointGate baseline and `best.json` follow.
+    """
+    if manifest.get("stage") != "sft" or manifest.get("adapter") is not None:
+        raise TrainingError("step-0 reuse is for an SFT stage starting from the pinned base")
+    if not noop:
+        return None
+    source, output = Path(source), Path(output)
+    prior = json.loads((source / "experiment.json").read_text())
+    if prior.get("stage") != "eval" or prior.get("adapter") is not None:
+        raise TrainingError("step-0 reuse needs the unadapted base-dev evaluation")
+    if not manifest.get("job_id"):
+        raise TrainingError("step-0 reuse needs a job id: an absent one cannot show the same job")
+    metrics = _complete_evaluation(source, prior, manifest, cases,
+                                   STEP0_CONTRACT_KEYS, STEP0_ARGUMENT_KEYS)
+    records = [json.loads(line) for line in (source / "evaluations.jsonl").read_text().splitlines()]
+    if any(row.get("step") != 0 for row in records):
+        raise TrainingError("step-0 reuse needs step-0 draws only")
+    _copy_with_provenance(source, output, {"adapter_sha256": None, "basis": "finite-zero-lora-b"},
+                          step=0)
+    return metrics
+
+
+def _complete_evaluation(source, prior, manifest, cases, contract_keys, argument_keys):
+    """The saved metrics of a complete, contract-identical evaluation; raises otherwise."""
+    for key in contract_keys:
         if key not in prior or key not in manifest or prior[key] != manifest[key]:
             raise TrainingError("evaluation reuse contract mismatch: " + key)
-    for key in ARGUMENT_KEYS:
+    for key in argument_keys:
         if prior["args"].get(key) != manifest["args"].get(key):
             raise TrainingError("evaluation reuse argument mismatch: " + key)
     # metrics.json is the completion marker; partial evaluations are not reusable.
@@ -76,11 +131,14 @@ def reuse_evaluation(source, output, manifest, cases):
             want = case.get(key, case["family"] if key == "split_group" else [])
             if row.get(key, []) != want:
                 raise TrainingError("evaluation reuse case metadata mismatch")
-    evidence = {"source": str(source), "basis": proof,
-                "source_sha256": {name: hashlib.sha256((source / name).read_bytes()).hexdigest()
-                                  for name in ("experiment.json", "evaluations.jsonl", "metrics.json")},
-                "independent_draws": False}
+    return metrics
+
+
+def _copy_with_provenance(source, output, proof, **extra):
+    """Copy the draws and write `reuse.json`: where they came from, hashed."""
+    evidence = dict({"source": str(source), "basis": proof,
+                     "source_sha256": {name: hashlib.sha256((source / name).read_bytes()).hexdigest()
+                                       for name in ("experiment.json", "evaluations.jsonl", "metrics.json")},
+                     "independent_draws": False}, **extra)
     shutil.copyfile(source / "evaluations.jsonl", output / "evaluations.jsonl")
     write_json(output / "reuse.json", evidence)
-    write_json(output / "metrics.json", metrics)
-    return True

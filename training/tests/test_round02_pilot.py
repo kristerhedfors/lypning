@@ -20,11 +20,15 @@ SCRIPT = ROOT / "training" / "hf" / "round02_pilot.sh"
 TEXT = SCRIPT.read_text(encoding="utf-8")
 
 
-def heredoc(opening):
-    """The Python body that follows the line containing `opening`."""
-    start = TEXT.index(opening)
+def heredoc(opening, after=""):
+    """The Python body that follows the line containing `opening` (the first after `after`)."""
+    start = TEXT.index(opening, TEXT.index(after))
     body = TEXT[TEXT.index("\n", start) + 1:]
     return body[:body.index("\nPYEOF")] + "\n"
+
+
+ARM_A = 'if [ "$GRPO_STEPS" = 0 ]; then'
+GATE = 'echo "== read $ROUND/probe/probe.json'
 
 
 def run_snippet(source, cwd, env, *argv):
@@ -41,19 +45,53 @@ def probe(tmp_path, admitted):
         "truncated_draws": 0, "draws": 120}))
 
 
-def test_arm_a_runs_the_probe_and_records_why_grpo_did_not_run(tmp_path):
-    """GRPO_STEPS=0 skips GRPO even on an admitted probe, and says so with its verdict."""
-    gate = heredoc('GRPO_STEPS="$GRPO_STEPS" python3 - <<\'PYEOF\'')
-    probe(tmp_path, admitted=True)
-    done = run_snippet(gate, tmp_path, {"GRPO_STEPS": "0"})
-    assert done.returncode == 3, done.stderr
+def test_arm_a_skips_the_probe_and_records_why(tmp_path):
+    """GRPO_STEPS=0 runs neither the probe nor GRPO; the marker says why, with no probe read.
+
+    Until 2026-09-24 arm A probed as "arm C's admission evidence". It never was:
+    `probe_contract` binds adapter_sha256, code_sha256, seed and generations, so
+    an arm C job -- a later commit, 8 generations -- could not validate against it.
+    """
+    skip = heredoc("python3 - <<'PYEOF'", after=ARM_A)
+    (tmp_path / "work/round-02").mkdir(parents=True)
+    done = run_snippet(skip, tmp_path, {})
+    assert done.returncode == 0, done.stderr
     marker = json.loads((tmp_path / "work/round-02/grpo-skipped.json").read_text())
-    assert "arm A only" in marker["why"] and marker["admitted"] is True
-    assert marker["informative_groups"] == 7, "arm C's admission evidence is kept"
+    assert marker["why"] == ("arm A only; the probe binds adapter and code, so arm C "
+                             "re-probes in its own job")
+    assert marker["probe_skipped"] is True and marker["grpo_steps"] == 0
+    assert not (tmp_path / "work/round-02/probe").exists()
+
+
+def test_no_probe_stage_runs_in_arm_a():
+    """The probe and its gate sit in the else branch of the GRPO_STEPS=0 check."""
+    shell = re.sub(r"<<'PYEOF'.*?\nPYEOF\n", "\n", TEXT, flags=re.S)
+    start = shell.index(ARM_A)
+    branch = shell[start:]
+    otherwise = branch.index("\nelse\n")
+    end = otherwise + branch[otherwise:].index("\nfi\nfi\n")
+    arm_a, arm_c = branch[:otherwise], branch[otherwise:end]
+    assert "STAGE=probe" not in arm_a and "--output \"$ROUND/probe\"" not in arm_a
+    assert "STAGE=probe" in arm_c and "--output \"$ROUND/probe\"" in arm_c and "STAGE=grpo" in arm_c
+    assert shell.count("--output \"$ROUND/probe\"") == 1
+    finish = TEXT[TEXT.index("finish() {"):TEXT.index("trap 'finish $?' EXIT")]
+    assert '"probe_skipped": bool(read("work/round-02/grpo-skipped.json").get("probe_skipped"))' in finish
+
+
+def test_the_sft_stage_reads_step_zero_from_this_jobs_base_dev():
+    """`--reuse-step0` names base-dev, which runs earlier in the same job, at the same flags."""
+    def line(output):
+        return next(l for l in TEXT.splitlines() if '--output "$ROUND/%s"' % output in l)
+    sft = line("sft")
+    assert '--reuse-step0 "$ROUND/base-dev"' in sft
+    assert TEXT.index('--output "$ROUND/base-dev"') < TEXT.index('--output "$ROUND/sft" ')
+    for flags in ('"${COMMON[@]}"', '"${DEV[@]}"'):
+        assert flags in line("base-dev") and flags in sft
+    assert "--reuse-step0" not in line("sft-plan"), "base-dev does not exist yet at the plan"
 
 
 def test_a_positive_dose_still_runs_grpo_on_an_admitted_probe_only(tmp_path):
-    gate = heredoc('GRPO_STEPS="$GRPO_STEPS" python3 - <<\'PYEOF\'')
+    gate = heredoc("python3 - <<'PYEOF'", after=GATE)
     probe(tmp_path / "a", admitted=True)
     assert run_snippet(gate, tmp_path / "a", {"GRPO_STEPS": "300"}).returncode == 0
     assert not (tmp_path / "a/work/round-02/grpo-skipped.json").exists()

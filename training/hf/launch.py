@@ -49,9 +49,10 @@ EVAL2_MODES = ("same-job", "separate")
 JOB_ID = re.compile(r"[0-9a-f]{24}")
 #: No GRPO unless asked for. The only dose this launcher ever defaulted to --
 #: 20 steps at 4 generations -- is the one PLAN.md retired with seed 1111's
-#: configuration, and S4 arm A is SFT alone: its probe still runs, as arm C's
-#: admission evidence, and the job writes grpo-skipped.json saying why. Arm C
-#: names its own dose with --grpo-steps when it is launched.
+#: configuration, and S4 arm A is SFT alone: no probe and no GRPO run, and the
+#: job writes grpo-skipped.json saying why. The probe's contract binds adapter,
+#: code, seed and group size, so arm C probes in its own job and names its own
+#: dose with --grpo-steps when it is launched.
 DEFAULT_GRPO_STEPS = 0
 #: Group size shared by the probe and GRPO, and prompt groups per GRPO step.
 #: 4 keeps an arm-A probe comparable with seed 1111's; arm C passes 8 (`PLAN.md`).
@@ -213,7 +214,7 @@ def main(argv=None):
     p.add_argument("--bank-path", help="pilot: directory in --work-repo holding eval2.jsonl, train.jsonl, evidence-*/")
     p.add_argument("--steps", type=int, default=DEFAULT_STEPS, help="pilot: SFT optimizer steps")
     p.add_argument("--grpo-steps", type=int, default=DEFAULT_GRPO_STEPS,
-                   help="pilot: GRPO optimizer steps; 0 (the default) runs the probe and no GRPO")
+                   help="pilot: GRPO optimizer steps; 0 (the default) runs neither the probe nor GRPO")
     p.add_argument("--grpo-generations", type=int, default=DEFAULT_GRPO_GENERATIONS,
                    help="pilot: draws per prompt in the probe and in GRPO (one contract binds them)")
     p.add_argument("--grpo-prompts", type=int, default=DEFAULT_GRPO_PROMPTS,
