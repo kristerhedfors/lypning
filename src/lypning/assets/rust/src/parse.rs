@@ -353,19 +353,25 @@ impl Parser {
                 let mut kinds = Vec::new();
                 let mut name = None;
                 if !self.is_op(":") {
-                    if self.eat_op("(") {
-                        loop {
-                            kinds.push(self.dotted_name()?);
-                            if !self.eat_op(",") {
-                                break;
-                            }
-                            if self.is_op(")") {
-                                break;
-                            }
-                        }
-                        self.expect_op(")")?;
-                    } else {
-                        kinds.push(self.dotted_name()?);
+                    // CPython's grammar is `except expression ['as' NAME]`, and
+                    // the expression is only evaluated when an exception reaches
+                    // the clause. This read dotted names alone, so a valid clause
+                    // such as `except (json.JSONDecodeError, sys.stdin is None):`
+                    // died at parse time with `SyntaxError: expected ')', found
+                    // 'is'` at exit 1 -- the program's own exit, never retried --
+                    // where CPython ran the program to completion because nothing
+                    // was ever raised. Found in a model completion graded natively
+                    // on 2026-09-23, where it aborted the grading run.
+                    //
+                    // Class names, dotted names and (nested) tuples of them are
+                    // what `exc_matches` can answer. Anything else is kept as
+                    // `EXCEPT_EXPR` and refused when an exception reaches the
+                    // clause (`eval.rs`), which is the only time CPython looks.
+                    let e = self.expr()?;
+                    if !except_kinds(&e, &mut kinds) || kinds.is_empty() {
+                        // `except ():` catches nothing, and an empty `kinds` is
+                        // a bare `except:` that catches everything.
+                        kinds = vec![EXCEPT_EXPR.into()];
                     }
                     if self.eat_kw("as") {
                         name = Some(self.ident()?);
@@ -512,10 +518,20 @@ impl Parser {
                 p.star = Some(p.names.len());
                 p.names.push(self.ident()?);
                 p.defaults.push(None);
+                // `*args: str` is annotated like any other parameter; reading
+                // no annotation here made it `expected ')', found ':'` at exit 1.
+                if !lambda && self.eat_op(":") {
+                    let ann = self.expr()?;
+                    p.anns.push(ann);
+                }
             } else if self.eat_op("**") {
                 p.dstar = Some(p.names.len());
                 p.names.push(self.ident()?);
                 p.defaults.push(None);
+                if !lambda && self.eat_op(":") {
+                    let ann = self.expr()?;
+                    p.anns.push(ann);
+                }
             } else {
                 // A NAME AFTER `*args` IS KEYWORD-ONLY, exactly as one after a
                 // bare `*` is, and the bare form is refused four lines up. This
@@ -1163,13 +1179,15 @@ impl Parser {
             Some(Box::new(self.expr()?))
         };
         if self.eat_op(":") {
-            let hi = if self.is_op("]") || self.is_op(":") {
+            // `,` ends a bound too: `x[:, 0]` and `x[::, 0]` reach the tuple
+            // refusal below instead of dying on `unexpected ','` at exit 1.
+            let hi = if self.is_op("]") || self.is_op(":") || self.is_op(",") {
                 None
             } else {
                 Some(Box::new(self.expr()?))
             };
             let step = if self.eat_op(":") {
-                if self.is_op("]") {
+                if self.is_op("]") || self.is_op(",") {
                     None
                 } else {
                     Some(Box::new(self.expr()?))
@@ -1204,7 +1222,26 @@ impl Parser {
                 if self.is_op("]") {
                     break;
                 }
+                // `a[i, j:k]` and `a[i, :]` hold a slice past the first element,
+                // which the refusal above only saw in first place, and
+                // `a[i, *j]` unpacks (3.11+). All three were SyntaxErrors at
+                // exit 1 on programs CPython compiles.
+                if self.is_op("*") {
+                    return Err(unsupported("unpack", "* in a subscript"));
+                }
+                if self.is_op(":") {
+                    return Err(unsupported(
+                        "subscript",
+                        "a tuple subscript containing a slice, e.g. x[0:1, 2]",
+                    ));
+                }
                 items.push(self.expr()?);
+                if self.is_op(":") {
+                    return Err(unsupported(
+                        "subscript",
+                        "a tuple subscript containing a slice, e.g. x[0:1, 2]",
+                    ));
+                }
             }
             idx = Expr::Tuple(items);
         }
@@ -1311,6 +1348,11 @@ impl Parser {
                 if self.eat_op(",") {
                     let mut items = vec![first];
                     while !self.is_op(")") {
+                        // Only a LEADING `*` was refused above; `(a, *b)` died
+                        // as `invalid syntax: unexpected '*'` at exit 1.
+                        if self.is_op("*") {
+                            return Err(unsupported("unpack", "* in a parenthesized display"));
+                        }
                         items.push(self.expr()?);
                         if !self.eat_op(",") {
                             break;
@@ -1347,6 +1389,10 @@ impl Parser {
                 while self.eat_op(",") {
                     if self.is_op("]") {
                         break;
+                    }
+                    // `[key, *rest]`: the leading-`*` refusal above never saw it.
+                    if self.is_op("*") {
+                        return Err(unsupported("unpack", "* in a list display"));
                     }
                     items.push(self.expr()?);
                 }
@@ -1424,6 +1470,9 @@ impl Parser {
                 while self.eat_op(",") {
                     if self.is_op("}") {
                         break;
+                    }
+                    if self.is_op("*") {
+                        return Err(unsupported("unpack", "* in a set display"));
                     }
                     items.push(self.expr()?);
                 }
@@ -1555,7 +1604,19 @@ fn parse_fstring(raw: &str, raw_prefix: bool) -> R<Vec<FPart>> {
                     chain_ops: 0,
                 };
                 let e = p.expr_list()?;
-                if !matches!(p.peek(), Tok::Newline | Tok::Eof) {
+                // The field is re-lexed as a MODULE, so a line break in it is a
+                // statement boundary here and a continuation to CPython, which
+                // reads a replacement field as if it were parenthesised. Only
+                // the first line was checked: `f"""{x\nis None}"""` printed `x`
+                // at exit 0 where CPython prints `False` -- a wrong answer, and
+                // the silent kind. A field that goes on past its first line
+                // refuses; one that stops there parses as before.
+                let at_end = matches!(p.peek(), Tok::Eof)
+                    || (matches!(p.peek(), Tok::Newline) && matches!(p.peek_at(1), Tok::Eof));
+                if !at_end {
+                    if matches!(p.peek(), Tok::Newline) {
+                        return Err(unsupported("fstring", "a replacement field that goes on past a line break"));
+                    }
                     return Err(LypningError::syntax(0, "invalid f-string expression"));
                 }
                 let spec = match spec_src {
@@ -1663,6 +1724,33 @@ fn split_field(raw: &str, start: usize) -> R<(String, Option<char>, Option<Strin
         i += 1;
     }
     Err(LypningError::syntax(0, "f-string: expecting '}'"))
+}
+
+/// The class names an `except` clause's expression spells: a name, a dotted
+/// name, or one flat tuple of those. False for any other expression, which the
+/// caller keeps as [`EXCEPT_EXPR`] — a NESTED tuple included, because Python 3
+/// raises `TypeError: catching classes that do not inherit from BaseException
+/// is not allowed` for one, and flattening it would catch what CPython does not.
+fn except_kinds(e: &Expr, out: &mut Vec<Rc<str>>) -> bool {
+    let items: &[Expr] = match e {
+        Expr::Tuple(items) => items,
+        one => std::slice::from_ref(one),
+    };
+    for x in items {
+        match dotted(x) {
+            Some(s) => out.push(s.into()),
+            None => return false,
+        }
+    }
+    true
+}
+
+fn dotted(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Name(n) => Some(n.to_string()),
+        Expr::Attr(base, n) => dotted(base).map(|b| format!("{b}.{n}")),
+        _ => None,
+    }
 }
 
 fn contains_yield(body: &[Stmt]) -> bool {

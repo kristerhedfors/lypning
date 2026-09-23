@@ -261,6 +261,13 @@ pub enum Stmt {
     Global(Vec<std::rc::Rc<str>>),
 }
 
+/// The one entry of `Handler::kinds` for a clause whose expression is not a
+/// class name or a tuple of them — `except (E, x is None):`, `except ():`.
+/// CPython evaluates that expression only when an exception reaches the clause,
+/// so the program parses and runs; the clause refuses when it is reached.
+/// Not a Python identifier, so no dotted name can collide with it.
+pub const EXCEPT_EXPR: &str = "<expression>";
+
 #[derive(Debug, Clone)]
 pub struct Handler {
     /// Exception class names this handler catches; empty means bare `except:`.

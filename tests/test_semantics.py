@@ -946,6 +946,122 @@ def test_is_between_two_dict_views_refuses_rather_than_guessing(lypning_bin):
     assert r.stdout.strip() == "False False"
 
 
+#: `except` takes an EXPRESSION in CPython's grammar, evaluated only when an
+#: exception reaches the clause. The parser read dotted names alone, so every
+#: one of these died at parse time with a SyntaxError at exit 1 — the first with
+#: `expected ')', found 'is'`, the message a model completion aborted a grading
+#: run with on 2026-09-23 — where CPython runs each to completion.
+EXCEPT_EXPRESSIONS = [
+    ("tuple-holding-a-comparison",
+     "import sys\ntry:\n    x = 1\nexcept (ValueError, sys.stdin is None):\n    x = 2\nprint(x)"),
+    ("conditional-clause",
+     "flag = None\ntry:\n    print('body')\nexcept ValueError if flag is None else KeyError:\n    print('no')"),
+    ("empty-tuple-clause", "try:\n    print('body')\nexcept ():\n    print('no')"),
+    ("call-clause",
+     "def errors():\n    return (ValueError,)\ntry:\n    print('body')\nexcept errors():\n    print('no')"),
+]
+
+
+@pytest.mark.parametrize("case_id,program", EXCEPT_EXPRESSIONS,
+                         ids=[c[0] for c in EXCEPT_EXPRESSIONS])
+def test_an_except_expression_nothing_reaches_runs_as_cpython_runs_it(case_id, program, lypning_bin):
+    theirs = engines.run(engines.CPYTHON, program)
+    if theirs.returncode == 127:
+        pytest.skip("no reference CPython")
+    ours = engines.run(engines.LYPNING, program, binary=lypning_bin)
+    assert not ours.refused, ours.stderr
+    assert (ours.returncode, ours.stdout) == (theirs.returncode, theirs.stdout), ours.stderr
+
+
+def test_an_except_expression_an_exception_reaches_refuses(lypning_bin):
+    """CPython evaluates the clause as a whole, then validates and matches it —
+    `(ValueError, False)` is a TypeError, a nested tuple is too — and nothing
+    here can evaluate it. So the clause refuses when it is REACHED, output and
+    all withdrawn; a handler above it that matches still answers first.
+    """
+    for program in (
+        "print('before')\ntry:\n    int('a')\nexcept (ValueError, 1 is None):\n    print('caught')",
+        "try:\n    int('a')\nexcept ((KeyError, ValueError), TypeError):\n    print('nested')",
+        "try:\n    try:\n        int('a')\n    except ():\n        print('no')\nexcept ValueError:\n    print('outer')",
+    ):
+        r = engines.run(engines.LYPNING, program, binary=lypning_bin)
+        assert r.returncode == UNSUPPORTED_EXIT, "answered %r instead of refusing" % r.stdout
+        assert r.stdout == "", "output escaped before the refusal"
+        assert "unsupported: exception: an except clause" in r.stderr, r.stderr
+
+    program = ("try:\n    int('a')\nexcept ValueError:\n    print('first')\n"
+               "except (KeyError, 1 is None):\n    print('second')\n"
+               "try:\n    int('a')\nexcept (ValueError,):\n    print('flat')")
+    r = engines.run(engines.LYPNING, program, binary=lypning_bin)
+    assert not r.refused, r.stderr
+    assert r.stdout == "first\nflat\n"
+
+
+#: Valid Python the parser did not know, found beside the `except` clause above
+#: by sweeping model-written and stdlib programs through the parser on
+#: 2026-09-23. Each died at exit 1 with a SyntaxError — the program's own exit,
+#: never retried — on a program the reference compiles. The PEP 701 f-strings
+#: are valid from 3.12, so the test asks the reference rather than pinning it.
+VALID_BUT_UNPARSED = [
+    ("pep701-quote-reuse", 'd = {"k": 1}\nprint(f"{d["k"]}")'),
+    ("pep701-quote-inside-inner-string",
+     "t = 'a\"b'\nprint(f\"{t.replace('\"', '&quot;')}\")"),
+    ("pep701-nested-fstring", 'x = 1\nprint(f"{f"{x}"}")'),
+    ("pep701-line-break-in-field", 'x = 1\nprint(f"{x\n+ 1}")'),
+    ("star-after-the-first-list-element", "a = [2, 3]\nprint([1, *a])"),
+    ("star-after-the-first-tuple-element", "a = [2, 3]\nprint((1, *a))"),
+    ("star-after-the-first-set-element", "a = [2, 3]\nprint(sorted({1, *a}))"),
+    ("slice-after-the-first-subscript-element",
+     "d = {}\ntry:\n    d[0, 1:2]\nexcept TypeError as e:\n    print('TypeError')"),
+    ("empty-slice-then-comma",
+     "d = {}\ntry:\n    d[:, 1]\nexcept TypeError as e:\n    print('TypeError')"),
+    ("annotated-star-parameters",
+     "def f(*args: int, **kw: str) -> int:\n    return len(args) + len(kw)\nprint(f(1, 2, a='x'))"),
+]
+
+
+@pytest.mark.parametrize("case_id,program", VALID_BUT_UNPARSED,
+                         ids=[c[0] for c in VALID_BUT_UNPARSED])
+def test_valid_python_refuses_or_agrees_but_is_never_a_syntax_error(case_id, program, lypning_bin):
+    theirs = engines.run(engines.CPYTHON, program)
+    if theirs.returncode == 127:
+        pytest.skip("no reference CPython")
+    if "SyntaxError" in theirs.stderr:
+        pytest.skip("not valid Python on this reference")
+    ours = engines.run(engines.LYPNING, program, binary=lypning_bin)
+    assert "SyntaxError" not in ours.stderr, ours.stderr
+    if ours.refused:
+        assert ours.stdout == "", "output escaped before the refusal"
+    else:
+        assert (ours.returncode, ours.stdout) == (theirs.returncode, theirs.stdout), ours.stderr
+
+
+def test_a_replacement_field_that_spans_lines_refuses_rather_than_dropping_its_tail(lypning_bin):
+    """The field is re-lexed as a module, so its line break ended a statement
+    and the parser read the first line and discarded the rest: `x` at exit 0
+    where CPython, which reads the field as parenthesised, prints `False`."""
+    program = 'x = 1\nprint(f"""{x\nis None}""")'
+    r = engines.run(engines.LYPNING, program, binary=lypning_bin)
+    assert r.returncode == UNSUPPORTED_EXIT, "answered %r instead of refusing" % r.stdout
+    assert r.stdout == ""
+    assert "unsupported: fstring:" in r.stderr, r.stderr
+    r = engines.run(engines.LYPNING, 'x = 1\nprint(f"""{(x\nis None)}""")', binary=lypning_bin)
+    assert not r.refused, r.stderr
+    assert r.stdout == "False\n"
+
+
+def test_the_router_sends_an_except_expression_where_an_unknown_class_goes(lypning_bin):
+    """The walk cannot tell whether an exception will reach the clause, so it
+    routes the program the way it routes `except NoSuchError:` — to CPython,
+    under the kind the run refuses with."""
+    import subprocess
+    program = "try:\n    print(1)\nexcept (ValueError, 1 is None):\n    pass"
+    proc = subprocess.run([str(lypning_bin), "route", "-c", program],
+                          capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "cpython\texception: except <expression>\n"
+
+
 #: Every method name `str` and `bytes` both implement. All five drifts a grid
 #: campaign found this session were among these twelve, and the arity/keyword
 #: layer they already share is exactly the one place that never drifted.

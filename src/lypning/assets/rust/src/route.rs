@@ -1395,6 +1395,14 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
             walk_block(body, req);
             for h in handlers {
                 for k in &h.kinds {
+                    // A clause that is an expression runs until an exception
+                    // reaches it and refuses there (`eval.rs`). The walk cannot
+                    // tell whether one will, so it routes the program the way an
+                    // unknown class name is routed below.
+                    if &**k == crate::ast::EXCEPT_EXPR {
+                        req.block("exception", "except <expression>".to_string());
+                        continue;
+                    }
                     // A DOTTED name is resolved the way an attribute is, not by
                     // throwing the prefix away: `except json.JSONDecodeError`
                     // reduced to `JSONDecodeError`, which is not a builtin, and

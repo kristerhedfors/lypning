@@ -438,6 +438,7 @@ impl<'a> Lexer<'a> {
             );
             if raw || bytes || fstr || uni {
                 if fstr {
+                    self.pep701_check()?;
                     let text = self.raw_string_body()?;
                     self.push(Tok::FStr {
                         raw: text,
@@ -455,6 +456,101 @@ impl<'a> Lexer<'a> {
         }
         self.push(Tok::Name(word));
         Ok(())
+    }
+
+    /// Refuse the two f-string shapes CPython reads since 3.12 (PEP 701) and
+    /// this lexer does not: the outer quote REUSED inside a replacement field
+    /// (`f"{d["k"]}"`), and a line break inside a field of a single-quoted
+    /// f-string. `raw_string_body` ends the literal at the first matching quote
+    /// and at the first line break, so both died at exit 1 — `f-string:
+    /// expecting '}'`, `unterminated string literal` — on a program the
+    /// reference compiles and runs: the program's own exit, never retried.
+    ///
+    /// A look-ahead from the opening quote that consumes nothing. It follows
+    /// replacement fields, brackets and the string literals inside them far
+    /// enough to see either shape, and gives up (returning `Ok`, so the old
+    /// reader runs and reports what it always did) on anything it does not
+    /// follow. Both shapes are errors before 3.12, which is what the old reader
+    /// already says, so a binary built against an older reference skips this.
+    fn pep701_check(&self) -> Result<(), LypningError> {
+        if crate::err::REF_PY_MINOR < 12 {
+            return Ok(());
+        }
+        let at = |j: usize| *self.src.get(j).unwrap_or(&0);
+        let quote = at(self.pos);
+        let triple = at(self.pos + 1) == quote && at(self.pos + 2) == quote;
+        let mut j = self.pos + if triple { 3 } else { 1 };
+        // Bracket depth inside a replacement field; 0 is the literal part.
+        let mut field = 0i32;
+        // A string literal inside a field: its quote, and whether triple.
+        let mut inner: Option<(u8, bool)> = None;
+        loop {
+            let c = at(j);
+            if c == 0 {
+                return Ok(());
+            }
+            if let Some((q, tri)) = inner {
+                if c == b'\\' {
+                    j += 2;
+                } else if c == quote && q != quote && (!triple || (at(j + 1) == quote && at(j + 2) == quote)) {
+                    // `f"{s.replace('"', '&quot;')}"`: the outer quote inside a
+                    // string of the other kind, which is where the old reader
+                    // ends the f-string.
+                    return Err(unsupported(
+                        "fstring",
+                        "the f-string's own quote reused inside a replacement field (PEP 701)",
+                    ));
+                } else if c == q && (!tri || (at(j + 1) == q && at(j + 2) == q)) {
+                    j += if tri { 3 } else { 1 };
+                    inner = None;
+                } else if c == b'\n' && !tri {
+                    return Ok(());
+                } else {
+                    j += 1;
+                }
+                continue;
+            }
+            if field == 0 {
+                match c {
+                    b'\\' => j += 2,
+                    b'{' if at(j + 1) == b'{' => j += 2,
+                    b'{' => {
+                        field = 1;
+                        j += 1;
+                    }
+                    b'\n' if !triple => return Ok(()),
+                    _ if c == quote && (!triple || (at(j + 1) == quote && at(j + 2) == quote)) => {
+                        return Ok(());
+                    }
+                    _ => j += 1,
+                }
+                continue;
+            }
+            match c {
+                b'{' | b'(' | b'[' => field += 1,
+                b'}' | b')' | b']' => field -= 1,
+                b'\'' | b'"' => {
+                    let tri = at(j + 1) == c && at(j + 2) == c;
+                    if c == quote && (!triple || tri) {
+                        return Err(unsupported(
+                            "fstring",
+                            "the f-string's own quote reused inside a replacement field (PEP 701)",
+                        ));
+                    }
+                    inner = Some((c, tri));
+                    j += if tri { 3 } else { 1 };
+                    continue;
+                }
+                b'\n' if !triple => {
+                    return Err(unsupported(
+                        "fstring",
+                        "a line break inside a replacement field of a single-quoted f-string (PEP 701)",
+                    ));
+                }
+                _ => {}
+            }
+            j += 1;
+        }
     }
 
     /// Read a string literal body verbatim (used by f-strings, which the parser
