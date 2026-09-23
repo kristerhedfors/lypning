@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-23** — Keep verification detail private; grade an engine mismatch as a counted status (#TBD)
+**2026-09-23** — Keep verification detail private; grade an engine mismatch as a counted status ([#117](https://github.com/kristerhedfors/lypning/pull/117))
 
 - `VerificationBlocked`'s message is a kind and a 12-hex digest only. The case
   id, test, expected and observed output, harness text and program ride on
