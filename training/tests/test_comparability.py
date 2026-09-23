@@ -1131,12 +1131,16 @@ def test_the_kernel_refusal_comes_before_the_weights_are_paid_for(tmp_path, monk
     assert not kernel_block.reference_only(kernel_block.module_kernels(None))
 
     source = gpu.joinpath("train_verified.py").read_text(encoding="utf-8")
+    # The refusal lives in `refuse_import_binding`, shared with the hardware
+    # smoke; `run` must call it before anything costly.
+    refusal = source.split("def refuse_import_binding(")[1].split("\ndef ")[0]
+    at_check = refusal.index("if not kernel_block.reference_only(import_binding):")
+    assert refusal.index("import_binding = kernel_block.module_kernels(") < at_check
     run = source.split("def run(")[1].split("\ndef main(")[0]
-    at_check = run.index("if not kernel_block.reference_only(import_binding):")
-    assert run.index("import_binding = kernel_block.module_kernels(") < at_check
-    for costly in ("tok = AutoTokenizer.from_pretrained(", "core.smoke(",
-                   "snapshot_download(BASE_MODEL", "Qwen3_5ForConditionalGeneration.from_pretrained("):
-        assert at_check < run.index(costly), costly
+    at_refusal = run.index("refuse_import_binding()")
+    for costly in ("tok = load_tokenizer(", "core.smoke(",
+                   "download_base(args.revision)", "load_base_model("):
+        assert at_refusal < run.index(costly), costly
 
 
 def test_the_run_record_carries_the_kernels_and_the_probe_contract_compares_them():
@@ -1159,14 +1163,20 @@ def test_the_run_record_carries_the_kernels_and_the_probe_contract_compares_them
     # transformers -- or a module already imported walks straight past it. The
     # observation comes after the switch and the blocker and before the import,
     # or it would describe a state the run did not have.
-    at_switch = source.index('os.environ["NTX_USE_FLA"] = "0"')
-    at_blocker = source.index("too_late = kernel_block.install()")
-    at_kernels = source.index("kernels = kernel_state()")
-    at_import = source.index("import lypning_lora as core")
-    assert at_switch < at_blocker < at_kernels < at_import
+    # Those three live in `block_fused_kernels`, shared with the hardware
+    # smoke, which `run` calls before its first GPU import.
+    block = source.split("def block_fused_kernels(")[1].split("\ndef ")[0]
+    at_switch = block.index('os.environ["NTX_USE_FLA"] = "0"')
+    at_blocker = block.index("too_late = kernel_block.install()")
+    at_kernels = block.index("return kernel_state()")
+    assert at_switch < at_blocker < at_kernels
+    run = source.split("def run(")[1].split("\ndef main(")[0]
+    assert run.index("kernels = block_fused_kernels()") < run.index("import lypning_lora as core")
     # And what was bound is read AFTER the model exists, and refused if it is
     # not the torch reference.
-    at_attach = source.index("model = core.attach_lora(")
-    at_binding = source.index("kernel_binding = kernel_block.bound_kernels(model)")
-    assert at_attach < at_binding < source.index('write_json(args.output / "experiment.json"')
-    assert "if not kernel_block.reference_only(kernel_binding):" in source
+    at_attach = run.index("model = attach_fresh_lora(")
+    at_binding = run.index("kernel_binding = refuse_bound_kernels(model)")
+    assert at_attach < at_binding < run.index('write_json(args.output / "experiment.json"')
+    bound = source.split("def refuse_bound_kernels(")[1].split("\ndef ")[0]
+    assert "kernel_binding = kernel_block.bound_kernels(model)" in bound
+    assert "if not kernel_block.reference_only(kernel_binding):" in bound

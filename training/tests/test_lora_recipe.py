@@ -41,9 +41,12 @@ def test_smoke_uses_its_effective_dose_and_evaluates_every_step():
 def test_pilot_uses_shared_cadence_and_keeps_small_effective_batch():
     import re
     text = (ROOT / "hf/round02_pilot.sh").read_text()
-    for stage in ("SFT", "GRPO"):
+    # 50 in both stages unless the arm says otherwise; SFT's cadence is now a
+    # dispatched arm field (EVAL_EVERY, 350 for arm A), GRPO's is still 50.
+    assert 'EVAL_EVERY="${EVAL_EVERY:-50}"' in text
+    for stage, cadence in (("SFT", '--eval-every "$EVAL_EVERY"'), ("GRPO", "--eval-every 50")):
         flags = re.search(stage + r"_TRAIN=\(([^\n]+)\)", text).group(1)
-        assert "--eval-every 50" in flags
+        assert cadence in flags, stage
         assert "--lr" not in flags  # one recipe, resolved by the trainer
     assert '--batch-size 4' in text
 
@@ -125,20 +128,20 @@ def test_lora_init_is_reseeded_immediately_before_attach_lora():
     """The gradient smoke reseeds to 0; without this every seed drew one `lora_A`."""
     import ast
     source = (ROOT / "gpu/train_verified.py").read_text(encoding="utf-8")
-    fn = next(n for n in ast.walk(ast.parse(source))
-              if isinstance(n, ast.FunctionDef) and n.name == "run")
-    found = False
-    for node in ast.walk(fn):
-        body = getattr(node, "body", None)
-        if not isinstance(body, list):
-            continue
-        for before, stmt in zip(body, body[1:]):
-            if isinstance(stmt, ast.Assign) and "core.attach_lora(" in ast.unparse(stmt.value):
-                assert ast.unparse(before) == "set_seed(args.seed)", (
-                    "attach_lora must follow set_seed(args.seed) directly, got %r"
-                    % ast.unparse(before))
-                found = True
-    assert found, "run() no longer attaches a LoRA"
+    tree = ast.parse(source)
+    # The attach lives in `attach_fresh_lora`, shared with the hardware smoke;
+    # the reseed must be the statement directly before it, from its own seed.
+    fresh = next(n for n in ast.walk(tree)
+                 if isinstance(n, ast.FunctionDef) and n.name == "attach_fresh_lora")
+    body = [s for s in fresh.body if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant))
+            and not isinstance(s, ast.ImportFrom)]
+    assert ast.unparse(body[0]) == "set_seed(seed)", ast.unparse(body[0])
+    assert "core.attach_lora(" in ast.unparse(body[1]) and len(body) == 2
+    # And `run` reaches it with the training seed, and attaches no other way.
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "run")
+    run = ast.unparse(fn)
+    assert "attach_fresh_lora(model, args.rank, args.seed, core)" in run
+    assert "core.attach_lora(" not in run, "run() attaches a LoRA without the reseed"
 
 
 def test_the_smoke_steps_the_optimizer_train_sft_steps():

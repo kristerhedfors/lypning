@@ -55,7 +55,7 @@ Advance a step by editing this table in the same PR as the work.
 | 1 | Fix the instrument | $0 | nothing else is readable until it is | done (2026-09-22, implementation in PRs #97–#101; validation limits below) |
 | 2 | Positive control (S1 / stage 0b) | ~$126 at 512 output tokens/request; ~$225 at allowance (full k=16); rungs run: $28.12751896 charged or reserved | distillation route, rejection-filtered distillation, or contrastive route | done (2026-09-23, full split k=4, merge `35912725289`: **flat** — no distillation route; Step 3 mandatory) |
 | 3 | Build contrastive targets | tokens | is there enough pair supply for a preference arm? | done (2026-09-23, `step3-pairs` `35918571219`: 110–257 pair prompts by source, **< 300** — no preference arm; arm C carries the signal) |
-| 4 | S4, re-specified, three seeds | up to ~$180 (three h200 seed jobs capped at 720m, ~$60 each) | the first result the instrument can read | open |
+| 4 | S4, re-specified, three seeds | up to ~$180 (three h200 seed jobs capped at 720m, ~$60 each) | the first result the instrument can read | in progress (2026-09-23: arm A configured; hardware smoke before seed 1111) |
 
 **Operator direction, 2026-09-22: free first.** Continue Step 2's free checks
 and preparation. Paid inference and GPU training remain held; no paid ceiling
@@ -82,8 +82,8 @@ The two free reads are done (2026-09-23).
   by −0.0016 to +0.0049, so the dev draws are effectively independent. That is
   the regime where the Step 1 simulation puts selection power below 80% at
   4 draws and at 75–98% at 16.
-- **Recommendation:** `PILOT_DEV_EVAL_DRAWS=16`. It is not yet set, because it
-  multiplies dev-eval GPU time and belongs to the operator's GPU approval.
+- **Recommendation:** `PILOT_DEV_EVAL_DRAWS=16`. **Set 2026-09-23** with the
+  operator's arm-A approval (Step 4).
 
 ### Step 0 — Read what was paid for ($0, CI reads, aggregates only)
 
@@ -317,6 +317,7 @@ Every target set clears the S4 case floor (`s4-target-preflight`, seeds
 At `PILOT_STEPS` 300 and batch 4 the schedule exposes 1,200 rows —
 `passes_over_rows` 0.36 on the `subset-spec` set — so most target rows are never
 seen. One pass is about 845 steps; the dose is also a GPU-approval decision.
+**Decided 2026-09-23 (Step 4):** `bare,subset-spec`, one pass, `PILOT_STEPS` 1,050.
 
 ### Step 3 — Build contrastive targets (tokens only)
 
@@ -425,6 +426,33 @@ green before the second seed is billed.
   a draw the target model made. They reach training only as a separate
   capture-tier bank for the round after S4, never merged into v3 and never
   through `split_cases` (`DATA_PRODUCTION.md`, "Capture tier").
+
+**Arm A as approved (operator, 2026-09-23), and what runs before seed 1111.**
+Nothing below has been dispatched.
+
+- **Configuration** (`round02.yml`): target run
+  `full-merged-0527b3cd2c0d8916bebd086abcc46459d7ae46b1-35913600534`
+  (`bare,subset-spec`, 1,291 cases, 4,197 rows); `PILOT_STEPS` 1,050, one pass
+  at batch 4; `PILOT_DEV_EVAL_DRAWS` 16; `PILOT_EVAL_EVERY` 350, so SFT
+  evaluates at steps 0, 350, 700 and 1,050. Step 0 is a fresh dev pass, not
+  a reuse of base-dev. `PILOT_GRPO_STEPS` 0. `eval_every` is now an arm field.
+- **Hardware smoke first** (`stage: hwsmoke`, h200, 90m ceiling, no bank). It
+  loads the model through `train_verified`'s own loaders, times one 256- and
+  one 128-sequence `generate` call with the pilot's decoding, and 20 SFT
+  steps at batch 4 through `train_sft`, with peak memory. Its
+  `hwsmoke.json` carries a projection (`training/hf/projection.py`) of every
+  stage of the approved job against the 720m ceiling. The projection's prep
+  and scoring terms are stated constants, not measurements.
+- **Split, if the projection needs it.** `PILOT_EVAL2` stays `same-job` until
+  the smoke has been read. `separate` ends the pilot job after the test split
+  with `eval2-deferred.json`. A `stage: eval2` dispatch (`eval2_of` = that
+  job) then runs step 7g's commands in a second job. It refuses unless
+  bundle, engine, Space, Qwen revision, trainer code, seed, draws, chunking
+  and density all match, naming the field that differs. `arm_check` reads
+  the pair as one seed.
+- **Latent bug fixed.** `experiment.json` never recorded `purpose`, so
+  `adapter_lineage_admitted` refused every SFT adapter at `sft-eval2`, a
+  stage no job had reached. It is written now.
 
 ## Kill criteria (unchanged, `LADDER.md` §6)
 

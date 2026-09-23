@@ -496,6 +496,26 @@ def test_a_pilot_adapter_is_admitted_on_a_benchmark_eval_and_nowhere_else():
     assert not module.adapter_lineage_admitted({"bundle_digest": "x", "purpose": "smoke"}, benchmark, "eval")
 
 
+def test_the_experiment_a_stage_writes_carries_the_purpose_the_lineage_rule_reads():
+    """The rule above reads `experiment["purpose"]`, and `run()` never wrote it.
+
+    Every test here built the adapter's experiment by hand, with the key, so the
+    rule passed its tests while the real `experiment.json` -- which is what
+    `adapter_identity` returns -- made every SFT adapter a refusal at
+    sft-eval2, the stage no round had yet reached (2026-09-23).
+    """
+    import ast
+    source = (Path(__file__).resolve().parents[1] / "gpu" / "train_verified.py").read_text(encoding="utf-8")
+    run = next(n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.FunctionDef) and n.name == "run")
+    manifest = next(n.value for n in ast.walk(run) if isinstance(n, ast.Assign)
+                    and any(isinstance(t, ast.Name) and t.id == "manifest" for t in n.targets))
+    written = {k.value: ast.unparse(v) for k, v in zip(manifest.keys, manifest.values)}
+    assert written.get("purpose") == "bundle['purpose']"
+    module = gpu_module()
+    as_written = {"bundle_digest": "pilot-digest", "purpose": "pilot"}
+    assert module.adapter_lineage_admitted(as_written, {"digest": "bench", "purpose": "benchmark"}, "eval")
+
+
 def test_reward_scores_a_group_concurrently_and_keeps_batch_order(case):
     """GRPO's four completions are a dozen sandbox requests each; they are
     scored on a thread pool and the rewards come back in batch order.
@@ -719,7 +739,7 @@ def test_the_output_directory_is_created_after_the_weights_and_not_before():
     gpu = gpu_module()
     body = Path(gpu.__file__).read_text(encoding="utf-8").split("def run(")[1]
     floor = body.index("supervised tokens; at least %d required")
-    download = body.index("snapshot_download(BASE_MODEL")
+    download = body.index("download_base(args.revision)")
     mkdir = body.index("args.output.mkdir(")
     assert floor < download < mkdir
 

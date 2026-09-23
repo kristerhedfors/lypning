@@ -81,7 +81,7 @@ def test_arm_a_is_dispatched_without_grpo():
 def test_dev_draws_and_the_arm_c_knobs_are_chosen_here_not_defaulted_in_the_launcher():
     """Absent, launch.py's DEFAULT_DEV_EVAL_DRAWS applied and nobody chose it."""
     submit = job(ROUND02, "submit")
-    for env, flag, value in (("PILOT_DEV_EVAL_DRAWS", "--dev-eval-draws", "4"),
+    for env, flag, value in (("PILOT_DEV_EVAL_DRAWS", "--dev-eval-draws", "16"),
                              ("PILOT_GRPO_GENERATIONS", "--grpo-generations", "4"),
                              ("PILOT_GRPO_PROMPTS", "--grpo-prompts", "4")):
         assert re.search(r'^  %s: "%s"$' % (env, value), ROUND02, re.M), env
@@ -220,3 +220,104 @@ def test_a_moved_hub_head_fails_the_preflight(monkeypatch, capsys):
     assert pre.revision_moved("a" * 40, "a" * 40) == (False, "a" * 40)
     assert pre.revision_moved("a" * 40, "b" * 40) == (True, "")
     assert "PINNED REVISION MOVED" in capsys.readouterr().err
+
+
+# --- the hardware smoke, the split eval-2 and arm A's approved configuration --
+
+def load_by_path(name):
+    spec = importlib.util.spec_from_file_location("wf_" + name, ROOT / "training" / "hf" / (name + ".py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def env_value(name):
+    found = re.search(r'^  %s: "([^"]*)"$' % name, ROUND02, re.M)
+    assert found, name
+    return found.group(1)
+
+
+def test_every_dispatchable_stage_is_a_launcher_stage():
+    options = re.search(r"      stage:\n(?:        .*\n)*?        options: \[([^\]]*)\]", ROUND02)
+    stages = [v.strip() for v in options.group(1).split(",")]
+    assert stages == ["smoke", "pilot", "hwsmoke", "eval2"]
+    assert set(stages) == set(load_by_path("launch").STAGES)
+    submit = job(ROUND02, "submit")
+    for stage in stages:
+        assert "launch.py %s " % stage in submit, stage
+
+
+def test_the_hardware_smoke_and_the_split_eval2_bill_only_on_a_dispatched_submit():
+    decide = submit_condition()
+    for stage in ("hwsmoke", "eval2"):
+        assert decide(stage=stage, submit="SUBMIT") is True, stage
+        assert decide(stage=stage, submit="nope") is False, stage
+        assert decide(stage=stage) is False, stage
+        assert decide(stage=stage, submit="SUBMIT", cancelled=True) is False, stage
+    # No commit marker reaches them, and a smoke marker is still a smoke.
+    assert decide(msg="[submit-hwsmoke]") is False and decide(msg="[submit-eval2]") is False
+    assert decide(stage="smoke", submit="SUBMIT") is True
+
+
+def test_the_hardware_smoke_bills_the_pilot_flavor_at_its_own_ceiling():
+    submit = job(ROUND02, "submit")
+    body = submit[submit.index("launch.py hwsmoke"):submit.index("elif")]
+    assert '--flavor "${PILOT_FLAVOR}" --timeout "${HWSMOKE_TIMEOUT}"' in body
+    assert "--bank-path" not in body and "--yes" in body
+    assert env_value("HWSMOKE_TIMEOUT") == load_by_path("launch").HWSMOKE_TIMEOUT
+    probe = job(ROUND02, "preflight")
+    for stage in ("pilot", "hwsmoke", "eval2"):
+        assert "github.event.inputs.stage == '%s'" % stage in probe, stage
+
+
+def eval2_pattern():
+    submit = job(ROUND02, "submit")
+    check = re.search(r'\[\[ "\$\{EVAL2_OF\}" =~ (\S+) \]\]', submit)
+    assert check and check.start() < submit.index("launch.py eval2"), "validated before the launch"
+    return check.group(1)
+
+
+EVAL2_OF_BAD = ("", "6ab01cbb", "6AB01CBB51992417DFCCD64C", "round-02/6ab01cbb51992417dfccd64c",
+                "6ab01cbb51992417dfccd64c\n", "6ab01cbb51992417dfccd64c\nbanks/v3-20260920b",
+                "banks/v3-20260920b\n6ab01cbb51992417dfccd64c", "6ab01cbb51992417dfccd64c0")
+
+
+def test_eval2_of_is_one_job_id_checked_in_bash_before_the_launch():
+    import os
+    import shutil
+    import subprocess
+    assert "EVAL2_OF: ${{ github.event.inputs.eval2_of || '' }}" in ROUND02
+    submit = job(ROUND02, "submit")
+    body = submit[submit.index("launch.py eval2"):]
+    body = body[:body.index("elif")]
+    for flag in ('--eval2-of "${EVAL2_OF}"', "--eval-draws 16", '--seed "${PILOT_SEED}"',
+                 '--score-workers "${PILOT_SCORERS}"', '--pool-max-hosts "${PILOT_POOL_HOSTS}"',
+                 '--flavor "${PILOT_FLAVOR}" --timeout "${PILOT_TIMEOUT}"'):
+        assert flag in body, flag
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is not installed")
+    script = '[[ "${EVAL2_OF}" =~ %s ]]' % eval2_pattern()
+
+    def shell(value):
+        return subprocess.run([bash, "-c", script], env=dict(os.environ, EVAL2_OF=value),
+                              stdin=subprocess.DEVNULL).returncode == 0
+    assert shell("6ab01cbb51992417dfccd64c")
+    for bad in EVAL2_OF_BAD:
+        assert not shell(bad), repr(bad)
+
+
+def test_arm_a_is_the_operator_approved_configuration():
+    """2026-09-23: one pass over the bare+subset-spec targets, 16 dev draws, cadence 350."""
+    import math
+    target_rows = 4197                      # merge 35913600534, PLAN.md Step 2
+    assert int(env_value("PILOT_STEPS")) == math.ceil(target_rows / 4) == 1050
+    assert env_value("PILOT_DEV_EVAL_DRAWS") == "16"
+    assert env_value("PILOT_EVAL_EVERY") == "350"
+    assert env_value("PILOT_GRPO_STEPS") == "0"
+    assert env_value("PILOT_EVAL2") == "same-job", "the split is chosen after the smoke, not here"
+    assert load_by_path("projection").sft_evaluations(1050, 350) == 4, "steps 0, 350, 700, 1050"
+    submit = job(ROUND02, "submit")
+    assert '--eval-every "${PILOT_EVAL_EVERY}" --eval2 "${PILOT_EVAL2}"' in submit
+    assert '--steps "${PILOT_STEPS}"' in submit
+    assert '--steps "${PILOT_STEPS}"' in job(ROUND02, "token-floor"), "the floor counts the billed dose"

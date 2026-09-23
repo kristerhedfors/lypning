@@ -27,6 +27,10 @@ WHAT DEFINES THE ARM, and what deliberately does not:
                             identical weights moved dSLR by +1.57pp
                             (`STATUS.md` §2), so it is an arm, not a detail
   eval_draws, eval_sequences  the evidence dose
+  dev_eval_draws, eval_every  the selection instrument: draws per dev case and
+                            how often SFT is measured (seed 1111 ran every 25
+                            steps, the script later hard-coded 50, arm A runs
+                            350), so an absent cadence is `unrecorded`
   pool_sandboxes_per_host   DENSITY IS THE INSTRUMENT: `native` is host-load
                             dependent, so packing more sandboxes onto a host
                             changes what the label means
@@ -50,6 +54,14 @@ exception with a known answer: before 2026-09-22 `round02_pilot.sh` reviewed
 and prepared at the training seed, so an absent split seed means the split
 followed the seed, and old replicates keep agreeing with each other.
 
+A SPLIT SEED IS ONE SEED. A pilot launched with EVAL2_MODE=separate stops
+after its test split and records `eval2_deferred`; a second job runs its
+eval-2 and its manifest names the first (`eval2_of`). `joined` pairs them
+before anything is compared: the seed is complete only when both completed,
+the pair must agree on every field they share (`PAIR_FIELDS`), and the eval-2
+job is never counted as a seed of its own. A deferred pilot with no completed
+eval-2 job is `eval2-pending`, not evidence.
+
 `commit` is reported but not enforced. A commit that fixes a workflow does not
 change the arm and a commit that changes the engine does, and this file cannot
 tell those apart -- so it shows the difference and lets a reader judge, rather
@@ -68,8 +80,12 @@ import sys
 #: Fields that must agree for two seeds to be replicates of one experiment.
 ARM_FIELDS = ("bank_path", "split_seed", "space_revision", "qwen_revision", "steps",
               "grpo_steps", "grpo_generations", "grpo_prompts", "sft_target_run", "sft_sha256", "sft_learning_rate",
-              "grpo_learning_rate", "kernels", "eval_draws", "dev_eval_draws", "eval_sequences",
+              "grpo_learning_rate", "kernels", "eval_draws", "dev_eval_draws", "eval_every", "eval_sequences",
               "pool_sandboxes_per_host")
+#: Fields a split eval-2 job copies from its pilot job (`training/hf/split_eval2.py`
+#: verified them before a draw); the pair must agree on every one both carry.
+PAIR_FIELDS = ("seed", "eval_draws", "eval_sequences", "pool_sandboxes_per_host",
+               "space_revision", "qwen_revision", "bank_path", "split_seed")
 #: Shown beside the arm, never enforced; see the module docstring.
 REPORTED = ("commit",)
 #: A manifest is evidence about an arm only if its round actually ran.
@@ -87,6 +103,43 @@ def arm_value(manifest, field):
     if field == "split_seed":
         return SPLIT_FOLLOWS_SEED
     return UNRECORDED
+
+
+def joined(manifests):
+    """One manifest per seed job: a deferred pilot and its eval-2 job, as one.
+
+    An eval-2 job (`eval2_of`) is folded into the pilot it names and never
+    stands alone. A pilot that deferred its eval-2 is complete only through a
+    completed eval-2 job that agrees with it on `PAIR_FIELDS`; otherwise its
+    status says why (`eval2-pending`, `split-mismatch`), and neither is in `OK`.
+    Returns (manifests, orphans): eval-2 jobs whose pilot is not listed.
+    """
+    followers, pilots = {}, []
+    for m in manifests:
+        if m.get("eval2_of"):
+            followers.setdefault(m["eval2_of"], []).append(m)
+        else:
+            pilots.append(m)
+    known = {m.get("job") for m in pilots}
+    orphans = [m for job, ms in followers.items() if job not in known for m in ms]
+    out = []
+    for m in pilots:
+        if not m.get("eval2_deferred"):
+            out.append(m)
+            continue
+        done = sorted((f for f in followers.get(m.get("job"), [])
+                       if str(f.get("status", "")).lower() in OK), key=lambda f: str(f.get("job")))
+        if not done or str(m.get("status", "")).lower() not in OK:
+            out.append(dict(m, status="eval2-pending" if str(m.get("status", "")).lower() in OK
+                            else m.get("status")))
+            continue
+        follower = done[0]
+        mismatch = sorted(k for k in PAIR_FIELDS if k in follower and follower[k] != m.get(k))
+        merged = dict(m, eval2_job=follower.get("job"), eval2_commit=follower.get("commit"))
+        if mismatch:
+            merged.update(status="split-mismatch", split_mismatch=mismatch)
+        out.append(merged)
+    return out, orphans
 
 
 def arm_of(manifest):
@@ -166,6 +219,14 @@ def main() -> int:
         except Exception as exc:                                  # noqa: BLE001
             print("   could not read %s: %s" % (path, type(exc).__name__), file=sys.stderr)
 
+    manifests, orphans = joined(manifests)
+    for m in orphans:
+        print("   eval-2 job %s names pilot %s, which is not listed" % (m.get("job"), m.get("eval2_of")))
+    for m in manifests:
+        if m.get("status") in ("eval2-pending", "split-mismatch"):
+            print("   not complete: seed %s %s is %s%s"
+                  % (m.get("seed"), m.get("job"), m.get("status"),
+                     " on " + ", ".join(m["split_mismatch"]) if m.get("split_mismatch") else ""))
     done = [m for m in manifests if str(m.get("status", "")).lower() in OK]
     if args.bank:
         done = [m for m in done if m.get("bank_path") == args.bank]
@@ -183,7 +244,8 @@ def main() -> int:
     for m in sorted(done, key=lambda m: (m.get("seed") or 0, m.get("job") or "")):
         print("   seed %-6s %-22s %s" % (m.get("seed"), m.get("job"), m.get("bank_path")))
         print("      %s" % "  ".join("%s=%s" % (f, arm_value(m, f)) for f in ARM_FIELDS[1:]))
-        print("      commit=%s" % str(m.get("commit"))[:12])
+        print("      commit=%s%s" % (str(m.get("commit"))[:12],
+                                  "  eval2_job=%s" % m["eval2_job"] if m.get("eval2_job") else ""))
 
     failures = []
     bad = differences(done)

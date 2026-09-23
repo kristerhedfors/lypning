@@ -73,4 +73,7 @@ def test_an_unimportable_modeling_module_is_a_refusal_not_a_crash(meta_path):
 def test_the_pilot_asks_in_its_deps_stage():
     text = (ROOT / "training" / "hf" / "round02_pilot.sh").read_text(encoding="utf-8")
     deps = text[text.index("STAGE=deps"):text.index("STAGE=engine")]
-    assert "kernel_block.refusal()" in deps and "NTX_USE_FLA=0" in deps
+    # Through the installer the hardware smoke and the split eval-2 share.
+    assert "bash training/hf/pinned_deps.sh" in deps
+    shared = (ROOT / "training" / "hf" / "pinned_deps.sh").read_text(encoding="utf-8")
+    assert "kernel_block.refusal()" in shared and "NTX_USE_FLA=0" in shared

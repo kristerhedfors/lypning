@@ -30,6 +30,11 @@
 #   SEED         training seed: initialisation, data order, draws (default 1111)
 #   SPLIT_SEED   review and preparation seed, i.e. the train/dev/test split
 #                (default 1111 for EVERY training seed; launch.py says why)
+#   EVAL_EVERY   SFT dev-evaluation cadence in optimizer steps (default 50);
+#                step 0 and the last step are always evaluated as well
+#   EVAL2_MODE   same-job (default): 7g runs here. separate: 7g is skipped,
+#                eval2-deferred.json says so, and `round02_eval2.sh` runs it in
+#                a second job from this job's sealed adapter (launch.py eval2)
 set -euo pipefail
 : "${SPACE_REPO:?}" "${SPACE_REV:?}" "${QWEN_REV:?}" "${WORK_REPO:?}" "${BANK_PATH:?}" "${HF_TOKEN:?}"
 STEPS="${STEPS:-250}"
@@ -44,6 +49,23 @@ EVAL_DRAWS="${EVAL_DRAWS:-16}"
 # read. 4 is what every earlier job used; the case-clustered selector has
 # little power there (`PLAN.md` Step 1), and raising it is an arm change.
 DEV_EVAL_DRAWS="${DEV_EVAL_DRAWS:-4}"
+# SFT's dev-evaluation cadence. Every evaluation is a full dev pass at
+# DEV_EVAL_DRAWS, so at 16 draws the cadence is most of the SFT stage's clock
+# (`training/hf/projection.py`); it is an arm field, recorded in the manifest.
+EVAL_EVERY="${EVAL_EVERY:-50}"
+# Where the eval-2 benchmark runs: in this job, or in a second job that
+# `round02_eval2.sh` runs from this job's sealed SFT selection. The measurement
+# is the same either way; only which job's clock pays for it moves.
+EVAL2_MODE="${EVAL2_MODE:-same-job}"
+case "$EVAL2_MODE" in
+  same-job|separate) ;;
+  *) echo "== EVAL2_MODE must be same-job or separate, not $EVAL2_MODE"; exit 2 ;;
+esac
+# The split carries the base and SFT arms only (arm A); a GRPO arm's eval-2
+# stays in its own job until the second job learns to carry it.
+if [ "$EVAL2_MODE" = separate ] && [ "$GRPO_STEPS" != 0 ]; then
+  echo "== EVAL2_MODE=separate needs GRPO_STEPS=0"; exit 2
+fi
 EVAL_SEQUENCES="${EVAL_SEQUENCES:-256}"   # sequences per generate call in evaluation
 SCORE_WORKERS="${SCORE_WORKERS:-16}"      # concurrent verifier scorings (one pool host serves 50)
 export NTX_POOL_SANDBOXES_PER_HOST="${NTX_POOL_SANDBOXES_PER_HOST:-4}"
@@ -61,7 +83,7 @@ JOB="${JOB_ID:-local}"
 export NTX_POOL_TAG="$JOB"   # this run's sandbox pool is its own; see hf_sandbox_runner.pool_name
 STAGE=start
 mkdir -p "$ROUND"
-echo "== round-02 pilot on $(hostname) job=$JOB commit=$(git rev-parse HEAD) sft_steps=$STEPS grpo_steps=$GRPO_STEPS grpo_generations=$GRPO_GENERATIONS grpo_prompts=$GRPO_PROMPTS eval_draws=$EVAL_DRAWS dev_eval_draws=$DEV_EVAL_DRAWS eval_sequences=$EVAL_SEQUENCES score_workers=$SCORE_WORKERS pool_sandboxes_per_host=$NTX_POOL_SANDBOXES_PER_HOST pool_max_hosts=$NTX_POOL_MAX_HOSTS seed=$SEED split_seed=$SPLIT_SEED bundles_from=${BUNDLES_FROM:-none} sft_target_run=${SFT_TARGET_RUN:-authored-references}"
+echo "== round-02 pilot on $(hostname) job=$JOB commit=$(git rev-parse HEAD) sft_steps=$STEPS grpo_steps=$GRPO_STEPS grpo_generations=$GRPO_GENERATIONS grpo_prompts=$GRPO_PROMPTS eval_draws=$EVAL_DRAWS dev_eval_draws=$DEV_EVAL_DRAWS eval_every=$EVAL_EVERY eval2_mode=$EVAL2_MODE eval_sequences=$EVAL_SEQUENCES score_workers=$SCORE_WORKERS pool_sandboxes_per_host=$NTX_POOL_SANDBOXES_PER_HOST pool_max_hosts=$NTX_POOL_MAX_HOSTS seed=$SEED split_seed=$SPLIT_SEED bundles_from=${BUNDLES_FROM:-none} sft_target_run=${SFT_TARGET_RUN:-authored-references}"
 echo "== python: $(python3 -c 'import sys; print(sys.version)')"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || echo "== no GPU visible"
 
@@ -100,7 +122,7 @@ finish() {
   [ "$code" -eq 0 ] || status=failed
   echo "== finish: status=$status stage=$STAGE exit=$code"
   if ! STATUS="$status" EXIT_CODE="$code" STAGE="$STAGE" STEPS="$STEPS" GRPO_STEPS="$GRPO_STEPS" GRPO_GENERATIONS="$GRPO_GENERATIONS" GRPO_PROMPTS="$GRPO_PROMPTS" EVAL_DRAWS="$EVAL_DRAWS" DEV_EVAL_DRAWS="$DEV_EVAL_DRAWS" SEED="$SEED" SPLIT_SEED="$SPLIT_SEED" \
-      EVAL_SEQUENCES="$EVAL_SEQUENCES" SCORE_WORKERS="$SCORE_WORKERS" BUNDLES_FROM="$BUNDLES_FROM" SFT_TARGET_RUN="$SFT_TARGET_RUN" \
+      EVAL_EVERY="$EVAL_EVERY" EVAL2_MODE="$EVAL2_MODE" EVAL_SEQUENCES="$EVAL_SEQUENCES" SCORE_WORKERS="$SCORE_WORKERS" BUNDLES_FROM="$BUNDLES_FROM" SFT_TARGET_RUN="$SFT_TARGET_RUN" \
       NTX_POOL_SANDBOXES_PER_HOST="$NTX_POOL_SANDBOXES_PER_HOST" NTX_POOL_MAX_HOSTS="$NTX_POOL_MAX_HOSTS" \
       python3 - <<'PYEOF'
 import json, os, subprocess
@@ -136,6 +158,13 @@ manifest = {"job": job, "status": os.environ["STATUS"], "exit_code": int(os.envi
             "grpo_prompts": int(os.environ["GRPO_PROMPTS"]),
             "eval_draws": int(os.environ["EVAL_DRAWS"]), "dev_eval_draws": int(os.environ["DEV_EVAL_DRAWS"]), "seed": int(os.environ["SEED"]),
             "split_seed": int(os.environ["SPLIT_SEED"]),
+            "eval_every": int(os.environ["EVAL_EVERY"]),
+            # Scheduling, not the arm: which job runs 7g. A deferred eval-2 is
+            # finished by a second job whose manifest names this one
+            # (`eval2_of`); `arm_check` reads the pair as one seed.
+            "eval2_mode": os.environ["EVAL2_MODE"],
+            "eval2_deferred": os.path.exists("work/round-02/eval2-deferred.json"),
+            "sft_selected_step": read("work/round-02/sft/best.json").get("step"),
             "eval_sequences": int(os.environ["EVAL_SEQUENCES"]), "score_workers": int(os.environ["SCORE_WORKERS"]),
             "pool_sandboxes_per_host": int(os.environ["NTX_POOL_SANDBOXES_PER_HOST"]),
             "pool_max_hosts": int(os.environ["NTX_POOL_MAX_HOSTS"]),
@@ -176,27 +205,9 @@ trap 'exit 130' INT
 # 1. The GPU script's own pinned dependencies are the single source of truth.
 STAGE=deps
 echo "== install pinned dependencies from training/gpu/train_verified.py"
-DEPS=$(python3 - <<'PYEOF'
-import re
-head = open("training/gpu/train_verified.py").read().split("# ///")[1]
-print(" ".join(re.findall(r'"([^"]+)"', head.split("dependencies")[1])))
-PYEOF
-)
-# A dropped download is not a failed run: pip retries its own connections,
-# and the whole install is retried with a growing pause (job 6aaa49a9, 2026-09-16,
-# died at exit 123 on one broken pipe three minutes in).
-for attempt in 1 2 3 4; do
-  # shellcheck disable=SC2086
-  if pip install -q --no-cache-dir --retries 10 --timeout 120 $DEPS; then break; fi
-  if [ "$attempt" = 4 ]; then echo "== pip install failed 4 times"; exit 123; fi
-  echo "== pip install attempt $attempt failed; retrying in $((attempt * 30))s"
-  sleep $((attempt * 30))
-done
-python3 -c 'import torch, transformers, peft, trl, huggingface_hub; print("== torch", torch.__version__, "cuda", torch.cuda.is_available(), "| transformers", transformers.__version__, "| trl", trl.__version__, "| hub", huggingface_hub.__version__)'
-# The kernel is part of the arm (`STATUS.md` §2). transformers binds the
-# gated-delta rule at import, so ask now, in minute one, rather than in the
-# first trainer stage an hour later; `train_verified.run` asks again in-process.
-NTX_USE_FLA=0 PYTHONPATH="$PYTHONPATH:training/gpu" python3 -c 'import sys, kernel_block; why = kernel_block.refusal(); print("== kernel:", why or "torch reference"); sys.exit(1 if why else 0)'
+# The installer is shared with the hardware smoke and the split eval-2 job, so
+# all three install exactly these pins and ask the kernel question the same way.
+bash training/hf/pinned_deps.sh
 
 # 2. The engine: the same bytes the verifier image carries, from the same commit.
 STAGE=engine
@@ -457,7 +468,7 @@ COMMON=(--isolated-worker --engine "$LYPNING_L_BIN" --revision "$QWEN_REV" --see
 DEV=(--eval-draws "$DEV_EVAL_DRAWS")
 PILOT="$ROUND/pilot/bundle.json"
 EVAL2="$ROUND/eval2/bundle.json"
-SFT_TRAIN=(--steps "$STEPS" --eval-every 50 --rank 16)
+SFT_TRAIN=(--steps "$STEPS" --eval-every "$EVAL_EVERY" --rank 16)
 GRPO_TRAIN=(--steps "$GRPO_STEPS" --eval-every 50 --rank 16 --grpo-prompts "$GRPO_PROMPTS")
 
 # 7a. Plan first (no GPU imports), then the unadapted dev control.
@@ -542,6 +553,22 @@ fi
 checkpoint
 
 # 7g. The eval-2 benchmark, whole, EVAL_DRAWS matched-seed draws per case, per arm.
+#     With EVAL2_MODE=separate this job stops before it: the marker records
+#     what a second job needs, and `round02_eval2.sh` runs these same commands.
+if [ "$EVAL2_MODE" = separate ]; then
+  STAGE=eval2-deferred
+  SFT_STEP="$SFT_STEP" python3 - <<'PYEOF'
+import json, os
+from pipeline.public_view import public_view
+marker = {"why": "EVAL2_MODE=separate: eval-2 runs in a second job (round02_eval2.sh) "
+                 "from this job's sealed SFT selection",
+          "sft_selected_step": int(os.environ["SFT_STEP"]),
+          "eval2_bundle_digest": json.load(open("work/round-02/eval2/bundle.json"))["digest"]}
+json.dump(marker, open("work/round-02/eval2-deferred.json", "w"), indent=2)
+print("== eval-2 deferred:", json.dumps(public_view(marker)))
+PYEOF
+  checkpoint
+else
 STAGE=eval2
 run "${TV[@]}" eval --eval-split all --eval-draws "$EVAL_DRAWS" --bundle "$EVAL2" --output "$ROUND/base-eval2" "${COMMON[@]}"
 checkpoint
@@ -550,6 +577,7 @@ checkpoint
 if [ -n "$GRPO_ADAPTER" ]; then
   run "${TV[@]}" eval --eval-split all --eval-draws "$EVAL_DRAWS" --adapter "$GRPO_ADAPTER" --reuse-evaluation "$ROUND/sft-eval2" --bundle "$EVAL2" --output "$ROUND/grpo-eval2" "${COMMON[@]}"
   checkpoint
+fi
 fi
 
 # 8. Paired, grouped comparisons; no model loading or program execution.
@@ -561,7 +589,9 @@ report() {
   python3 -m pipeline.training_report "$base" "$candidate" > "$ROUND/reports/$name.json"
 }
 report base-vs-sft-test "$ROUND/base-test" "$ROUND/sft-test"
-report base-vs-sft-eval2 "$ROUND/base-eval2" "$ROUND/sft-eval2"
+if [ "$EVAL2_MODE" = same-job ]; then
+  report base-vs-sft-eval2 "$ROUND/base-eval2" "$ROUND/sft-eval2"
+fi
 if [ -n "$GRPO_ADAPTER" ]; then
   report base-vs-grpo-test "$ROUND/base-test" "$ROUND/grpo-test"
   report base-vs-grpo-eval2 "$ROUND/base-eval2" "$ROUND/grpo-eval2"
