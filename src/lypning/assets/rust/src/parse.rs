@@ -1597,13 +1597,27 @@ fn parse_fstring(raw: &str, raw_prefix: bool) -> R<Vec<FPart>> {
                 if expr_src.trim_end().ends_with('=') && !expr_src.trim_end().ends_with("==") {
                     return Err(unsupported("fstring", "self-documenting {x=} field"));
                 }
+                // A field that spans lines is read by CPython as if it were
+                // parenthesised, and re-lexed here as a MODULE, where a line
+                // break ends a statement: `f"""{a +\nb}"""` died on `unexpected
+                // end of line` at exit 1 where CPython prints the sum. Such a
+                // field refuses when it does not parse; one whose break falls
+                // inside brackets, where the module reading agrees, still runs.
+                let src = expr_src.trim();
+                let multiline = |err: LypningError| {
+                    if src.contains('\n') && !err.is_unsupported() {
+                        unsupported("fstring", "a replacement field that goes on past a line break")
+                    } else {
+                        err
+                    }
+                };
                 let mut p = Parser {
-                    t: tokenize(expr_src.trim())?,
+                    t: tokenize(src).map_err(multiline)?,
                     i: 0,
                     depth: 0,
                     chain_ops: 0,
                 };
-                let e = p.expr_list()?;
+                let e = p.expr_list().map_err(multiline)?;
                 // The field is re-lexed as a MODULE, so a line break in it is a
                 // statement boundary here and a continuation to CPython, which
                 // reads a replacement field as if it were parenthesised. Only
@@ -1675,7 +1689,6 @@ fn split_field(raw: &str, start: usize) -> R<(String, Option<char>, Option<Strin
     let mut quote: Option<u8> = None;
     let mut expr_end = None;
     let mut conv = None;
-    let mut spec_start = None;
     while i < b.len() {
         let c = b[i];
         if let Some(q) = quote {
@@ -1699,25 +1712,40 @@ fn split_field(raw: &str, start: usize) -> R<(String, Option<char>, Option<Strin
                     expr_end = Some(i);
                 }
                 let expr = raw[start..expr_end.unwrap()].to_string();
-                let spec = spec_start.map(|s: usize| raw[s..i].to_string());
-                return Ok((expr, conv, spec, i + 1));
+                return Ok((expr, conv, None, i + 1));
             }
             b'!' if depth == 0
                 && expr_end.is_none()
                 && i + 1 < b.len()
-                && b[i + 1] != b'='
-                && spec_start.is_none() =>
+                && b[i + 1] != b'=' =>
             {
                 expr_end = Some(i);
                 conv = Some(b[i + 1] as char);
                 i += 2;
                 continue;
             }
-            b':' if depth == 0 && spec_start.is_none() => {
+            b':' if depth == 0 => {
                 if expr_end.is_none() {
                     expr_end = Some(i);
                 }
-                spec_start = Some(i + 1);
+                // The format spec is literal text apart from nested `{...}`
+                // fields. Read on as expression source, a fill character that
+                // is a quote or a bracket -- `f"{x:'>10}"`, `f"{x:(^9}"`, valid
+                // in every version -- opened a string or a nesting level that
+                // never closed: `f-string: expecting '}'` at exit 1.
+                let s = i + 1;
+                let mut k = s;
+                while k < b.len() {
+                    match b[k] {
+                        b'{' => k = split_field(raw, k + 1)?.3,
+                        b'}' => {
+                            let expr = raw[start..expr_end.unwrap()].to_string();
+                            return Ok((expr, conv, Some(raw[s..k].to_string()), k + 1));
+                        }
+                        _ => k += 1,
+                    }
+                }
+                break;
             }
             _ => {}
         }

@@ -1017,7 +1017,37 @@ VALID_BUT_UNPARSED = [
      "d = {}\ntry:\n    d[:, 1]\nexcept TypeError as e:\n    print('TypeError')"),
     ("annotated-star-parameters",
      "def f(*args: int, **kw: str) -> int:\n    return len(args) + len(kw)\nprint(f(1, 2, a='x'))"),
+    ("field-breaks-after-an-operator", 'w = 6\nprint(f"""{w +\n1}""")'),
+    ("field-breaks-inside-is-none", 'x = 1\nprint(f"""{x is\nNone}""")'),
+    ("field-breaks-after-a-comma", 'w = 6\nprint(f"""{w,\nw}""")'),
 ]
+
+
+#: A format spec is literal text apart from its nested `{...}` fields, so a
+#: fill character may be a quote or a bracket. Read on as expression source it
+#: opened a string or a nesting level that never closed — `f-string: expecting
+#: '}'` at exit 1 on programs valid in every version — and the PEP 701 look-ahead
+#: took the quote for a string too. These run, and agree.
+FORMAT_SPEC_FILLS = [
+    ("other-quote-fill", "x = 'ab'\nprint(f\"{x:'>10}\")"),
+    ("other-quote-fill-single", "x = 'ab'\nprint(f'{x:\">10}')"),
+    ("same-quote-fill-triple", "x = 'ab'\nprint(f'''{x:'>10}''')"),
+    ("quote-fill-nested-width", "x = 'ab'\nw = 6\nprint(f\"{x:'^{w}}|{x}\")"),
+    ("quote-fill-after-conversion", "x = 'ab'\nprint(f\"{x!r:'>10}\")"),
+    ("paren-fill", "x = 'ab'\nprint(f\"{x:(^9}\")"),
+    ("bracket-fill", "x = 'ab'\nprint(f\"{x:[>9}\")"),
+]
+
+
+@pytest.mark.parametrize("case_id,program", FORMAT_SPEC_FILLS,
+                         ids=[c[0] for c in FORMAT_SPEC_FILLS])
+def test_a_quote_or_bracket_fill_in_a_format_spec_runs(case_id, program, lypning_bin):
+    theirs = engines.run(engines.CPYTHON, program)
+    if theirs.returncode == 127:
+        pytest.skip("no reference CPython")
+    ours = engines.run(engines.LYPNING, program, binary=lypning_bin)
+    assert not ours.refused, ours.stderr
+    assert (ours.returncode, ours.stdout) == (theirs.returncode, theirs.stdout), ours.stderr
 
 
 @pytest.mark.parametrize("case_id,program", VALID_BUT_UNPARSED,

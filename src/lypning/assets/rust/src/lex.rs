@@ -479,9 +479,17 @@ impl<'a> Lexer<'a> {
         let at = |j: usize| *self.src.get(j).unwrap_or(&0);
         let quote = at(self.pos);
         let triple = at(self.pos + 1) == quote && at(self.pos + 2) == quote;
+        let closes = |j: usize| at(j) == quote && (!triple || (at(j + 1) == quote && at(j + 2) == quote));
         let mut j = self.pos + if triple { 3 } else { 1 };
-        // Bracket depth inside a replacement field; 0 is the literal part.
-        let mut field = 0i32;
+        // One entry per open replacement field, innermost last: `Some(depth)`
+        // while reading its expression (`depth` counts brackets opened inside
+        // it), `None` once its top-level `:` has begun the format spec. Empty
+        // is the literal part.
+        //
+        // The spec is literal text apart from nested `{...}` fields, so a quote
+        // there is a fill character, not a string: `f"{x:'>10}"` is valid in
+        // every version, and reading its `'` as an opening quote refused it.
+        let mut fields: Vec<Option<i32>> = Vec::new();
         // A string literal inside a field: its quote, and whether triple.
         let mut inner: Option<(u8, bool)> = None;
         loop {
@@ -492,7 +500,7 @@ impl<'a> Lexer<'a> {
             if let Some((q, tri)) = inner {
                 if c == b'\\' {
                     j += 2;
-                } else if c == quote && q != quote && (!triple || (at(j + 1) == quote && at(j + 2) == quote)) {
+                } else if q != quote && closes(j) {
                     // `f"{s.replace('"', '&quot;')}"`: the outer quote inside a
                     // string of the other kind, which is where the old reader
                     // ends the f-string.
@@ -510,46 +518,62 @@ impl<'a> Lexer<'a> {
                 }
                 continue;
             }
-            if field == 0 {
-                match c {
-                    b'\\' => j += 2,
-                    b'{' if at(j + 1) == b'{' => j += 2,
-                    b'{' => {
-                        field = 1;
-                        j += 1;
+            match fields.last_mut() {
+                // The literal part, or a format spec: text, `{{`, and fields.
+                None | Some(None) => {
+                    let spec = !fields.is_empty();
+                    match c {
+                        b'\\' => j += 2,
+                        b'{' if !spec && at(j + 1) == b'{' => j += 2,
+                        b'{' => {
+                            fields.push(Some(0));
+                            j += 1;
+                        }
+                        b'}' if spec => {
+                            // Ends the spec and the field that owns it.
+                            fields.pop();
+                            fields.pop();
+                            j += 1;
+                        }
+                        b'\n' if !triple => return Ok(()),
+                        _ if closes(j) => return Ok(()),
+                        _ => j += 1,
                     }
-                    b'\n' if !triple => return Ok(()),
-                    _ if c == quote && (!triple || (at(j + 1) == quote && at(j + 2) == quote)) => {
-                        return Ok(());
-                    }
-                    _ => j += 1,
                 }
-                continue;
+                Some(Some(depth)) => {
+                    match c {
+                        b'{' | b'(' | b'[' => *depth += 1,
+                        b')' | b']' => *depth -= 1,
+                        b'}' if *depth > 0 => *depth -= 1,
+                        b'}' => {
+                            fields.pop();
+                        }
+                        b':' if *depth == 0 => {
+                            fields.push(None);
+                        }
+                        b'\'' | b'"' => {
+                            let tri = at(j + 1) == c && at(j + 2) == c;
+                            if c == quote && (!triple || tri) {
+                                return Err(unsupported(
+                                    "fstring",
+                                    "the f-string's own quote reused inside a replacement field (PEP 701)",
+                                ));
+                            }
+                            inner = Some((c, tri));
+                            j += if tri { 3 } else { 1 };
+                            continue;
+                        }
+                        b'\n' if !triple => {
+                            return Err(unsupported(
+                                "fstring",
+                                "a line break inside a replacement field of a single-quoted f-string (PEP 701)",
+                            ));
+                        }
+                        _ => {}
+                    }
+                    j += 1;
+                }
             }
-            match c {
-                b'{' | b'(' | b'[' => field += 1,
-                b'}' | b')' | b']' => field -= 1,
-                b'\'' | b'"' => {
-                    let tri = at(j + 1) == c && at(j + 2) == c;
-                    if c == quote && (!triple || tri) {
-                        return Err(unsupported(
-                            "fstring",
-                            "the f-string's own quote reused inside a replacement field (PEP 701)",
-                        ));
-                    }
-                    inner = Some((c, tri));
-                    j += if tri { 3 } else { 1 };
-                    continue;
-                }
-                b'\n' if !triple => {
-                    return Err(unsupported(
-                        "fstring",
-                        "a line break inside a replacement field of a single-quoted f-string (PEP 701)",
-                    ));
-                }
-                _ => {}
-            }
-            j += 1;
         }
     }
 

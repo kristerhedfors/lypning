@@ -33,6 +33,10 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   from 3.12; `*` after the first element of a list, tuple, set or subscript
   refuses as `unpack`; a slice after the first element of a subscript, or
   `x[:, i]`, refuses as `subscript`; `*args: T` and `**kw: T` parse.
+- A quote or bracket as a format-spec fill (`f"{x:'>10}"`, `f"{x:(^9}"`,
+  valid in every version) was `expecting '}'` at exit 1; the spec is read as
+  literal text and these run. A multi-line field that does not parse as a
+  module (`f"""{a +\nb}"""`) refuses as `fstring` instead of exit 1.
 - Pinned in `tests/test_semantics.py`: every new case fails on the previous
   binary and passes on this one.
 
