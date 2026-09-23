@@ -175,6 +175,45 @@ def test_every_paid_rung_above_smoke_uses_the_45_rpm_that_survived():
     assert 300 * 16 * 2 * 60 / 45 < 14400
 
 
+def step2_env(name):
+    import re
+    from pathlib import Path
+    text = (Path(__file__).resolve().parents[2] / '.github' / 'workflows' / name).read_text()
+    return text, {key: value for key, value in
+                  re.findall(r"^  (STEP2_[A-Z_]+): \$\{\{ (.+) \}\}$", text, re.M)}
+
+
+def test_generation_and_grading_size_every_rung_by_the_same_expressions():
+    """The grader re-derives the case set; one differing expression grades other cases."""
+    import re
+    control, control_env = step2_env('step2-control.yml')
+    grade, grade_env = step2_env('step2-control-grade.yml')
+    shared = ('STEP2_CASES', 'STEP2_SAMPLES', 'STEP2_SHARD_INDEX', 'STEP2_SHARD_COUNT',
+              'STEP2_SKIP_PREFIX')
+    for key in shared:
+        assert control_env[key] == grade_env[key], key
+    assert "inputs.rung == 'full' && '1355'" in control_env['STEP2_CASES']
+    assert "inputs.rung == 'full')" in control_env['STEP2_SAMPLES']
+    # Only the full rung is sharded; every older rung keeps its case set.
+    assert control_env['STEP2_SHARD_INDEX'] == "inputs.rung == 'full' && inputs.shard_index || '0'"
+    assert control_env['STEP2_SHARD_COUNT'] == "inputs.rung == 'full' && inputs.shard_count || '1'"
+    assert control_env['STEP2_SKIP_PREFIX'] == "inputs.rung == 'full' && inputs.skip_prefix || '0'"
+    for text in (control, grade):
+        assert 'options: [smoke, targets, budget20, confirmatory, full]' in text
+        # Choice inputs: nothing typed by hand reaches a run id or a path.
+        for name in ('shard_index', 'shard_count', 'skip_prefix'):
+            assert re.search(r"      %s:\n(?:        .*\n)*?        type: choice\n" % name, text), name
+    assert "format('-{0}of{1}', inputs.shard_index, inputs.shard_count)" in control_env['STEP2_RUN_ID']
+
+
+def test_a_full_shard_is_capped_and_sized_before_anything_is_built():
+    control, _ = step2_env('step2-control.yml')
+    assert "'confirmatory': 50, 'full': 14}" in control
+    sized = control.index('run: python .github/scripts/step2_shard.py')
+    for later in ('harvesting.preflight', 'lypning build', 'step2_generate.py'):
+        assert sized < control.index(later), later
+
+
 def test_insufficient_reservation_makes_no_network_call(tmp_path):
     backend = ChatBackend(gen.PROVIDER, gen.MODEL, max_retries=0, timeout_s=120)
     backend.complete = lambda *a, **kw: pytest.fail('must not call provider')

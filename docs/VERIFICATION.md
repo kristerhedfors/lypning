@@ -538,7 +538,13 @@ raises); `capture.append_record` (the log, then the per-uid tmp fallback
 `lypning-harvest.sh`, `lypning-session-start.sh`; `capture.record_command`
 (the raw record: `kind`, `ts`, `session`, `cwd`, `tool`, `command`,
 `description`, `transcript`, `host`, `tool_use_id`; OpenHands adds
-`exit_code`, opencode `run`).
+`exit_code`, opencode `run`). The capture script's fork-free `case` screen is
+broader than `capture.PYTHONISH`, whose fifth rule takes a heredoc redirected
+into a `.py` file; the script's arms are the console script, the session's
+checkout, a tree pinned by `$LYPNING_PYTHONPATH`, then `python3 -m lypning`.
+`hook_stop` and `hook_openhands_session_end` export only inside a checkout of
+lypning (`capture.is_lypning_checkout`), so a Stop hook at user scope, or one
+left there by an older install, writes nothing into another repository.
 ```bash
 # CHECK — `c9-hook.sh`: the four failures (malformed event, unwritable log, the `.sh` with no package on its path, no engine), the happy path with its log line, the OpenHands and opencode entry points, the grep for the forbidden key. The ten fixtures are `tests/verification/hook-fixtures.json`.
 E='{"tool_name":"Bash","tool_input":{"command":"python3 -c \"print(1)\""},"session_id":"s","cwd":"/tmp","tool_use_id":"t"}'
@@ -559,11 +565,16 @@ grep -rn '"permissionDecision"' src/lypning/ | wc -l | tr -d ' '
 |---|---|---|
 | an entry point returns non-zero, or claims a `decision` / `permissionDecision` | OpenHands reads an exit code of two as *block the agent's tool call*; the hook would grant or deny permission | pytest: `tests/test_capture.py::test_no_hook_entry_point_can_return_two`, `tests/test_harness_openhands.py::test_no_hook_claims_a_permission_decision` |
 | the scripts in the tree drift from the ones shipped | a session captures with one and installs the other | pytest: `tests/test_capture.py::test_the_committed_hooks_match_the_ones_the_installer_ships` |
+| the shell screen narrower than a `PYTHONISH` rule | nothing: the command never reaches the filter and no record is written | pytest: `tests/test_capture.py::test_the_shell_screen_is_broader_than_the_regexes`, which runs the real script once per accepted command |
+| the Stop roll-up exporting outside a checkout | `tests/corpus/sightings/*.jsonl` appears in another repository | pytest: `tests/test_capture.py::test_the_roll_up_writes_nothing_into_someone_elses_repository` |
+| a `PYTHONISH` rule that backtracks quadratically on a long line | the PreToolUse hook blocks the Bash call for minutes | pytest: `tests/test_capture.py::test_rule_five_is_linear_on_adversarial_lines` |
 
 ```
 # PINNED BY
 tests/test_capture.py::test_hook_answers_the_protocol_and_exits_zero  tests/test_capture.py::test_an_unwritable_log_does_not_reach_the_tool_call  tests/test_verification.py::test_every_hook_fixture_answers_the_protocol_line
 tests/test_capture.py::test_every_hook_can_reach_the_package_from_a_source_checkout  tests/test_capture.py::test_the_openhands_hook_records_the_exit_code_it_was_given
+tests/test_capture.py::test_the_shell_screen_is_broader_than_the_regexes  tests/test_capture.py::test_a_pinned_source_tree_is_an_arm_outside_any_checkout
+tests/test_capture.py::test_the_roll_up_writes_nothing_into_someone_elses_repository  tests/test_capture.py::test_the_roll_up_still_exports_in_a_checkout_of_lypning
 ```
 ## 10. C10 — Install, uninstall, shim
 **STATEMENT.** Invariant 7: nothing we write may cost a user something they
@@ -583,7 +594,15 @@ original aside. **CODE HOME.** `install.plan_install` (reads, never writes);
 (`.openhands/plugins/lypning/.claude-plugin/plugin.json`, `hooks/hooks.json`,
 `README.md`; never `.openhands/hooks.json`); `cli.cmd_install` (exit 1 when an
 action FAILED; exit 2 for `unknown harness 'nope' (known: claude, opencode,
-openhands, all)`).
+openhands, all)`). `--user` registers PreToolUse(Bash) only
+(`install.HookSpec.scopes`): Stop and SessionStart are project-scope, and a
+user-scope install copies only `lypning-capture.sh`. An older install's
+user-scope Stop or SessionStart entry is reported, never rewritten. A
+user-scope hook that no arm can reach from this environment is reported as
+`WARNING: INERT` in the plan and as `reach    : INERT` in `status`
+(`install.dispatch_arms`), as `_path_warning` reports a shim that is not on
+PATH; `plan_install(pythonpath=…)` pins `LYPNING_PYTHONPATH=<dir>` onto the
+hook command and refuses a directory that does not hold the package.
 ```bash
 # CHECK — `c10-install.sh`, in a throwaway project whose `settings.json` already carries a foreign hook and an unrelated key: dry run and checksum, install, count the foreign entries, install again, uninstall, `shim status`.
 before=$(find "$P/.claude" -type f | sort | xargs shasum | shasum)
@@ -606,10 +625,13 @@ unchanged
 |---|---|---|
 | a merge that drops a foreign hook or key, a second backup, or a dry run that writes | the `echo mine` count reads 0; the backup differs after the second install; the checksum differs | pytest: `tests/test_install.py::test_the_merge_preserves_unrelated_keys_and_hooks`, `tests/test_install.py::test_merge_hooks_is_idempotent`, `tests/test_cli.py::test_harvest_dry_run_writes_nothing_under_the_state_dir` |
 | a foreign `python3` overwritten, or the log deleted | no `lypning: REFUSING: <bin>/python3 exists and is not a lypning shim.` (exit 1); `--force` without `backed up <bin>/python3 -> <bin>/python3.lypning-backup`; no `NOT deleted` note | pytest: `tests/test_shim.py::test_refuses_to_clobber_a_foreign_python_without_force`, `tests/test_shim.py::test_install_uninstall_round_trip` |
+| a user-scope install registering Stop or SessionStart, or an inert hook reported as installed | a `Stop` entry in `~/.claude/settings.json`; no `INERT` line when nothing can import the package | pytest: `tests/test_install.py::test_user_scope_registers_the_bash_capture_hook_and_nothing_else`, `tests/test_install.py::test_a_user_hook_no_arm_reaches_is_reported_inert` |
+| a pinned and an unpinned capture hook both registered | two PreToolUse entries; every program logged twice | pytest: `tests/test_install.py::test_a_repin_never_registers_the_capture_hook_twice` |
 
 ```
 # PINNED BY
 tests/test_install.py::test_install_uninstall_round_trip  tests/test_install.py::test_uninstall_removes_only_our_entries  tests/test_harness_openhands.py::test_no_user_hooks_json_is_ever_written
+tests/test_install.py::test_user_scope_round_trip_is_exact_and_backs_up_once  tests/test_install.py::test_a_pinned_tree_is_on_the_command_and_uninstall_still_removes_it
 tests/test_shim.py::test_force_moves_the_foreign_file_aside_and_uninstall_puts_it_back  tests/test_shim.py::test_path_problem_is_loud_when_a_real_interpreter_shadows_the_shim
 tests/test_harness_opencode.py::test_a_foreign_lypning_js_is_refused_without_force
 ```

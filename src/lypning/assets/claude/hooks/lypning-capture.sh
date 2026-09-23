@@ -30,6 +30,8 @@
 # Environment:
 #   LYPNING_LOG        log path (default $HOME/.lypning/invocations.jsonl)
 #   LYPNING_CAPTURE=0  disable capture (the hook still answers, doing nothing)
+#   LYPNING_PYTHONPATH a directory holding the lypning package, for when it is
+#                      neither installed nor this session's own checkout
 ok() {
   printf '{"continue":true,"suppressOutput":true}\n'
   exit 0
@@ -60,10 +62,15 @@ case "$LYPNING_HOOK_PAYLOAD" in
   *py*-c*) : ;;
   *"uv run"* | *"pipx run"* | *"poetry run"* | *"hatch run"* | *"pdm run"* | *"rye run"*) : ;;
   *"<<"*)
-    # A heredoc only interests us when a python-ish delimiter is in play; the
-    # precise filter accepts PY / PYTHON / PYEOF / EOFPY, all containing "PY".
+    # A heredoc only interests us when a python-ish delimiter is in play — the
+    # precise filter accepts PY / PYTHON / PYEOF / EOFPY, all containing "PY" —
+    # or when it is written INTO a .py file (`cat > x.py <<'EOF'`), whatever
+    # its delimiter: that is the write half of write-then-run, and the later
+    # `python x.py` shows only a path. `*.py*` is looser than capture.py's
+    # fifth PYTHONISH rule on purpose (it also passes `.pyi`, `x.py.bak`, and a
+    # body that merely mentions a .py file); that rule is the precise filter.
     case "$LYPNING_HOOK_PAYLOAD" in
-      *PY*) : ;;
+      *PY* | *.py*) : ;;
       *) ok ;;
     esac
     ;;
@@ -106,6 +113,22 @@ if [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -f "$CLAUDE_PROJECT_DIR/src/lypning/__i
    && command -v python3 >/dev/null 2>&1; then
   printf '%s' "$LYPNING_HOOK_PAYLOAD" \
     | PYTHONPATH="$CLAUDE_PROJECT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
+      python3 -m lypning hook pre-tool-use >/dev/null && ok
+fi
+
+# A PINNED SOURCE TREE, for a hook registered at user scope. Outside a checkout
+# of lypning the arm above never applies, and neither of the others does either
+# unless the package was installed (`uv tool install`, pip) — so a user-scope
+# hook with no installation is inert in every repository it fires in, silently,
+# by invariant 5. `$LYPNING_PYTHONPATH` names a directory holding the package
+# (a checkout's `src/`), set in the environment the agent is launched from or
+# pinned on the hook command by `install.plan_install(pythonpath=…)`. After the
+# checkout arm, so a session editing lypning runs the code it is editing rather
+# than a snapshot; guarded on the package file for the same reason that arm is.
+if [ -n "${LYPNING_PYTHONPATH:-}" ] && [ -f "$LYPNING_PYTHONPATH/lypning/__init__.py" ] \
+   && command -v python3 >/dev/null 2>&1; then
+  printf '%s' "$LYPNING_HOOK_PAYLOAD" \
+    | PYTHONPATH="$LYPNING_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}" \
       python3 -m lypning hook pre-tool-use >/dev/null && ok
 fi
 

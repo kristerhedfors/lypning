@@ -45,16 +45,26 @@ export function lypning({ $, directory, worktree }) {
   const os = require("node:os");
   const path = require("node:path");
 
-  // The four screens from capture.py, ported verbatim. Deliberately BROADER
+  // The five screens from capture.py, ported verbatim. Deliberately BROADER
   // than precise: an over-match costs one wasted log line, a miss loses a
   // corpus entry forever. capture.looks_pythonish stays the precise filter and
   // harvest re-applies it, so a loose screen here can never put noise in the
-  // corpus.
+  // corpus. The fifth — a heredoc redirected into a .py file, the write half of
+  // write-then-run — is two linear searches per line, not one regex: as one
+  // pattern it rescans the rest of the line from every start, quadratically.
+  const PY_TARGET = /(?:>>?[ \t]*|\btee\s+(?:-a\s+)?)['"]?[^\s'";&|<>()]*\.py['"]?(?![\w.])/;
+  const HEREDOC_OP = /(?<!<)<<(?!<)-?[ \t]*[^\s;&|()<>]/;
   const PYTHONISH = [
     /(?:^|[\s;&|(){}`$"'=])python[0-9.]*(?:\s|$)/,
     /(?:^|[\s;&|(){}`$])py\s+-c(?:\s|$)/,
     /(?:^|[\s;&|(){}`$])(?:uv|pipx|poetry|hatch|pdm|rye)\s+run(?:\s|$)/,
     /<<-?\s*['"]?(?:PY|PYTHON|PYEOF|EOFPY)\b/,
+    {
+      test: (s) =>
+        s.includes("<<") && s.includes(".py") &&
+        s.split("\n").some((l) => l.includes("<<") && l.includes(".py") &&
+                                  HEREDOC_OP.test(l) && PY_TARGET.test(l)),
+    },
   ];
 
   // The routing paragraph, baked in so the hot path never spawns to fetch it.

@@ -83,7 +83,12 @@ def test_public_plan_never_exports_private_bank_identifiers():
 def load_script(name):
     import importlib.util
     from pathlib import Path
+    import sys
     path = Path(__file__).resolve().parents[2] / '.github' / 'scripts' / name
+    # As in CI, where `python .github/scripts/x.py` puts its own directory
+    # first: the step2 scripts share `step2_shard` from there.
+    if str(path.parent) not in sys.path:
+        sys.path.insert(0, str(path.parent))
     spec = importlib.util.spec_from_file_location('positive_control_check', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -129,8 +134,7 @@ def test_reference_admission_uses_container_runner_and_hides_failure_text(tmp_pa
     monkeypatch.setenv('LYPNING_HOME', str(tmp_path))
     monkeypatch.setenv('CHECK_BASE_IMAGE', 'pinned-base')
     monkeypatch.setenv('CANDIDATE_IMAGE', 'sha256:' + '1' * 64)
-    monkeypatch.setattr(check, 'population', lambda raw: raw)
-    monkeypatch.setattr(check, 'stratified_population', lambda raw, target: raw)
+    monkeypatch.setattr(check, 'cases_from_env', lambda raw, environ=None: raw)
     monkeypatch.setattr(check, 'engine_identity', lambda binary: {'oracle': 'host Python', 'sha256': 'engine'})
     monkeypatch.setattr(check.subprocess, 'check_output', lambda command, **kw: 'pinned Python\n')
     boundary = object()

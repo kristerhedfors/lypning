@@ -14,9 +14,9 @@ Detail ships as `assets/{opencode,openhands}/README.md`; checks: §C9, §C10 of
 | what we install, and merge into | one auto-discovered plugin file (TypeScript / Bun); nothing | one ambiently-discovered plugin directory (Python); nothing |
 | the hook feed fires | `tool.execute.before`, in-process in Bun, before the command; the PATH shim reaches its shell with the self-check in §3; it could rewrite the command and deliberately does not (§5) | `PostToolUse`, after it — exit code and output arrive attached; denied commands are lost; the shim reaches its shell; no rewrite is possible |
 
-Not adapted: goose, Codex CLI, gemini-cli, Cline, Open Interpreter,
-smolagents, Continue, Qwen Code, aider, Roo Code (Apache-2.0); Crush
-(FSL-1.1-MIT, not MIT); gptme (MIT; a persistent in-process IPython, no spawn
+Codex CLI is read offline from its rollouts, not hooked (§10). Not adapted:
+goose, gemini-cli, Cline, Open Interpreter, smolagents, Continue, Qwen Code,
+aider, Roo Code (Apache-2.0); Crush (FSL-1.1-MIT, not MIT); gptme (MIT; a persistent in-process IPython, no spawn
 to remove); mini-swe-agent (MIT, one `bash` tool; `CLAUDE.md` invariant 4).
 
 ## 2. What is measured
@@ -175,3 +175,49 @@ and confirm two new `$LYPNING_LOG` lines carrying `"host":"<harness>"`.
 and answer, doing nothing. `LYPNING_HARVEST=0` stops the automatic export under
 Claude Code and OpenHands (`capture.harvest_enabled`), not opencode (§3, #44).
 Hook answers and install actions, byte-exact: `docs/VERIFICATION.md` §C9, §C10.
+
+## 9. Claude Code at user scope
+
+```
+lypning install --user --no-shim --no-skill --dry-run   # read the diff first
+# → `+ write ~/.claude/hooks/lypning-capture.sh`, one `~ merge` adding one entry; exit 0
+```
+
+**One hook, PreToolUse(Bash), and nothing else** (`install.HookSpec.scopes`).
+A user-scope hook fires in every repository the user opens, and only the
+capture hook is harmless there: it appends to `$LYPNING_LOG`, outside every
+repository. Stop would write `tests/corpus/sightings` into whichever repository
+the session is in, and SessionStart would install a shim and inject lypning's
+engine state into unrelated sessions. `capture.hook_stop` also refuses to
+export outside a checkout of lypning, which protects an install made before
+the scopes existed; the plan names such leftover entries and `lypning
+uninstall --user` removes them.
+
+**It must be able to reach the package.** Outside a checkout the script's
+source-tree arm never applies, so one of the other three must: a `lypning`
+console script on PATH (`uv tool install <checkout>`), `$LYPNING_PYTHONPATH`
+naming a directory that holds `lypning/` (exported in the shell that starts
+the agent, or pinned onto the command by `install.plan_install(pythonpath=…)`),
+or a `python3` that imports it. Otherwise the hook answers the protocol line
+and records nothing. The plan says `WARNING: INERT` and `lypning status` says
+`reach    : INERT`, checked against the environment the command runs in.
+
+Installed at both scopes, a lypning checkout fires both capture hooks on one
+Bash call. Both records carry the same `tool_use_id`, so a harvest must key on
+it to count the call once.
+
+## 10. Codex CLI, offline
+
+Codex has no hook to register, so `lypning.codex` reads its rollouts
+(`~/.codex/sessions/**/*.jsonl`, `$CODEX_HOME`, or
+`$LYPNING_CODEX_SESSIONS`) **read-only**: the `exec_command` function call, the
+`exec` custom tool call (a JavaScript program whose `cmd:` string literal is
+decoded before extraction) and the older argv shapes. Each program carries
+`host` and `source` `codex`, the model of the preceding `turn_context`, and a
+key `codex:<call_id>#…`, so a rescan or a forked rollout counts a call once.
+It never carries `tool_use_id`, so no Codex call joins a Claude transcript.
+Commands and programs are redacted as the Claude feed's are. On this machine on
+2026-09-22, `codex.collect()` over 478 rollout files returned 474 programs (444
+distinct) from 1,222 python-ish calls. Wiring it into `lypning harvest` is
+harvest's job. Whether GPT-written programs may be used for training is an
+operator decision.

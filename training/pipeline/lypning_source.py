@@ -32,6 +32,7 @@ executed is one copy too many, and the second is the one that goes stale.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
@@ -80,12 +81,28 @@ def _repo_rules():
     return conf
 
 
-# Programs that drive lypning itself. They are real captured usage and they
-# belong in the corpus that measures the engine, but they are not a *generation*
-# target: "rewrite this so it does not import lypning" has no answer.
-def is_tooling(kind: str, detail: str) -> bool:
-    return kind in ("module", "module-attr") and detail.replace(
-        "import ", "").replace("from ", "").strip().startswith("lypning")
+# Programs that drive this repository itself. They are real captured usage and
+# they belong in the corpus that measures the engine, but they are not a
+# *generation* target: "rewrite this so it does not import lypning" has no
+# answer, and neither does "... so it does not import pipeline" or
+# "verified_stages". The rule used to name lypning alone, which let the other
+# repo-local imports through as candidates (measured 2026-09-22: 239 programs
+# import `pipeline`, 19 `verified_stages`); the set is now the one
+# `capture_quality.repo_modules` computes from the tree, so a new directory
+# under training/ is covered the day it exists.
+def is_tooling(kind: str, detail: str, *, local: Optional[Sequence[str]] = None) -> bool:
+    if kind not in ("module", "module-attr"):
+        return False
+    name = detail.replace("import ", "").replace("from ", "").strip()
+    if name.startswith("lypning"):
+        return True
+    root = re.split(r"[.\s,:(]", name, maxsplit=1)[0]
+    if not root:
+        return False
+    if local is None:
+        from .capture_quality import repo_modules
+        local = repo_modules()
+    return root in local
 
 
 def is_ceiling(kind: str, detail: str) -> bool:
@@ -126,6 +143,15 @@ def classify_entry(
     program = entry.get("program") or ""
     argv = [str(a) for a in (entry.get("argv_tail") or [])]
 
+    # Decided from the text, before anything runs: a captured program that
+    # spawns processes, opens sockets or writes files is not executed here at
+    # all, temp cwd or not — the sandbox is a net, not a jail, and the corpus
+    # has programs that patch this repository's own files. Those belong to the
+    # isolated worker `lypning.corpus_safety` describes, never to classify.
+    from .capture_quality import hazard
+    danger = hazard(program)
+    if danger:
+        return "skip", {"reason": "static: %s (not executed)" % danger}
     if conf.is_nondeterministic(entry):
         return "skip", {"reason": "output cannot be equal on two interpreters"}
     battery = conf.spawns_a_battery(program)

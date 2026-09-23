@@ -1,0 +1,70 @@
+name: Step 2 merge graded full-rung shards (no GPU, no container)
+
+# Free. Joins the graded shards of the `full` rung -- the 192-case `targets`
+# run 35767396604 is the first -- into ONE positive-control run whose
+# grade/sft.jsonl and sft-report.json `s4-target-preflight.yml` and a pilot's
+# `target_run` read like any single graded run. `step2_merge.py` refuses a
+# set whose shards differ in engine, base image, subset spec, provider,
+# sampling or candidate-image recipe, naming the shard that differs, and
+# re-runs nothing.
+on:
+  workflow_dispatch:
+    inputs:
+      shard_runs:
+        description: Graded positive-control run ids, space-separated, covering all 1,355 cases once
+        required: true
+        type: string
+      target_arms:
+        description: Arms harvested into SFT targets (subset-spec is the reviewed default)
+        required: true
+        type: choice
+        options: [subset-spec, bare, 'bare,subset-spec']
+        default: subset-spec
+
+permissions:
+  contents: read
+
+env:
+  PYTHONPATH: src:training
+  LYPNING_CAPTURE: '0'
+  LYPNING_HARVEST: '0'
+  STEP2_MERGE_RUNS: ${{ inputs.shard_runs }}
+  STEP2_TARGET_ARMS: ${{ inputs.target_arms }}
+  STEP2_RUN_ID: full-merged-${{ github.sha }}-${{ github.run_id }}
+  # The revision the S4 job trains; the merged targets are re-sized with the
+  # tokenizer it will load, exactly as `step2-control-grade.yml` sizes them.
+  QWEN_REV: 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      # Full history: each shard's candidate-image recipe is read by git blob
+      # id at the commit that shard was generated from.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q 'huggingface-hub==1.31.0' 'transformers==5.17.0' jinja2
+      - name: Download the immutable private bank
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          STEP2_DOWNLOAD_ONLY: '1'
+        run: python .github/scripts/step2_bank_plan.py
+      - name: Merge the graded shards; aggregates only
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python .github/scripts/step2_merge.py
+      - name: Persist private merged rows, targets and report
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python .github/scripts/step2_grade_upload.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: step2-merge-public-report
+          path: ${{ runner.temp }}/step2-grade/public-report.json
+          if-no-files-found: error

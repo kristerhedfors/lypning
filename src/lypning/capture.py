@@ -57,13 +57,70 @@ OK_RESPONSE = '{"continue":true,"suppressOutput":true}'
 #   2. `py -c` (the Windows launcher, which the first pattern would miss),
 #   3. the runner wrappers, listed BY NAME rather than screening on " run "
 #      alone — which every `npm run …` in a repo would otherwise trip,
-#   4. a heredoc whose delimiter contains PY.
+#   4. a heredoc whose delimiter contains PY,
+#   5. a heredoc REDIRECTED INTO a ``.py`` file, whatever its delimiter —
+#      ``cat > x.py <<'EOF'``, ``cat <<EOF > x.py``, ``… | tee -a x.py``.
+#
+# The fifth is the write half of write-then-run, which is where the long
+# programs are. It is a separate Bash call from the ``python x.py`` that later
+# runs it, and that later call shows only a path — so a write the screen let
+# through and this filter then dropped was a program lost with no second
+# chance. Deliberately narrower than the shell screen's ``*.py*`` arm in
+# lypning-capture.sh: the target must be a redirect or a ``tee`` argument
+# ending in exactly ``.py`` on the heredoc's own line, so a ``.pyi`` stub, a
+# ``x.py.bak`` and a ``cat > notes.txt <<EOF`` whose body merely mentions
+# ``a.py`` are all misses. The screen stays broader than every regex here;
+# tests/test_capture.py runs the real script to hold that.
+#
+# The fifth is NOT one regex, and must not become one again: "a target and a
+# heredoc on the same line, in either order" as a single pattern is
+# ``TARGET[^\n]*?<<|<<…[^\n]*?TARGET``, which rescans the rest of the line from
+# every candidate start — quadratic in a line's length, and this runs inside a
+# PreToolUse hook that blocks the tool call. A 190 KB line of minified text
+# holding ``>a.py`` fragments took 23 s. Two independent linear searches per
+# line, only on lines holding both ``<<`` and ``.py``, answer the same question.
+_PY_TARGET = re.compile(r"(?:>>?[ \t]*|\btee\s+(?:-a\s+)?)['\"]?[^\s'\";&|<>()]*\.py['\"]?"
+                        r"(?![\w.])")
+#: A heredoc operator (not a ``<<<`` here-string) followed by its delimiter.
+_HEREDOC_OP = re.compile(r"(?<!<)<<(?!<)-?[ \t]*[^\s;&|()<>]")
+
+
+class _HeredocIntoPy:
+    """PYTHONISH rule 5, with the ``search`` interface of its siblings."""
+
+    pattern = "heredoc redirected into *.py (per line: %s and %s)" % (
+        _HEREDOC_OP.pattern, _PY_TARGET.pattern)
+
+    def search(self, command: str) -> Optional["re.Match[str]"]:
+        if "<<" not in command or ".py" not in command:
+            return None
+        for line in command.split("\n"):
+            if "<<" in line and ".py" in line and _HEREDOC_OP.search(line):
+                found = _PY_TARGET.search(line)
+                if found:
+                    return found
+        return None
+
+
 PYTHONISH = (
     re.compile(r"(?:^|[\s;&|(){}`$\"'=])python[0-9.]*(?:\s|$)"),
     re.compile(r"(?:^|[\s;&|(){}`$])py\s+-c(?:\s|$)"),
     re.compile(r"(?:^|[\s;&|(){}`$])(?:uv|pipx|poetry|hatch|pdm|rye)\s+run(?:\s|$)"),
     re.compile(r"<<-?\s*['\"]?(?:PY|PYTHON|PYEOF|EOFPY)\b"),
+    _HeredocIntoPy(),
 )
+
+#: The rules that say a command RUNS python, without the heredoc-into-*.py rule.
+#: That rule is right for capture (log the write so a later run can be joined)
+#: and wrong for deciding a heredoc BODY is a program: it also matches an
+#: append (`>>`, `tee -a`), a path nobody can resolve (`$D/a.py`) and a stderr
+#: redirect. `harvest` judges those with its own `py_write_target` instead.
+INVOKES_PYTHON = tuple(rx for rx in PYTHONISH if not isinstance(rx, _HeredocIntoPy))
+
+
+def invokes_python(command: str) -> bool:
+    """Does this command run python, as opposed to write a ``.py`` file?"""
+    return isinstance(command, str) and any(rx.search(command) for rx in INVOKES_PYTHON)
 
 # A tool event is a few KiB of JSON. A Bash command can legitimately carry a
 # large heredoc, but nothing useful arrives past this, and a hook that reads an
@@ -459,6 +516,46 @@ def hook_pre_tool_use(stdin: Optional[TextIO] = None, stdout: Optional[TextIO] =
     return _respond(stdout)
 
 
+def is_lypning_checkout(project: Optional[Path]) -> bool:
+    """Is this directory a source checkout of lypning itself?
+
+    The one kind of repository whose ``tests/corpus/sightings`` is ours to
+    write. The package file is the test, not the directory name and not a
+    ``tests/corpus`` that happens to exist: it is the same file the hook
+    scripts' source-tree arm checks before trusting ``$CLAUDE_PROJECT_DIR/src``,
+    so "a checkout" means one thing on both sides of the language boundary.
+    """
+    if project is None:
+        return False
+    try:
+        return (Path(project) / "src" / "lypning" / "__init__.py").is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _export_if_ours(cwd: Optional[str]) -> None:
+    """The Stop/SessionEnd roll-up, and the guard that makes it safe anywhere.
+
+    The export writes ``<project>/tests/corpus/sightings/*.jsonl``. In a
+    checkout of lypning that is the whole point; in anybody else's repository it
+    is files they did not ask for, in a directory they may not have, noticed as
+    untracked clutter the next time they look — invariant 7. A Stop hook
+    registered at USER scope fires in every repository the user opens, and so
+    does one left behind by an install older than the scope-aware
+    ``install.HOOKS``, so the guard lives here, in the entry point both of them
+    reach, rather than only in the installer that stopped registering it.
+    """
+    log = paths.log_path()
+    if not (log.is_file() and log.stat().st_size > 0):
+        return
+    project = paths.project_dir(cwd)
+    if not is_lypning_checkout(project):
+        return
+    from . import harvest
+
+    harvest.export_sightings(project, quiet=True)
+
+
 def hook_stop(stdin: Optional[TextIO] = None, stdout: Optional[TextIO] = None) -> int:
     """Stop: publish this session's sightings into the tree before teardown.
 
@@ -468,6 +565,10 @@ def hook_stop(stdin: Optional[TextIO] = None, stdout: Optional[TextIO] = None) -
     (docs/CAPTURE.md). The export is a union by key, so firing on every turn
     boundary is idempotent and a session that ran no python writes nothing.
 
+    A no-op outside a checkout of lypning (:func:`_export_if_ours`): the log
+    keeps every record regardless, and the next export run from a checkout
+    publishes them.
+
     Stop fires at every turn boundary, so the no-work path bails before
     importing the harvester: an empty or missing log is the overwhelmingly
     common case in a session that never touched python.
@@ -475,13 +576,7 @@ def hook_stop(stdin: Optional[TextIO] = None, stdout: Optional[TextIO] = None) -
     try:
         event = read_event(stdin)
         if capture_enabled() and harvest_enabled():
-            log = paths.log_path()
-            if log.is_file() and log.stat().st_size > 0:
-                from . import harvest
-
-                cwd = _str(event.get("cwd"))
-                project = paths.project_dir(cwd) if cwd else None
-                harvest.export_sightings(project, quiet=True)
+            _export_if_ours(_str(event.get("cwd")))
     except Exception:
         pass
     return _respond(stdout)
@@ -567,18 +662,13 @@ def hook_openhands_session_end(stdin: Optional[TextIO] = None,
 
     Best-effort by construction: it runs only if the conversation closes
     cleanly. That is why ``PostToolUse`` appends durably as it goes and this is
-    a roll-up rather than the only write.
+    a roll-up rather than the only write. The same checkout guard as
+    :func:`hook_stop`, for the same reason.
     """
     try:
         event = read_event(stdin)
         if capture_enabled() and harvest_enabled():
-            log = paths.log_path()
-            if log.is_file() and log.stat().st_size > 0:
-                from . import harvest
-
-                cwd = _str(event.get("working_dir")) or _str(event.get("cwd"))
-                project = paths.project_dir(cwd) if cwd else None
-                harvest.export_sightings(project, quiet=True)
+            _export_if_ours(_str(event.get("working_dir")) or _str(event.get("cwd")))
     except Exception:
         pass
     return _respond(stdout)

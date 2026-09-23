@@ -26,6 +26,7 @@
 # Environment:
 #   LYPNING_CAPTURE=0  disable the capture harness (no shim refresh; still reports)
 #   LYPNING_HOME       state dir holding the built binaries (default $HOME/.lypning)
+#   LYPNING_PYTHONPATH a directory holding the lypning package (lypning-capture.sh)
 ok() {
   printf '{"continue":true,"suppressOutput":true}\n'
   exit 0
@@ -36,17 +37,22 @@ ok() {
 # event carries nothing this hook needs.
 
 if [ "${LYPNING_CAPTURE:-1}" != "0" ]; then
-  # The same THREE-arm dispatch as the other hooks: the console script first;
-  # then the source tree, which is the arm a checkout of lypning itself needs
-  # and the one this hook was missing; then `python3 -m lypning`, for when the
-  # name `lypning` was the Rust core rather than the CLI (the core reads
-  # `shim` as a script path and exits non-zero).
+  # The same dispatch as the other hooks: the console script first; then the
+  # source tree, which is the arm a checkout of lypning itself needs and the
+  # one this hook was missing; then a tree pinned by $LYPNING_PYTHONPATH; then
+  # `python3 -m lypning`, for when the name `lypning` was the Rust core rather
+  # than the CLI (the core reads `shim` as a script path and exits non-zero).
   if command -v lypning >/dev/null 2>&1; then
     lypning shim install >&2 2>&1 || true
   elif [ -n "${CLAUDE_PROJECT_DIR:-}" ] \
        && [ -f "$CLAUDE_PROJECT_DIR/src/lypning/__init__.py" ] \
        && command -v python3 >/dev/null 2>&1; then
     PYTHONPATH="$CLAUDE_PROJECT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
+      python3 -m lypning shim install >&2 2>&1 || true
+  elif [ -n "${LYPNING_PYTHONPATH:-}" ] \
+       && [ -f "$LYPNING_PYTHONPATH/lypning/__init__.py" ] \
+       && command -v python3 >/dev/null 2>&1; then
+    PYTHONPATH="$LYPNING_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}" \
       python3 -m lypning shim install >&2 2>&1 || true
   elif command -v python3 >/dev/null 2>&1; then
     python3 -m lypning shim install >&2 2>&1 || true
@@ -64,6 +70,9 @@ command -v python3 >/dev/null 2>&1 || ok
 # measuring.
 if [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -f "$CLAUDE_PROJECT_DIR/src/lypning/__init__.py" ]; then
   PYTHONPATH="$CLAUDE_PROJECT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+  export PYTHONPATH
+elif [ -n "${LYPNING_PYTHONPATH:-}" ] && [ -f "$LYPNING_PYTHONPATH/lypning/__init__.py" ]; then
+  PYTHONPATH="$LYPNING_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}"
   export PYTHONPATH
 fi
 

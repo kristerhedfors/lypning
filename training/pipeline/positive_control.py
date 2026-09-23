@@ -75,6 +75,40 @@ def stratified_population(cases, target=CONFIRMATORY_CASES, seed=1111):
     return selected
 
 
+#: The cases the `targets` rung already paid for (run 35767396604,
+#: 2026-09-22). `stratified_population` fills families in fixed round-robin
+#: order and stops at its target, so its first 192 cases at any larger target
+#: are exactly its 192 -- the full split's first shard is already bought.
+FULL_SKIP_PREFIX = 192
+
+
+def shard_cases(cases, target, *, shard_index=0, shard_count=1, skip_prefix=0, seed=1111):
+    """``stratified_population(cases, target)[skip_prefix:][shard_index::shard_count]``.
+
+    The ONE place a rung's case set is chosen: generation, the reference
+    check and the grader each call it with the same four numbers, and a merge
+    of the shards is only a merge if all three picked the same cases. With the
+    defaults it is `stratified_population` unchanged, so every older rung
+    keeps its case set byte for byte.
+
+    Interleaved rather than contiguous: every shard takes a slice of every
+    family-balanced round, so a shard lost to one provider error loses a thin
+    layer of every family instead of the tail of the order.
+    """
+    for name, value in (("shard_index", shard_index), ("shard_count", shard_count),
+                        ("skip_prefix", skip_prefix)):
+        if type(value) is not int or value < 0:
+            raise TrainingError("%s must be a non-negative integer" % name)
+    if shard_count < 1 or shard_index >= shard_count:
+        raise TrainingError("shard_index must lie in 0..shard_count-1")
+    if type(target) is int and skip_prefix >= target:
+        raise TrainingError("skip_prefix leaves no case to draw")
+    selected = stratified_population(cases, target, seed)[skip_prefix:][shard_index::shard_count]
+    if not selected:
+        raise TrainingError("this shard holds no case; use fewer shards")
+    return selected
+
+
 def arm_messages(case, spec=None):
     result = messages(case)
     if spec:
