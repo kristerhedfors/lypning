@@ -163,7 +163,7 @@ either binary):
 | `cap-bigint` | no module: integers past 64 bits, exact | `bigint.rs` |
 | `cap-collections` | the `collections` module — `Counter`, `defaultdict` | `collections.rs` |
 | `cap-csv` | the `csv` module — the two readers | `csv.rs` |
-| `cap-future` | `__future__` — a head of no-op feature imports, and `annotations` never evaluated | `future.rs` |
+| `cap-future` | `__future__` — a head of no-op feature imports; `def` annotations never evaluated under `annotations`, or under any head on a 3.14+ reference (PEP 649) | `future.rs` |
 | `cap-glob` | the `glob` module | `glob.rs` |
 | `cap-hashlib` | the `hashlib` module — four constructors | `hashlib.rs` |
 | `cap-pathlib` | the `pathlib` module — `Path` | `pathlib.rs` |

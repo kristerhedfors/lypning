@@ -21,6 +21,11 @@
 //!   the `def` runs (`ast::Params::anns`), and under the import that would
 //!   raise `NameError` for an annotation naming what was never imported —
 //!   `-> Optional[str]` with no `typing` — which is the common case.
+//!   From 3.14 (PEP 649) CPython defers them with or without the import, so
+//!   on a 3.14+ reference EVERY served head clears them; on an older one only
+//!   `annotations` does. On a build whose reference minor was guessed
+//!   (`err::REF_PY_KNOWN` false) the two answers cannot be told apart, so an
+//!   annotated `def` under any other head refuses rather than pick one.
 //!
 //! What it refuses, statically and as the whole program, kind `future`:
 //!
@@ -111,10 +116,14 @@ pub fn pass(body: R<Vec<Stmt>>, toks: &[Token]) -> R<Vec<Stmt>> {
             return Err(refuse(&format!("the name {n}")));
         }
     }
-    let deferred = own("annotations") > 0;
+    use crate::err::{REF_PY_KNOWN, REF_PY_MINOR};
+    let deferred = own("annotations") > 0 || (REF_PY_KNOWN && REF_PY_MINOR >= 14);
     body.drain(start..end);
-    if deferred && !defer(&mut body) {
+    if deferred && !defer(&mut body, true) {
         return Err(refuse("annotations on a definition the parse shared"));
+    }
+    if !deferred && !REF_PY_KNOWN && !defer(&mut body, false) {
+        return Err(refuse("an annotated def, with the reference Python's minor unmeasured (PEP 649)"));
     }
     Ok(body)
 }
@@ -128,21 +137,27 @@ pub fn pass(body: R<Vec<Stmt>>, toks: &[Token]) -> R<Vec<Stmt>> {
 /// `make_mut` would link the whole derived `Clone` of the tree into the binary
 /// to copy what is never shared. `false` if a node WAS shared, which the
 /// caller refuses rather than evaluating an annotation it promised not to.
-fn defer(body: &mut [Stmt]) -> bool {
+///
+/// With `clear` false the same walk only LOOKS: `false` if any `def` carries
+/// an annotation, which is the unmeasured-reference refusal.
+fn defer(body: &mut [Stmt], clear: bool) -> bool {
     body.iter_mut().all(|s| match s {
         Stmt::Def { params, body, .. } => match (Rc::get_mut(params), Rc::get_mut(body)) {
-            (Some(p), Some(b)) => {
+            (Some(p), Some(b)) if clear || p.anns.is_empty() => {
                 p.anns.clear();
-                defer(b)
+                defer(b, clear)
             }
             _ => false,
         },
-        Stmt::If { arms, els } => arms.iter_mut().all(|(_, b)| defer(b)) && defer(els),
-        Stmt::For { body, els, .. } | Stmt::While { body, els, .. } => defer(body) && defer(els),
+        Stmt::If { arms, els } => arms.iter_mut().all(|(_, b)| defer(b, clear)) && defer(els, clear),
+        Stmt::For { body, els, .. } | Stmt::While { body, els, .. } => defer(body, clear) && defer(els, clear),
         Stmt::Try { body, handlers, els, finally } => {
-            defer(body) && handlers.iter_mut().all(|h| defer(&mut h.body)) && defer(els) && defer(finally)
+            defer(body, clear)
+                && handlers.iter_mut().all(|h| defer(&mut h.body, clear))
+                && defer(els, clear)
+                && defer(finally, clear)
         }
-        Stmt::With { body, .. } => defer(body),
+        Stmt::With { body, .. } => defer(body, clear),
         _ => true,
     })
 }
@@ -198,13 +213,24 @@ mod tests {
         }
     }
 
+    /// Without `annotations` the answer is the reference's: never evaluated
+    /// from 3.14 (PEP 649), evaluated before it, refused when unmeasured.
     #[test]
-    fn without_annotations_the_annotations_still_run() {
-        let b = run("from __future__ import division\ndef f(a: X): pass\n").unwrap();
-        match &b[0] {
-            Stmt::Def { params, .. } => assert_eq!(params.anns.len(), 1),
+    fn without_annotations_the_reference_minor_decides() {
+        use crate::err::{REF_PY_KNOWN, REF_PY_MINOR};
+        let src = "from __future__ import division\nif 1:\n    def f(a: X): pass\n";
+        if !REF_PY_KNOWN {
+            assert_eq!(kind(src), "future");
+            return;
+        }
+        let b = run(src).unwrap();
+        let Stmt::If { arms, .. } = &b[0] else { panic!("if") };
+        match &arms[0].1[0] {
+            Stmt::Def { params, .. } => assert_eq!(params.anns.len(), (REF_PY_MINOR < 14) as usize),
             _ => panic!("def"),
         }
+        // An unannotated def is served on every reference.
+        assert_eq!(kind("from __future__ import division\ndef f(a): pass\n"), "ok");
     }
 
     #[test]

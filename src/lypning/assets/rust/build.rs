@@ -71,11 +71,15 @@ fn main() {
     println!("cargo:rerun-if-env-changed=LYPNING_REF_PY");
     println!("cargo:rerun-if-env-changed=LYPNING_CPYTHON");
     let probed = probe_python();
-    let ref_py = std::env::var("LYPNING_REF_PY")
+    let named = std::env::var("LYPNING_REF_PY")
         .ok()
         .filter(|s| parse_minor(s).is_some())
-        .or_else(|| probed.as_ref().map(|p| p.0.clone()))
-        .unwrap_or_else(|| REF_PY_FALLBACK.to_string());
+        .or_else(|| probed.as_ref().map(|p| p.0.clone()));
+    // Whether the minor was NAMED or MEASURED rather than guessed: a site whose
+    // answer turns on a version boundary it cannot guess safely (`future.rs`:
+    // PEP 649, 3.14) refuses on a guessed minor instead of picking a side.
+    println!("cargo:rustc-env=LYPNING_REF_PY_KNOWN={}", named.is_some() as u8);
+    let ref_py = named.unwrap_or_else(|| REF_PY_FALLBACK.to_string());
     println!("cargo:rustc-env=LYPNING_REF_PY={ref_py}");
     // Minor versions are insufficient: patch/vendor builds can change these
     // answers without changing 3.x. Compile the selected oracle's actual

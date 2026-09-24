@@ -292,6 +292,48 @@ def test_the_core_routes_an_unserved_future_import_to_cpython(program: str) -> N
     )
 
 
+#: PEP 649: from 3.14 CPython never evaluates a `def`'s annotations, with or
+#: without `from __future__ import annotations`, so EVERY served head must
+#: leave them unevaluated (verifier round 1: `division` et al. raised
+#: `NameError` at exit 1, or printed an annotation's side effect). The bytes
+#: are CPython 3.14.5's, pinned; a binary built against an older or an
+#: unmeasured reference must refuse these rather than answer them.
+_NOT_ANNOTATIONS = ["absolute_import", "division", "generator_stop", "generators",
+                    "nested_scopes", "print_function", "unicode_literals",
+                    "with_statement"]
+PEP649 = [("from __future__ import %s\ndef g(a: X) -> Y: return a\nprint(g(2))" % f, "2\n")
+          for f in _NOT_ANNOTATIONS] + [
+    ('from __future__ import print_function\ndef g(a: print("ann")): return a\nprint(g(3))',
+     "3\n"),
+    ('from __future__ import division\ndef f(x: print("A") = print("B")):\n    return x\n'
+     "if 1:\n    def h(a: Nope) -> Nope: return a\nprint(f(), h(4))", "B\nNone 4\n"),
+]
+
+
+@needs_l
+@pytest.mark.parametrize("program,stdout", PEP649, ids=range(len(PEP649)))
+def test_no_served_head_evaluates_an_annotation_on_314(program: str, stdout: str) -> None:
+    got = _run([str(BINARY)], program)
+    if got.returncode == engines.UNSUPPORTED_EXIT:
+        problem = _refusal_problem(got)
+        assert problem is None, "%s\n  program: %r" % (problem, program)
+        if sys.version_info >= (3, 14):
+            pytest.fail("lypning-l refuses a PEP 649 row on a 3.14 reference: %s"
+                        % got.stderr.strip()[:160])
+        pytest.skip("reference predates 3.14: %s" % got.stderr.strip()[:160])
+    if sys.version_info < (3, 14):
+        pytest.skip("CPython 3.14.5 bytes; this reference is older")
+    assert (got.stdout, got.returncode) == (stdout, 0), (program, got.stdout, got.stderr)
+    ref = _run([sys.executable], program)
+    assert (ref.stdout, ref.returncode) == (stdout, 0)
+
+
+@needs_core
+@pytest.mark.parametrize("program,stdout", PEP649[:1], ids=[0])
+def test_the_core_routes_a_pep649_row_to_lypning_l(program: str, stdout: str) -> None:
+    assert engines.route(program, binary=CORE).engine == engines.LYPNING_L
+
+
 def test_the_grid_rows_are_what_cpython_says_they_are() -> None:
     """The SERVED rows must be programs CPython actually compiles: a row that is
     a SyntaxError on the reference would pin a refusal as an answer."""

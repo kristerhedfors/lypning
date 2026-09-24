@@ -153,6 +153,9 @@ pub const ENGINE: &str = env!("LYPNING_ENGINE");
 /// Read the boundaries at their sites, not here: each one carries the five-way
 /// measurement that fixed it.
 pub const REF_PY_MINOR: u32 = parse_minor(env!("LYPNING_REF_PY"));
+/// `REF_PY_MINOR` was named by the caller or measured from a live interpreter,
+/// not `build.rs`'s fallback guess.
+pub const REF_PY_KNOWN: bool = env!("LYPNING_REF_PY_KNOWN").as_bytes()[0] == b'1';
 
 /// Build-dependent facts measured against the selected CPython, not guessed
 /// from its minor version. See reference_probe.py and build.rs.
