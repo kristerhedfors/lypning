@@ -1437,14 +1437,39 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                     // ask it for the leaf; fall back to the old rule when the
                     // prefix is not a module we serve, so this can only remove
                     // refusals it can justify.
-                    let ok = match k.rsplit_once('.') {
-                        Some((prefix, leaf)) => {
-                            match crate::modules::MODULES.iter().find(|m| **m == prefix) {
-                                Some(m) => crate::modules::get_attr(
+                    // `import binascii as b` then `except b.crc32:` names the
+                    // same module, and reading the alias literally skipped
+                    // both the resolution below and the binascii escalation.
+                    let dotted = k.rsplit_once('.').map(|(prefix, leaf)| {
+                        let module = req
+                            .aliases
+                            .iter()
+                            .find(|(a, _)| a == prefix)
+                            .map_or(prefix, |(_, p)| p.as_str());
+                        (module.to_string(), leaf)
+                    });
+                    // SERVED is not enough: it must be a CLASS. `except
+                    // binascii.hexlify:` and `except math.sqrt:` resolved, so
+                    // the handler was admitted and silently never matched,
+                    // where CPython raises TypeError the moment an exception
+                    // reaches it. A router block: a binary run directly still
+                    // takes the handler as a non-match, because the run-time
+                    // walk (`static_stop_check`) is kept off programs that
+                    // import neither glob nor hashlib.
+                    let ok = match &dotted {
+                        Some((module, leaf)) => {
+                            match crate::modules::MODULES.iter().find(|m| **m == module) {
+                                Some(m) => match crate::modules::get_attr(
                                     &crate::value::Value::Module(m),
                                     leaf,
-                                )
-                                .is_ok(),
+                                ) {
+                                    Ok(crate::value::Value::Builtin(n))
+                                        if crate::builtins::is_exception_name(n) =>
+                                    {
+                                        true
+                                    }
+                                    _ => false,
+                                },
                                 None => crate::builtins::is_exception_name(leaf),
                             }
                         }
@@ -1452,20 +1477,21 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                     };
                     if !ok {
                         req.block("exception", format!("except {k}"));
-                        // `except binascii.Error`: the CLASS is not served on
-                        // any rung (`binascii.rs`), so the core must not route
-                        // the program into lypning-l on the strength of the
-                        // import, where the handler would refuse only once an
-                        // exception reached it — possibly past a write. The
-                        // escalation is binascii's alone: `except csv.Error`
-                        // keeps the route it had before this row existed.
-                        if let Some(("binascii", leaf)) = k.rsplit_once('.') {
-                            if !served_attr("binascii", leaf) {
-                                req.escalate("binascii", leaf);
-                            }
-                            #[cfg(feature = "cap-binascii")]
-                            req.stop_base64("module-attr", format!("binascii.{leaf}"));
-                        }
+                    }
+                    // `except binascii.<anything>`: no binascii name is a class
+                    // any rung serves (`Error` is not served, and the rest are
+                    // functions), so the core must not route the program into
+                    // lypning-l on the strength of the import, where the
+                    // handler would refuse only once an exception reached it —
+                    // possibly past a write. The escalation is binascii's
+                    // alone: `except csv.Error` keeps the route it had before
+                    // this row existed.
+                    if let Some(("binascii", leaf)) =
+                        dotted.as_ref().map(|(m, l)| (m.as_str(), *l))
+                    {
+                        req.escalate("binascii", leaf);
+                        #[cfg(feature = "cap-binascii")]
+                        req.stop_base64("module-attr", format!("binascii.{leaf}"));
                     }
                 }
                 // `except E as p` binds `p`, and Python deletes it again at

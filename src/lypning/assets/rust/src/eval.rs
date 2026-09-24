@@ -1070,6 +1070,18 @@ impl Interp {
                         let Value::Str(ks) = k else {
                             return Err(type_err("keywords must be strings"));
                         };
+                        // `f(a=1, **{'a': 2})` is a TypeError in CPython whose
+                        // message names the callee (`sorted()`, `binascii.
+                        // b2a_base64()`, `A.m()`), and every callee here used
+                        // to take the LAST value and answer at exit 0. Naming
+                        // the callee right is per-callable work; handing the
+                        // program to CPython, which says it exactly, is not.
+                        if kw.iter().any(|(n, _)| *n == ks) {
+                            return Err(crate::err::unsupported(
+                                "call",
+                                "keyword argument given twice through **",
+                            ));
+                        }
                         kw.push((ks, v));
                     }
                 }

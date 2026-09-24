@@ -1124,6 +1124,15 @@ impl Parser {
                 && matches!(self.peek_at(1), Tok::Op("="))
             {
                 let n = self.ident()?;
+                // A compile-time error in CPython, so nothing before it runs:
+                // `print(1); f(a=1, a=2)` prints nothing. Accepted, the last
+                // value won and the program ran at exit 0.
+                if kwargs.iter().any(|(k, _): &(std::rc::Rc<str>, Expr)| *k == n) {
+                    return Err(LypningError::syntax(
+                        self.line(),
+                        &format!("keyword argument repeated: {n}"),
+                    ));
+                }
                 self.bump();
                 kwargs.push((n, self.expr()?));
             } else {
