@@ -313,6 +313,11 @@ def test_arm_a_with_scoring_overlapped_from_the_smokes_numbers():
     assert realistic["scoring_minutes"]["pilot"] == pytest.approx(195.0, abs=0.1)
     assert realistic["scoring_exposed_minutes"] == {"pilot": pytest.approx(4.7, abs=0.15),
                                                     "eval2": pytest.approx(0.7, abs=0.15)}
+    # Generation covers scoring until the pool is ~2.7x slower than stated.
+    def pilot_at(per_draw):
+        return projection.from_hwsmoke(SMOKE_6AB4582D, reading="realistic",
+                                       score_worker_seconds=per_draw)["split"]["pilot_minutes"]
+    assert pilot_at(55.0) <= 648.0 < pilot_at(56.0)
     serial = projection.readings(SMOKE_6AB4582D, serial=True)
     for reading, row in table.items():
         assert row["pilot_minutes"] < serial[reading]["pilot_minutes"], reading

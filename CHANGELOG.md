@@ -14,6 +14,23 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-24** — Score each evaluation chunk while the next one generates ([#TBD](https://github.com/kristerhedfors/lypning/pull/TBD))
+
+- `verified_evaluation.ScoringStage`: chunk i is scored on the verifier pool
+  while chunk i+1 generates. One chunk is scored at a time, and the scoring
+  threads draw no torch RNG. Rows, their order, metrics, witnesses and a
+  blocked abort are byte-identical to the serial loop, pinned serial against
+  overlapped in `training/tests/test_verified_evaluation.py`, including abort
+  cases. An abort surfaces once the overlapping `generate` returns. The pool
+  is cancelled and joined on every path. Changes `code_sha256`.
+- `train_verified --serial-scoring` keeps the serial loop for diagnosis;
+  `experiment.json` records `scoring` (`overlapped`|`serial`), outside every
+  reuse and arm identity.
+- `projection.py` prices the overlap: per call max(generation, previous
+  scoring), then a final scoring tail; `--serial-scoring` reproduces the
+  smoke's own projection. `PLAN.md` Step 4 and `ORCHESTRATION.md` P14 carry
+  the re-run from smoke job `6ab4582d6b030d633f68c90e` (2026-09-24).
+
 **2026-09-24** — Fit arm A's pilot to the h200 smoke: no probe, SFT step 0 from base-dev, eval-2 split ([#TBD](https://github.com/kristerhedfors/lypning/pull/TBD))
 
 - `round02_pilot.sh`: with `GRPO_STEPS` 0 no probe runs; `grpo-skipped.json`

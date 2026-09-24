@@ -507,29 +507,42 @@ assumptions, not measurements. p = 0.0016 is seed 1111's base-dev truncation
 rate, 165 is the mean from Step 2's bare arm (2026-09-23), and the 600-token
 tail is a guess. The budget is 648 min (720m less 10%).
 
-| reading | pilot job | eval-2 job | one job | verdict |
-|---|---|---|---|---|
-| measured | 422.6 | 271.4 | 683.4 | split fits |
-| realistic | 764.4 | 638.3 | 1,392.1 | pilot does not fit |
-| upper (every call full-length) | 1,002.8 | 807.5 | 1,799.7 | does not fit |
-| lower (256-token SFT rows) | 368.8 | 271.4 | 629.6 | one job fits |
+**Scoring now overlaps generation (2026-09-24).** Evaluation used to
+generate a 256-sequence chunk and then score it on the verifier pool, so
+the pool's time added to the GPU's. It now scores chunk i while chunk i+1
+generates (`verified_evaluation.ScoringStage`). One chunk is scored at a time,
+and the rows, their order, the witnesses and an abort are byte-identical to
+the serial loop, pinned in `training/tests/test_verified_evaluation.py`.
+`train_verified --serial-scoring` keeps the serial loop for diagnosis, and
+`experiment.json` records `scoring`. The projection prices an evaluation as
+its first call, then per call the longer of its generation and the previous
+chunk's scoring, then the last chunk's scoring as a tail
+(`projection.evaluation_minutes`). `--serial-scoring` prints the serial
+numbers, kept in the last column.
 
-**Read the realistic row before dispatch.** The pilot job is 116 min over
-budget there, and 44 min over the 720m ceiling. Scoring accounts for 195.0 of
-those minutes (27,000 draws at 20.8 worker-s each over 48 workers). That
-scoring rate is a stated constant from job `6aaa4b2c` (2026-09-16): the smoke
-has no pool and did not measure it. At the realistic reading with scoring
-taken out, the pilot is 569.4 min. So whether arm A's pilot fits one 720m job
-turns on pooled scoring throughput, and no run in this tree has measured it.
-The eval-2 job fits at the realistic reading (638.3), with a 10-min margin.
-That margin assumes the pool spreads a call's draws evenly over its 48
-workers. If draws take equal time, 256 draws score in six whole waves, not
-5.33, and the projection prints what that adds (`scoring_wave_minutes`):
-24.4 min to the pilot job and 23.1 to the eval-2 job. The eval-2 job is then
-661.4 min, over the budget, though under 720m. At the realistic reading the
-pilot job would reach the ceiling during its base test arm, before
-`eval2-deferred.json` is written, so no eval-2 job could follow it.
-No launch decision is taken here.
+| reading | pilot job | eval-2 job | one job | verdict | serial pilot / eval-2 |
+|---|---|---|---|---|---|
+| measured | 349.2 | 198.0 | 536.6 | one job fits | 422.6 / 271.4 |
+| realistic | 574.0 | 453.4 | 1,016.8 | split fits | 764.4 / 638.3 |
+| upper (every call full-length) | 812.4 | 622.6 | 1,424.4 | pilot does not fit | 1,002.8 / 807.5 |
+| lower (256-token SFT rows) | 295.5 | 198.0 | 482.9 | one job fits | 368.8 / 271.4 |
+
+**Read the realistic row before dispatch.** Overlapped, the pilot job is
+574.0 min, 74 min inside the budget. Serially it was 764.4, which is over the
+720m ceiling. At the realistic reading a 256 call generates for about 261 s,
+and its scoring takes 110.9 s (256 draws at 20.8 worker-s each over 48
+workers), so generation covers scoring. The stated constant stands for 195.0
+pool minutes, and 4.7 of them reach the pilot's clock: each evaluation's last
+chunk. That scoring rate is still a stated constant from job `6aaa4b2c`
+(2026-09-16). The smoke has no pool and did not measure it. But the realistic
+pilot now stays inside the budget until scoring is about 2.7 times slower
+than stated (55.8 worker-s/draw). Whole scoring waves (`scoring_wave_minutes`)
+add 0.6 min to it and nothing to the eval-2 job (453.4). At the measured and
+lower readings a call generates in under 45 s, scoring is the longer of the
+two, and every wave still lands (24.4 / 23.1 min); the measured pilot is then
+373.6. The upper reading still does not fit: a pilot of 812.4 min reaches
+the ceiling. These are projections from one smoke's aggregates and stated
+constants, re-run 2026-09-24. No launch decision is taken here.
 
 ## Kill criteria (unchanged, `LADDER.md` §6)
 

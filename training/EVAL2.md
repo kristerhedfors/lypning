@@ -184,7 +184,10 @@ draws the base's noise chunk for chunk. The change was forced by cost, not
 taste: one draw per call plus one sandbox request per test at a time ran at
 about 30 s per draw on the h200 (job 6aaa4b2c, 2026-09-16), and 300 × 16 × 2
 draws was days against a 6 h cap. Completions of a chunk are verified
-concurrently; the rows keep (case, draw) order and carry the chunk seed. The
+concurrently; the rows keep (case, draw) order and carry the chunk seed.
+Since 2026-09-24 a chunk is verified while the next one generates
+(`ScoringStage`); the rows are the serial loop's bytes, pinned in
+`training/tests/test_verified_evaluation.py`. The
 pilot of round-02 ran eval-2 at k = 4 for the same reason (job 6aaa8746;
 k = 8 was planned and cut once the probe stage had measured the batched pace)
 and says so in its report; k = 16 (§4) remains the draw count of a
