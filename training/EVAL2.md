@@ -169,13 +169,16 @@ base and candidate, in every evaluation that scores draws: dev, test and eval-2.
   hard abort, because scoring it would make the endpoint depend on host load.
 
 Two arms with different counts carry that difference as a correctness
-difference. The bound limits it to 1% of each arm's draws, so report both
-arms' `engine_mismatches` beside every paired delta. The change moves
-`code_sha256`, so an evaluation from an earlier commit is not reusable. It
-does not move `verifier_sha256`: no verifier module changed, so bundles
-prepared at the parent commit still load. Arm A seed 1111 is re-run, or
-resumed, under this rule. An evaluation that completed under the old rule
-held no mismatch, so its rows are the same under either rule.
+difference. The bound limits it to 1% of each arm's draws, so both arms'
+counts stand beside every paired delta: `training_report` writes them over
+every draw, and the round scripts print them on each `== report` line. The
+change moves `code_sha256`, so an evaluation from an earlier commit is not
+reusable. It does not move `verifier_sha256`: no verifier module changed, so
+bundles prepared at the parent commit still load. Arm A seed 1111 is re-run
+under this rule. Its saved SFT adapters cannot be carried over: nothing in the
+tree resumes a pilot from them, and `split_eval2` refuses an adapter whose
+`code_sha256` differs. An evaluation that completed under the old rule held no
+mismatch, so its rows are the same under either rule.
 
 ## 5. Decoding contract
 

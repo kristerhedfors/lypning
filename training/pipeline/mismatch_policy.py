@@ -134,6 +134,9 @@ class MismatchScoring:
     def __init__(self, verifier, path, planned):
         if type(planned) is not int or planned < 1:
             raise TrainingError("the engine-mismatch bound needs the run's planned draw count")
+        if path is None:
+            # A counted mismatch with no private witness is a hidden engine bug.
+            raise TrainingError("a counted engine mismatch needs a private witness file")
         self.verifier, self.path, self.planned = verifier, path, planned
         self.count = 0
         self._lock = threading.Lock()
@@ -147,8 +150,7 @@ class MismatchScoring:
             with self._lock:
                 self.count += 1
                 count = self.count
-                if self.path is not None:
-                    append_jsonl(self.path, witness_row(case, program, exc,
-                                                        source="rollout", mismatch=count))
+                append_jsonl(self.path, witness_row(case, program, exc,
+                                                    source="rollout", mismatch=count))
             check_mismatch_bound(count, self.planned)
             return mismatch_score(case, exc)

@@ -99,6 +99,8 @@ def test_the_wrapper_counts_writes_privately_and_passes_everything_else(tmp_path
     assert not (tmp_path / "none.jsonl").exists()
     with pytest.raises(TrainingError):
         policy.MismatchScoring(Raising(None), path, planned=0)
+    with pytest.raises(TrainingError, match="private witness file"):
+        policy.MismatchScoring(Raising(exc), None, planned=200)
 
 
 def rows(statuses, family="f", population="coverage"):
@@ -140,3 +142,52 @@ def test_the_checkpoint_gate_reads_a_mismatch_as_a_wrong_draw_and_nothing_else()
     def selection(gate):
         return [{k: v for k, v in o.items() if k not in strip} for o in gate.report()["observed"]]
     assert selection(one) == selection(two)
+
+
+def test_the_paired_report_carries_both_arms_counts_over_every_draw(tmp_path):
+    """`training_report.compare` reports each arm's count beside the paired delta.
+
+    Over every draw: family "b" is below the primary macro's case minimum, so
+    the summaries' top-level count leaves its mismatch out, and the report's
+    count keeps it -- a mismatch counts against the arm that drew it.
+    """
+    from pipeline.jsonio import write_json, write_jsonl
+    from pipeline.training_contract import BASE_MODEL, decoding
+    from pipeline.training_report import compare
+    manifest = dict(stage="eval", base_model=BASE_MODEL, revision="a" * 40, bundle_digest="bundle",
+                    smoke=True, decoding=decoding(32), enable_thinking=False, tokenizer_sha256="tok",
+                    model_config_sha256="config", code_sha256={}, versions={}, hardware={},
+                    metric_policy={"min_family_cases": 2},
+                    args=dict(seed=1111, eval_split="test", eval_draws=1, greedy=False))
+    arms = {"base": rows(["correct-native", "incorrect", "correct-fallback", "incorrect"], "a")
+            + rows(["engine-mismatch"], "b"),
+            "candidate": rows(["correct-native", "engine-mismatch", "engine-mismatch", "incorrect"], "a")
+            + rows(["engine-mismatch"], "b")}
+    for arm, arm_rows in arms.items():
+        (tmp_path / arm).mkdir()
+        write_json(tmp_path / arm / "experiment.json", manifest)
+        write_jsonl(tmp_path / arm / "evaluations.jsonl", arm_rows)
+    report = compare(tmp_path / "base", tmp_path / "candidate")
+    assert report["engine_mismatches"] == {"base": 1, "candidate": 3}
+    assert report["base"]["engine_mismatches"] == 0 and report["candidate"]["engine_mismatches"] == 2
+
+
+@pytest.mark.parametrize("script", ["round02_pilot.sh", "round02_eval2.sh"])
+def test_the_round_scripts_print_both_counts_beside_the_paired_delta(tmp_path, script):
+    import re
+    import subprocess
+    import sys
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    text = (root / "training" / "hf" / script).read_text(encoding="utf-8")
+    lines = [line for line in text.splitlines() if 'print("== report"' in line]
+    assert lines
+    report = tmp_path / "report.json"
+    report.write_text(json.dumps({"paired": {"delta": 0.01}, "engine_mismatches": {"base": 2, "candidate": 0}}))
+    for line in lines:
+        program = re.search(r"python3 -c '([^']*)'", line).group(1)
+        done = subprocess.run([sys.executable, "-c", program, str(report)], cwd=tmp_path,
+                              env={"PYTHONPATH": str(root / "training")},
+                              capture_output=True, text=True, timeout=60)
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.rstrip().endswith('engine_mismatches {"base": 2, "candidate": 0}')

@@ -619,7 +619,7 @@ fi
 for f in "$ROUND"/reports/*.json; do
   # Printed through `public_view`: the report's summaries carry per-case
   # `case_clusters` counts, which stay private (2026-09-23); the file keeps them.
-  python3 -c 'import json, sys; from pipeline.public_view import public_view; r = json.load(open(sys.argv[1])); print("== report", sys.argv[1], json.dumps(public_view(r["paired"])))' "$f"
+  python3 -c 'import json, sys; from pipeline.public_view import public_view; r = json.load(open(sys.argv[1])); print("== report", sys.argv[1], json.dumps(public_view(r["paired"])), "engine_mismatches", json.dumps(public_view(r.get("engine_mismatches"))))' "$f"
 done
 
 # 9. The trap uploads work/round-02 with the manifest's status field set to complete.

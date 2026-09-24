@@ -568,9 +568,11 @@ is frozen, so eval-2 would meet the same abort. The rule now, for every arm
   `pipeline/mismatch_policy.py`. `code_sha256` moves. `verifier_sha256` does
   not: `pipeline/training.py` is untouched, and GRPO wraps its verifier
   instead of editing `Reward`. So bundles prepared at the parent commit still
-  load, and the adapters trained on them still match their bundle digest.
-- Arm A seed 1111 is re-run, or resumed, under this rule. Its completed SFT dev
-  evaluations held no mismatch, so their rows are unchanged by it.
+  load.
+- Arm A seed 1111 is re-run under this rule. Its saved SFT adapters cannot be
+  carried over: nothing in the tree resumes a pilot from them, and
+  `split_eval2` refuses an adapter whose `code_sha256` differs. Its completed
+  SFT dev evaluations held no mismatch, so their rows are unchanged by it.
 
 ## Kill criteria (unchanged, `LADDER.md` §6)
 

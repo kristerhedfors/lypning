@@ -443,7 +443,7 @@ def scoring_threads():
 
 
 def run_evaluation(tmp_path, name, overlapped, *, block=None, fail_at=None, score_workers=3,
-                   hook=None, enter=None, mismatch=None, cases=OVERLAP_CASES):
+                   hook=None, enter=None, mismatch=None, cases=OVERLAP_CASES, keep_mismatches=True):
     ev, torch = load_evaluation(), FakeTorch()
     model = SeededModel(torch, fail_at, hook)
     verifier = Scorer(block, enter, mismatch)
@@ -454,7 +454,7 @@ def run_evaluation(tmp_path, name, overlapped, *, block=None, fail_at=None, scor
         got["metrics"], got["records"] = ev.evaluate(
             model, Tokenizer(), cases, verifier, decoding(10), out / "evaluations.jsonl", 3,
             torch, seed=11, draws=2, return_records=True, witness_path=out / "witness.jsonl",
-            mismatch_path=out / "engine-mismatches.jsonl",
+            mismatch_path=out / "engine-mismatches.jsonl" if keep_mismatches else None,
             sequences_per_call=4, score_workers=score_workers, overlapped=overlapped)
     except Exception as exc:                                     # noqa: BLE001 -- compared below
         got["raised"] = (type(exc).__name__, str(exc), getattr(exc, "witness", None))
@@ -548,6 +548,22 @@ def test_overlapped_scoring_writes_the_serial_bytes(tmp_path, monkeypatch, scena
                                     "engine-mismatch draws 1 of 10 exceed the 1% bound", None)
         assert [r["case_id"] for r in read_rows(serial)] == ["c0", "c0", "c1", "c1", "c2", "c2", "c3", "c3"]
     assert serial["threads"] == overlapped["threads"] == [], "no scoring thread outlives evaluate"
+
+
+@pytest.mark.parametrize("overlapped", [False, True])
+def test_a_mismatch_with_nowhere_to_file_it_still_aborts(tmp_path, monkeypatch, overlapped):
+    """No private mismatch file, no counting: a counted draw whose witness is
+    dropped would be a hidden engine bug (root CLAUDE.md invariant 1), so an
+    evaluation without `mismatch_path` aborts on the mismatch exactly as it
+    did before 2026-09-24, its program kept in the abort witness."""
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(GenerationConfig=SimpleNamespace))
+    got = run_evaluation(tmp_path, "run", overlapped, mismatch=c20_first_draw, cases=BOUNDED_CASES,
+                         keep_mismatches=False)
+    assert got["raised"][0] == "VerificationBlocked" and got["raised"][1].startswith("engine mismatch (witness ")
+    assert got["engine-mismatches.jsonl"] is None
+    kept = [json.loads(line) for line in got["witness.jsonl"].decode().splitlines()]
+    assert [(w["case_id"], w["draw"], w["kind"]) for w in kept] == [("c20", 0, "engine mismatch")]
+    assert "engine-mismatch" not in got["evaluations.jsonl"].decode()
 
 
 def read_rows(got):

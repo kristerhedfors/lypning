@@ -51,13 +51,16 @@ SEQUENCES_PER_CALL = 256
 SCORE_WORKERS = 16
 
 
-def blocked_witness(verifier, witness_path, step):
+def blocked_witness(verifier, witness_path, step, *, count_mismatches=False):
     """Score one draw, and preserve the program if verification blocks.
 
     Returns ``(score, mismatch)``: `mismatch` is the engine-mismatch block a
     counted draw was scored from (`mismatch_policy.counted_on_gpu`), else
     None. Its witness is written at emission, in (case, draw) order, by
-    `ScoringStage` -- not here, where threads finish in any order.
+    `ScoringStage` -- not here, where threads finish in any order. Only with
+    `count_mismatches`, which `ScoringStage` sets when it has a private file
+    to write that witness to: a counted draw with nowhere to file its bug
+    would be a hidden one, so without the file a mismatch aborts as before.
 
     The reward stage has written a witness and re-raised since it was built
     (`pipeline.training.Reward.score_one`); the evaluation arm only re-raised,
@@ -79,7 +82,7 @@ def blocked_witness(verifier, witness_path, step):
         try:
             return verifier.score(case, program), None
         except VerificationBlocked as exc:
-            if counted_on_gpu(exc):
+            if count_mismatches and counted_on_gpu(exc):
                 # The draw's own outcome: scored, counted, witnessed on emission.
                 return mismatch_score(case, exc), exc
             # Every field is read with `.get`. A KeyError raised in here would
@@ -171,7 +174,8 @@ class ScoringStage:
         self.planned = int(planned)
         self.mismatch_path = mismatch_path
         self.mismatches = 0
-        self._score_one = blocked_witness(verifier, witness_path, step)
+        self._score_one = blocked_witness(verifier, witness_path, step,
+                                          count_mismatches=mismatch_path is not None)
         self._pool = ThreadPoolExecutor(max_workers=max(1, int(score_workers)),
                                         thread_name_prefix="eval-score")
         self._stage = (ThreadPoolExecutor(max_workers=1, thread_name_prefix="eval-stage")
@@ -195,6 +199,8 @@ class ScoringStage:
         rest, its witness appended to `mismatch_path` in the same order, and
         only once the whole chunk is written is the bound checked, so the
         rows, the witness file and the abort are the serial loop's in both modes.
+        Without a `mismatch_path` nothing is counted: the block aborts the arm
+        as it did before 2026-09-24, with its witness in `witness_path`.
         """
         futures = [self._pool.submit(self._score_one, item) for item in pending]
         failure = None
@@ -217,11 +223,10 @@ class ScoringStage:
                 emit(item, score)
                 if mismatch is not None:
                     self.mismatches += 1
-                    if self.mismatch_path is not None:
-                        # PRIVATE: uploaded to the private work repository only.
-                        case, draw, _tail, _completion, _truncated, program = item
-                        append_jsonl(self.mismatch_path, witness_row(
-                            case, program, mismatch, source="evaluation", step=self.step, draw=draw))
+                    # PRIVATE: uploaded to the private work repository only.
+                    case, draw, _tail, _completion, _truncated, program = item
+                    append_jsonl(self.mismatch_path, witness_row(
+                        case, program, mismatch, source="evaluation", step=self.step, draw=draw))
         if failure is not None:
             raise failure
         check_mismatch_bound(self.mismatches, self.planned)

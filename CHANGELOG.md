@@ -30,8 +30,12 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   oracle (ledger row T4). The bound now lives in one module,
   `pipeline/mismatch_policy.py`, which the Step 2 grade also reads. Recorded as
   an amendment to `training/EVAL2.md` §4 and in `training/PLAN.md` Step 4.
+- `training_report` writes each arm's count over every draw, and the round
+  scripts print both counts on each `== report` line. An evaluation with no
+  private mismatch file counts nothing and aborts as before.
 - `code_sha256` moves. `verifier_sha256` does not, so prepared bundles still
-  load. Arm A seed 1111 is re-run or resumed under this rule.
+  load. Arm A seed 1111 is re-run under this rule; its saved adapters cannot be
+  carried over, because `split_eval2` refuses a changed `code_sha256`.
 
 **2026-09-24** — Keep verifier pool hosts alive across SFT's training gaps ([#124](https://github.com/kristerhedfors/lypning/pull/124))
 

@@ -197,7 +197,7 @@ STAGE=report
 mkdir -p "$ROUND/reports"
 echo "== python3 -m pipeline.training_report $ROUND/base-eval2 $ROUND/sft-eval2 > $ROUND/reports/base-vs-sft-eval2.json"
 python3 -m pipeline.training_report "$ROUND/base-eval2" "$ROUND/sft-eval2" > "$ROUND/reports/base-vs-sft-eval2.json"
-python3 -c 'import json, sys; from pipeline.public_view import public_view; r = json.load(open(sys.argv[1])); print("== report", sys.argv[1], json.dumps(public_view(r["paired"])))' "$ROUND/reports/base-vs-sft-eval2.json"
+python3 -c 'import json, sys; from pipeline.public_view import public_view; r = json.load(open(sys.argv[1])); print("== report", sys.argv[1], json.dumps(public_view(r["paired"])), "engine_mismatches", json.dumps(public_view(r.get("engine_mismatches"))))' "$ROUND/reports/base-vs-sft-eval2.json"
 
 STAGE=done
 echo "== round-02 split eval-2: all stages ran; uploading"
