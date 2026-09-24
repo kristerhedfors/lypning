@@ -14,6 +14,12 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-24** — A free readout of any pilot job's SFT selection (#TBD)
+
+- `pilot-readout.yml` prints a job's selected SFT step, selection rule, every
+  observation and the base-dev and selected headline metrics, by named
+  aggregate keys only and through `public_view`.
+
 **2026-09-24** — Ride out a sandbox API outage; keep case ids out of `training-prepare`'s output ([#123](https://github.com/kristerhedfors/lypning/pull/123))
 
 - The seed-1111 arm-A pilot (HF job `6ab4a05a52d0dbd7f1d8909d`, Actions
