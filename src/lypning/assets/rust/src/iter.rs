@@ -196,24 +196,31 @@ pub struct GenState {
     /// the recursion guard already lives there.
     pub scope: Option<Scope>,
     pub stack: Vec<Iter>,
-    pub started: bool,
     pub done: bool,
     /// Set while the generator is being advanced, so a self-referential
     /// generator is reported rather than panicking on the RefCell.
     pub running: bool,
+    /// The frame the expression was written in — see `Interp::gen_frame`.
+    pub frame: crate::eval::GenFrame,
 }
 
 impl GenState {
-    pub fn new(clauses: Rc<Vec<CompClause>>, elt: Rc<Expr>, env: Vec<Scope>) -> Self {
+    pub fn new(
+        clauses: Rc<Vec<CompClause>>,
+        elt: Rc<Expr>,
+        env: Vec<Scope>,
+        frame: crate::eval::GenFrame,
+        first: Iter,
+    ) -> Self {
         GenState {
             clauses,
             elt,
             env,
             scope: Some(crate::eval::new_scope()),
-            stack: Vec::new(),
-            started: false,
+            stack: vec![first],
             done: false,
             running: false,
+            frame,
         }
     }
     /// The stand-in that fills the `RefCell` while the real state is out.
@@ -234,9 +241,9 @@ impl GenState {
             env: Vec::new(),
             scope: None,
             stack: Vec::new(),
-            started: true,
             done: true,
             running: true,
+            frame: (real.frame.0.clone(), None),
         }
     }
 }
@@ -463,7 +470,10 @@ impl Interp {
                         None => return Ok(None),
                     }
                 }
-                Some(self.call(&f, &mut args, Vec::new())?)
+                match self.call(&f, &mut args, Vec::new()) {
+                    Err(e) if is_stop_iteration(&e) => return stop_is_exhaustion(e),
+                    r => Some(r?),
+                }
             }
             Iter::Filter(pred, inner) => {
                 let pred = pred.clone();
@@ -474,7 +484,10 @@ impl Interp {
                     let keep = match &pred {
                         None => truthy(&v)?,
                         Some(f) => {
-                            let r = self.call(f, &mut crate::args::Args::one(v.clone()), Vec::new())?;
+                            let r = match self.call(f, &mut crate::args::Args::one(v.clone()), Vec::new()) {
+                                Err(e) if is_stop_iteration(&e) => return stop_is_exhaustion(e),
+                                r => r?,
+                            };
                             truthy(&r)?
                         }
                     };
@@ -522,11 +535,17 @@ impl Interp {
     pub fn gen_next(&mut self, g: &Rc<RefCell<GenState>>) -> R<Option<Value>> {
         {
             let b = g.borrow();
-            if b.done {
-                return Ok(None);
-            }
+            // `running` FIRST: the stand-in that fills the cell while the
+            // generator runs is marked `done` too, so asking `done` first
+            // answered a generator that advances itself — through a helper
+            // that calls `next()` on it — with a silent exhaustion, a
+            // StopIteration the caller never catches, where CPython raises
+            // this ValueError.
             if b.running {
                 return Err(value_err("generator already executing"));
+            }
+            if b.done {
+                return Ok(None);
             }
         }
         // Take the state out so `eval` below can re-enter without a RefCell
@@ -546,10 +565,25 @@ impl Interp {
             c.push(sc.clone());
         }
         let saved = std::mem::replace(&mut self.chain, c);
+        self.push_gen_frame(&mut st.frame);
         let r = self.gen_step(&mut st);
+        self.pop_gen_frame(&mut st.frame);
         let spent = std::mem::replace(&mut self.chain, saved);
         self.give_chain(spent);
         st.running = false;
+        // PEP 479: a StopIteration that escapes a generator's BODY is a bug in
+        // the body, not the end of the stream, and it surfaces as this
+        // RuntimeError. Passed through, it was read by the consumer as
+        // exhaustion — `list(next(it) for x in xs)` answered `[]`-ish partial
+        // results, or an uncatchable-looking StopIteration, where CPython
+        // raises. The chained `__cause__` is not carried; reading it refuses.
+        let r = match r {
+            Err(e) if is_stop_iteration(&e) => Err(LypningError::exc(
+                "RuntimeError",
+                "generator raised StopIteration",
+            )),
+            r => r,
+        };
         if r.is_err() || matches!(r, Ok(None)) {
             st.done = true;
         }
@@ -558,12 +592,6 @@ impl Interp {
     }
 
     fn gen_step(&mut self, st: &mut GenState) -> R<Option<Value>> {
-        if !st.started {
-            st.started = true;
-            let v = self.eval(&st.clauses[0].iter)?;
-            let it = self.make_iter(v)?;
-            st.stack.push(it);
-        }
         while !st.stack.is_empty() {
             let level = st.stack.len() - 1;
             let mut cur = st.stack.pop().unwrap();
@@ -575,7 +603,7 @@ impl Interp {
             // pushes onto `st.stack`.
             let clauses = st.clauses.clone();
             let clause = &clauses[level];
-            self.assign(&clause.target, v)?;
+            self.comp_assign(&clause.target, v)?;
             let mut ok = true;
             for cond in &clause.ifs {
                 let c = self.eval(cond)?;
@@ -623,6 +651,26 @@ impl Interp {
             return Ok(s.borrow().items.clone());
         }
         self.iter_collect(v)
+    }
+}
+
+/// Is this the `StopIteration` exception — the program's or `next()`'s?
+fn is_stop_iteration(e: &LypningError) -> bool {
+    matches!(e.kind(), ErrKind::Exc(x) if x.kind == "StopIteration")
+}
+
+/// A `StopIteration` raised by the function `map()` or `filter()` calls ends
+/// the iterator, exactly as CPython's `map.__next__` ending with it does: every
+/// consumer (`list`, `for`, `zip`, …) reads it as exhaustion. One carrying an
+/// argument is refused instead, because `next()` on the same map would have to
+/// re-raise THAT exception, and `Ok(None)` would re-raise a bare one.
+fn stop_is_exhaustion(e: LypningError) -> R<Option<Value>> {
+    match e.kind() {
+        ErrKind::Exc(x) if x.msg.is_empty() => Ok(None),
+        _ => Err(unsupported(
+            "exception",
+            "StopIteration with an argument raised inside map()/filter()",
+        )),
     }
 }
 

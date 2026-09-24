@@ -3178,6 +3178,10 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             walk_expr(body, req);
             req.leave_scope(saved);
         }
+        // `return 0, *a` / `b = 0, *a`: a starred element of a bare tuple in a
+        // VALUE position, which no variant unpacks (`eval` refuses it at
+        // runtime). A starred TARGET is a `Target::Star` and never reaches here.
+        Expr::Starred(_) => req.block("unpack", "* in a tuple display".to_string()),
         _ => {}
     }
 }

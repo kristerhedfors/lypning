@@ -705,6 +705,23 @@ pub fn call_builtin(
         if name == "SystemExit" {
             return Ok(Value::Exc("SystemExit", system_exit_msg(args)?.into()));
         }
+        // CPython's constructor takes exactly five, and five this value cannot
+        // keep: `UnicodeDecodeError('x')` is a TypeError there.
+        if name == "UnicodeDecodeError" && args.len() != 5 {
+            return Err(unicode_decode_arity(args.len()));
+        }
+        // `[Errno N] …` is how an OS error the ENGINE raised spells itself, and
+        // `ops::errno_args` reads `args` back from it. One built here with that
+        // text has `args == (text,)` and no errno; refusing it keeps the
+        // spelling unambiguous.
+        if let Some(Value::Str(s)) = args.first() {
+            if s.starts_with("[Errno ") {
+                return Err(unsupported(
+                    "exception",
+                    &format!("{name}() of a message spelled like an OS error's"),
+                ));
+            }
+        }
         // WHAT THIS VALUE CAN CARRY, and therefore what it must refuse.
         //
         // `Value::Exc` is a class name and ONE `Rc<str>`. CPython's exception
@@ -759,6 +776,17 @@ pub fn call_builtin(
             // string, so the two disagreed and `repr()` then quoted the lookup
             // form a second time (`KeyError("'k'")`).
             Some(v) if name == "KeyError" => fmt::repr(v)?,
+            // The empty MESSAGE is taken: it is how `raise ValueError`, `next()`'s
+            // StopIteration and a bare `assert` — all argument-less, `args ==
+            // ()` — are spelled. `ValueError('')` has `args == ('',)` and
+            // `repr` `ValueError('')`, so it is the one string this value
+            // cannot carry, and it refuses for the reason `ValueError()` does.
+            Some(Value::Str(s)) if s.is_empty() => {
+                return Err(unsupported(
+                    "exception",
+                    &format!("{name}(''), which this value cannot tell from {name}()"),
+                ))
+            }
             Some(Value::Str(s)) => s.to_string(),
             Some(other) => {
                 return Err(unsupported(
@@ -1106,36 +1134,26 @@ pub fn call_builtin(
             Some(v @ (Value::Pattern(_) | Value::Match(_))) => {
                 return Err(crate::re::guard_one(v, "float() of").unwrap_err())
             }
-            Some(Value::Str(s)) => {
-                let t = s.trim();
-                let lower = t.to_ascii_lowercase();
-                match lower.as_str() {
-                    "inf" | "+inf" | "infinity" | "+infinity" => Value::Float(f64::INFINITY),
-                    "-inf" | "-infinity" => Value::Float(f64::NEG_INFINITY),
-                    "nan" | "+nan" | "-nan" => Value::Float(f64::NAN),
-                    // Same underscore rule as `int()`: between digits only, so
-                    // `float('1_')` is a ValueError and not 1.0. Checked on the
-                    // sign-stripped body, since `float('-1_0')` is fine.
-                    _ if !underscores_are_between_digits(
-                        t.strip_prefix(['-', '+']).unwrap_or(t),
-                        10,
-                        false,
-                    ) =>
-                    {
+            Some(Value::Str(s)) => match parse_float(s) {
+                Some(v) => Value::Float(v),
+                None => {
+                    return Err(value_err(format!(
+                        "could not convert string to float: {}",
+                        fmt::str_repr(s)?
+                    )))
+                }
+            },
+            // `float(b'1.5')`: CPython parses ASCII bytes as it parses a str,
+            // and reports a failure with the BYTES' repr.
+            Some(b @ Value::Bytes(x)) => {
+                match std::str::from_utf8(x).ok().filter(|t| t.is_ascii()).and_then(parse_float) {
+                    Some(v) => Value::Float(v),
+                    None => {
                         return Err(value_err(format!(
                             "could not convert string to float: {}",
-                            fmt::str_repr(s)?
+                            fmt::repr(b)?
                         )))
                     }
-                    _ => match t.replace('_', "").parse::<f64>() {
-                        Ok(v) => Value::Float(v),
-                        Err(_) => {
-                            return Err(value_err(format!(
-                                "could not convert string to float: {}",
-                                fmt::str_repr(s)?
-                            )))
-                        }
-                    },
                 }
             }
             // `float(2**100)` needs the round-to-nearest a wide integer does
@@ -2657,4 +2675,31 @@ fn round_half_even(f: f64, ndigits: i64) -> R<f64> {
         return Ok((0.0f64).copysign(f) * scale);
     }
     Ok(r * scale)
+}
+
+/// `raise UnicodeDecodeError` / `UnicodeDecodeError('x')`: CPython's arity
+/// TypeError, word for word.
+pub fn unicode_decode_arity(n: usize) -> LypningError {
+    type_err(format!("function takes exactly 5 arguments ({n} given)"))
+}
+
+/// `float(str)`'s parse, shared with `float(bytes)`.
+fn parse_float(s: &str) -> Option<f64> {
+    let t = s.trim();
+    let lower = t.to_ascii_lowercase();
+    match lower.as_str() {
+        "inf" | "+inf" | "infinity" | "+infinity" => Some(f64::INFINITY),
+        "-inf" | "-infinity" => Some(f64::NEG_INFINITY),
+        "nan" | "+nan" => Some(f64::NAN),
+        // The sign bit survives: `math.copysign(1.0, float('-nan'))` is -1.0
+        // in CPython, and was 1.0 here.
+        "-nan" => Some(-f64::NAN),
+        // Same underscore rule as `int()`: between digits only, so
+        // `float('1_')` is a ValueError and not 1.0. Checked on the
+        // sign-stripped body, since `float('-1_0')` is fine.
+        _ if !underscores_are_between_digits(t.strip_prefix(['-', '+']).unwrap_or(t), 10, false) => {
+            None
+        }
+        _ => t.replace('_', "").parse::<f64>().ok(),
+    }
 }

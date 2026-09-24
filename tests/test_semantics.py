@@ -14,6 +14,8 @@ what the answer *is*, so a case cannot rot into pinning our own bug.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from lypning import UNSUPPORTED_EXIT, engines
@@ -865,8 +867,16 @@ def test_a_union_of_classes_refuses_rather_than_dying(lypning_bin):
     `None | None` stays CPython's own TypeError. Authored sweep over the
     ntx-b38207f0de4f surface.
     """
+    # On a 3.14 reference an ANNOTATION is lazy (PEP 649) and is never
+    # evaluated, so the union in it is never built and the program answers.
+    ann = "def f(b: bytes | str) -> bytes | str:\n    return b\nprint(f(b'x'))"
+    r = engines.run(engines.LYPNING, ann, binary=lypning_bin)
+    minor = engines.reference_minor(Path(lypning_bin))
+    if minor is not None and tuple(map(int, minor.split("."))) >= (3, 14):
+        assert (r.returncode, r.stdout) == (0, "b'x'\n"), r.stderr
+    else:
+        assert r.returncode == UNSUPPORTED_EXIT and "class-union" in r.stderr, r.stderr
     for program in (
-        "def f(b: bytes | str) -> bytes | str:\n    return b\nprint(f(b'x'))",
         "print(int | None)",
         "x = None | str",
         "print(isinstance(1, int | str))",

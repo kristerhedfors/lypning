@@ -124,7 +124,11 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
         ("sys", "stdin") => Value::Module("sys.stdin"),
         ("sys", "stdout") => Value::Module("sys.stdout"),
         ("sys", "stderr") => Value::Module("sys.stderr"),
-        ("sys", "platform") => Value::Str("linux".into()),
+        // What the host's CPython would say. Anything but these two refuses.
+        ("sys", "platform") => match PLATFORM {
+            Some(p) => Value::Str(p.into()),
+            None => return Err(unsupported("module-attr", "sys.platform on this host")),
+        },
         ("sys", "maxsize") => ival(i64::MAX),
         ("sys", "exit") => Value::Bound(Rc::new(m.clone()), "exit"),
         ("sys", "path") => {
@@ -756,3 +760,10 @@ pub(crate) fn normpath(p: &str) -> String {
         joined
     }
 }
+
+#[cfg(target_os = "macos")]
+const PLATFORM: Option<&str> = Some("darwin");
+#[cfg(target_os = "linux")]
+const PLATFORM: Option<&str> = Some("linux");
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+const PLATFORM: Option<&str> = None;
