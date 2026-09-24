@@ -63,6 +63,7 @@ pub const SPECTRUM: &[Variant] = &[
             "cap-hashlib",
             "cap-pathlib",
             "cap-re",
+            "cap-statistics",
         ],
     },
 ];
@@ -135,6 +136,12 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// refusal is a keyword CPython owns or an attribute whose answer is CPython's
 /// to print, and there is no rung above `lypning-l` to carry the kind to.
 ///
+/// `cap-statistics` serves the `statistics` MODULE — four functions, and only
+/// the names [`MODULE_ATTRS`] lists — and answers no runtime kind. Its runtime
+/// `statistics:` refusals (empty data, a float or non-numeric `mean`) are
+/// answers CPython owns: there is no rung above `lypning-l` to carry the kind
+/// to, so listing it would cost a spawn to be told no twice.
+///
 /// `cap-glob` serves the `glob` MODULE and answers no runtime kind either. It
 /// is the SECOND module served only in part, and it needs no [`MODULE_ATTRS`]
 /// row to say so: the walk below carries [`GLOB_SERVED`] unconditionally, so
@@ -154,6 +161,7 @@ pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-hashlib", &["hashlib"], &[]),
     ("cap-pathlib", &["pathlib"], &[]),
     ("cap-re", &["re"], &[]),
+    ("cap-statistics", &["statistics"], &[]),
 ];
 
 /// The module attributes a capability answers, for the modules whose surface is
@@ -207,6 +215,12 @@ pub const MODULE_ATTRS: &[(&str, &[&str])] = &[
     // `sha3_*`, `sha224`, `sha384`, `pbkdf2_hmac`, `scrypt`, `file_digest` —
     // is blocked HERE, in the core's walk, and never reaches the variant.
     ("hashlib", &["md5", "sha1", "sha256", "sha512"]),
+    // Held to `statistics::SERVED` by
+    // `statistics::tests::the_route_table_names_exactly_what_is_served`. Every
+    // other name — `stdev`, `pstdev`, `variance`, `fmean`, `mode`,
+    // `quantiles`, `NormalDist`, `StatisticsError` — is blocked HERE, in the
+    // core's walk, and never reaches the variant.
+    ("statistics", &["mean", "median", "median_high", "median_low"]),
 ];
 
 /// Does some variant on the spectrum answer `module.name`, as far as

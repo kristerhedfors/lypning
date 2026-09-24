@@ -109,6 +109,11 @@ pub mod repat;
 #[cfg(feature = "cap-glob")]
 pub mod glob;
 pub mod route;
+/// `statistics.mean` / `median` / `median_low` / `median_high` — the
+/// `cap-statistics` capability. Absent from the smaller variant entirely, not
+/// merely unreachable in it.
+#[cfg(feature = "cap-statistics")]
+pub mod statistics;
 pub mod value;
 
 // The handle types are named the way C names them, because they ARE the C

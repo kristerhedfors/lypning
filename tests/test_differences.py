@@ -206,6 +206,7 @@ def test_every_capability_row_names_the_module_it_serves():
     ("base64", ("route.rs", "BASE64_SERVED")),
     ("glob", ("route.rs", "GLOB_SERVED")),
     ("hashlib", ("hashlib.rs", "SERVED")),
+    ("statistics", ("statistics.rs", "SERVED")),
     ("csv", None),
 ])
 def test_the_partial_surfaces_are_the_served_lists(module, source):
