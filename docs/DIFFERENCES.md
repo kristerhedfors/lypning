@@ -102,7 +102,11 @@ Everything else CPython puts in `builtins` — `frozenset`, `bytearray`,
 listed above — is `unsupported: builtin: <name>` at exit 90. A name **neither**
 has is the program's own bug and keeps CPython's `NameError` at exit 1; the
 split is `err.rs:CPYTHON_BUILTINS`, and without it a typo'd name and a missing
-capability would be indistinguishable to the dispatcher.
+capability would be indistinguishable to the dispatcher. One exception: an
+UNCAUGHT `NameError` on the name of a module some variant serves (`os`, `time`,
+…) is `unsupported: name-hint`, because CPython 3.14 ends that traceback with
+an import hint that rests on a suggestion search the engine does not run
+(`err.rs:forgot_import`). No other `Did you mean` hint is written.
 
 The methods on the types that do exist are a larger surface with the same rule:
 a method CPython has and the engine lacks refuses as `<type>-method` or
@@ -192,7 +196,7 @@ CPython (`route.rs:ONLY_CPYTHON_KINDS`, `engines.ONLY_CPYTHON_REFUSALS`):
 
 `del` · `dict-view` · `dunder-missing` · `encoding` · `exception-chaining` ·
 `glob-order` · `identity` · `iterator-type-name` · `json` · `math` ·
-`nan-identity` · `nan-order` · `percent-format` · `random` · `repr-unicode` ·
+`name-hint` · `nan-identity` · `nan-order` · `percent-format` · `random` · `repr-unicode` ·
 `set-method` · `set-order`
 
 Three of them show what the list is for: `identity` fires on `is` between two

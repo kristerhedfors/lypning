@@ -295,6 +295,44 @@ pub fn is_cpython_builtin(name: &str) -> bool {
     CPYTHON_BUILTINS.contains(&name)
 }
 
+/// Every module some variant serves, spelled as a bare name, WITHOUT the cfg
+/// gates `modules::MODULES` carries: the rule below must give the same answer
+/// on every rung of the spectrum, or the core would answer a program its own
+/// superset refuses. Each is in CPython's `sys.stdlib_module_names`
+/// (`tests/test_semantics.py` holds it to that, and to `MODULES`).
+pub const SERVED_MODULE_NAMES: &[&str] = &[
+    "base64", "collections", "csv", "glob", "hashlib", "io", "json", "math", "os",
+    "pathlib", "posixpath", "random", "re", "sys", "time",
+];
+
+/// An UNCAUGHT `NameError` on a stdlib module name, as a refusal.
+///
+/// CPython 3.14 ends that traceback with `. Did you forget to import 'time'?` —
+/// or, when its suggestion search found a near name, `. Did you mean: 'x'? Or
+/// did you forget to import 'time'?`. The search runs over the frame's locals,
+/// globals and builtins, and this engine does not run it, so it printed the bare
+/// `name 'time' is not defined` at the program's own exit 1. Refused at the
+/// exit path rather than where the name is looked up: a `NameError` the program
+/// CATCHES is its own business and has no hint in it. Both callers ask only
+/// while the run's output is still staged, so CPython re-runs it from a clean
+/// slate; past a commit the traceback is kept, as the lesser wrong.
+/// Only the served modules, because a program reaches one of those names by
+/// forgetting an import this engine would have run; the other ~290 stdlib names
+/// would be a table in every binary for a message the battery does not grade.
+pub fn forgot_import(e: &LypningError) -> Option<LypningError> {
+    let ErrKind::Exc(x) = e.kind() else { return None };
+    if x.kind != "NameError" {
+        return None;
+    }
+    let name = x.msg.strip_prefix("name '")?.strip_suffix("' is not defined")?;
+    SERVED_MODULE_NAMES.contains(&name).then(|| {
+        unsupported(
+            "name-hint",
+            &format!("NameError on {name}, which CPython ends with an import hint"),
+        )
+    })
+}
+
 /// An undefined name: lypning being small, or the program being wrong.
 pub fn name_err(name: &str) -> LypningError {
     // `__file__` is not a builtin — it is a module global CPython binds when it

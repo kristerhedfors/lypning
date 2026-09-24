@@ -253,6 +253,9 @@ fn finish(r: Result<(), LypningError>, report_refusal: bool, kind: &mut String, 
             UNSUPPORTED_EXIT
         }
         Err(e) => {
+            if let Some(r) = lypning::err::forgot_import(&e).filter(|_| !io::is_committed()) {
+                return finish(Err(r), report_refusal, kind, detail);
+            }
             let _ = io::commit();
             let _ = writeln!(std::io::stderr(), "Traceback (most recent call last):");
             let _ = writeln!(std::io::stderr(), "{e}");

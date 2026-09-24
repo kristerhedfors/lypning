@@ -910,6 +910,7 @@ ONLY_CPYTHON_REFUSALS = frozenset({
     "del",                # the ValueError text of a failed list.remove/index
     "json",               # hooks, and control characters inside a string
     "math",               # a domain error, a TypeError, a wrong count — message text CPython owns
+    "name-hint",          # an uncaught NameError on a module name: CPython's import hint needs its suggestion search
     "random",             # mp's generator is not MT19937; a seeded stream there is a plausible wrong number
 })
 

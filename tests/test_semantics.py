@@ -14,9 +14,12 @@ what the answer *is*, so a case cannot rot into pinning our own bug.
 
 from __future__ import annotations
 
+import re
+import sys
+
 import pytest
 
-from lypning import UNSUPPORTED_EXIT, engines
+from lypning import UNSUPPORTED_EXIT, engines, paths
 from lypning import engines as eng
 
 #: ``(id, program)``. Each prints everything it compares, so a failure names the
@@ -1024,3 +1027,72 @@ def test_a_module_is_hashable_by_identity(lypning_bin):
     ours = engines.run(engines.LYPNING, program, binary=lypning_bin)
     assert not ours.refused, ours.stderr
     assert (ours.returncode, ours.stdout) == (0, "2 True None\n3 1 2 True False\n"), ours.stderr
+
+
+def test_an_except_as_name_is_unbound_when_the_handler_ends(lypning_bin):
+    """`except E as N` ends with an implicit `N = None; del N` in CPython, on
+    every path out of the handler, so the name is unbound afterwards — even one
+    the program bound before the `try`. The engine left it bound: `x = 1`, then
+    `except ValueError as x: pass`, then `print(x)` printed `x` at exit 0 where
+    CPython raises NameError. The expected bytes are CPython 3.14.5's.
+    """
+    program = ("x = 1\n"
+               "try:\n    raise ValueError('v')\nexcept ValueError as x:\n    x = 2\n"
+               "try:\n    print(x)\nexcept NameError as n:\n    print('unbound', n)\n"
+               "def f():\n    try:\n        1 / 0\n    except ZeroDivisionError as e:\n        pass\n"
+               "    return e\n"
+               "try:\n    f()\nexcept UnboundLocalError as u:\n    print(u)\n")
+    ours = engines.run(engines.LYPNING, program, binary=lypning_bin)
+    assert not ours.refused, ours.stderr
+    assert (ours.returncode, ours.stdout) == (
+        0,
+        "unbound name 'x' is not defined\n"
+        "cannot access local variable 'e' where it is not associated with a value\n",
+    ), ours.stderr
+
+
+@pytest.mark.parametrize("program,line", [
+    ("x = None\nx += 1", "TypeError: unsupported operand type(s) for +=: 'NoneType' and 'int'"),
+    ("x = None\nx **= 2", "TypeError: unsupported operand type(s) for **=: 'NoneType' and 'int'"),
+    ("x = 1.0\nx |= 2.0", "TypeError: unsupported operand type(s) for |=: 'float' and 'float'"),
+    ("x = [1]\nx -= 1", "TypeError: unsupported operand type(s) for -=: 'list' and 'int'"),
+    ("import os\nos += 1", "TypeError: unsupported operand type(s) for +=: 'module' and 'int'"),
+])
+def test_an_augmented_assignment_type_error_names_the_in_place_operator(program, line, lypning_bin):
+    """CPython names the in-place operator (`+=`), and the engine printed the
+    binary one (`+`). The expected lines are CPython 3.14.5's."""
+    ours = engines.run(engines.LYPNING, program, binary=lypning_bin)
+    assert not ours.refused, ours.stderr
+    assert ours.returncode == 1 and ours.stdout == ""
+    assert ours.stderr.strip().splitlines()[-1] == line
+
+
+def test_an_uncaught_name_error_on_a_module_refuses_and_a_caught_one_does_not(lypning_bin):
+    """CPython 3.14 ends an uncaught NameError on a stdlib module name with
+    `. Did you forget to import 'os'?` (or a `Did you mean` first, from a
+    suggestion search the engine does not run). The engine printed the bare
+    message at exit 1, the program's own exit, so it refuses instead, with
+    nothing on stdout, and CPython prints the hint. A NameError the program
+    catches has no hint in it and stays served.
+    """
+    ours = engines.run(engines.LYPNING, "print('staged')\nprint(os.getcwd())", binary=lypning_bin)
+    assert ours.refused and ours.stdout == "", (ours.returncode, ours.stdout, ours.stderr)
+    assert ours.refusal[0] == "name-hint"
+    caught = engines.run(engines.LYPNING, "try:\n    os\nexcept NameError as e:\n    print(e)",
+                         binary=lypning_bin)
+    assert not caught.refused, caught.stderr
+    assert (caught.returncode, caught.stdout) == (0, "name 'os' is not defined\n")
+    other = engines.run(engines.LYPNING, "print(nosuchname)", binary=lypning_bin)
+    assert not other.refused and other.returncode == 1
+
+
+def test_the_module_names_that_refuse_are_stdlib_and_cover_every_served_module():
+    src = (paths.RUST_DIR / "src" / "err.rs").read_text()
+    body = src.split("pub const SERVED_MODULE_NAMES: &[&str] = &[", 1)[1].split("];", 1)[0]
+    names = set(re.findall(r'"([^"]+)"', body))
+    if hasattr(sys, "stdlib_module_names"):
+        assert names <= set(sys.stdlib_module_names), names - set(sys.stdlib_module_names)
+    mods = (paths.RUST_DIR / "src" / "modules.rs").read_text()
+    table = mods.split("pub const MODULES: &[&str] = &[", 1)[1].split("];", 1)[0]
+    served = {m for m in re.findall(r'^\s*"([^"]+)",', table, re.M) if "." not in m}
+    assert served <= names, served - names

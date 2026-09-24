@@ -451,3 +451,45 @@ def test_no_served_row_quietly_became_a_refusal() -> None:
     refused = [p for p in SERVED
                if _run([str(BINARY)], p).returncode == engines.UNSUPPORTED_EXIT]
     assert refused == [], refused[:4]
+
+
+#: Programs that end in an uncaught `NameError` on the name `time`. CPython 3.14
+#: ends that traceback with an import hint whose wording rests on a suggestion
+#: search this engine does not run, so lypning-l refuses at the exit path
+#: (`err::forgot_import`, kind `name-hint`) and CPython answers. Before the fix,
+#: the first row printed `AttributeError: 'ValueError' object has no attribute
+#: 'time'`: an `except … as time` never unbound the name.
+FORGOT_IMPORT = [
+    T + "try:\n    raise ValueError('x')\nexcept ValueError as time:\n    pass\nprint(time.time())",
+    "def f():\n    import time\nf()\nprint(time.time())",
+    T + "del time\nprint(time.time())",
+    "def f():\n    import time\n    return time.time() > 0\nprint(f())\nprint(time.time())",
+]
+
+#: The last stderr line CPython 3.14.5 writes for every FORGOT_IMPORT row.
+FORGOT_IMPORT_LINE = "NameError: name 'time' is not defined. Did you forget to import 'time'?"
+
+
+@needs_l
+@pytest.mark.parametrize("program", FORGOT_IMPORT, ids=range(len(FORGOT_IMPORT)))
+def test_a_name_error_on_time_refuses_so_cpython_prints_the_hint(program: str) -> None:
+    got = _run([str(BINARY)], program)
+    assert _refusal_problem(got) is None, (got.returncode, got.stdout, got.stderr)
+    assert got.stderr.startswith("%s: unsupported: name-hint: " % engines.LYPNING_L), got.stderr
+    ref = _run([sys.executable], program)
+    if sys.version_info[:2] == (3, 14):
+        assert ref.stderr.strip().splitlines()[-1] == FORGOT_IMPORT_LINE
+
+
+@needs_l
+@pytest.mark.parametrize("op,line", [
+    ("+=", "TypeError: unsupported operand type(s) for +=: 'module' and 'int'"),
+    ("-=", "TypeError: unsupported operand type(s) for -=: 'module' and 'int'"),
+    ("*=", "TypeError: unsupported operand type(s) for *=: 'module' and 'int'"),
+])
+def test_an_augmented_assignment_to_the_module_names_the_in_place_operator(op: str, line: str) -> None:
+    """The bytes are CPython 3.14.5's. The engine printed `for +:`, dropping the
+    `=` CPython writes for an in-place operator."""
+    got = _run([str(BINARY)], T + "time %s 1" % op)
+    assert got.returncode == 1 and got.stdout == "", got.stderr
+    assert got.stderr.strip().splitlines()[-1] == line

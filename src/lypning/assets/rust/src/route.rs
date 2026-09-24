@@ -747,6 +747,9 @@ pub const ONLY_CPYTHON_KINDS: &[&str] = &[
     // and EVERY variant carries the same `math.rs` — so falling to a larger
     // sibling would spend a spawn to be told no in the same words.
     "math",
+    // An uncaught NameError on a module name: CPython's import hint rests on a
+    // suggestion search no variant runs (`err::forgot_import`).
+    "name-hint",
     "nan-identity",
     "nan-order",
     "percent-format",

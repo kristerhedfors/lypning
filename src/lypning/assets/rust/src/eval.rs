@@ -190,6 +190,23 @@ impl Interp {
         }
     }
 
+    /// Remove `name` from the scope `bind` would have written it to. Absent is
+    /// not an error here: the caller is an implicit `N = None; del N`.
+    fn unbind(&mut self, name: &Rc<str>) {
+        if self.declared_global(name.as_ref()) {
+            self.globals.borrow_mut().remove(name.as_ref());
+            return;
+        }
+        match self.chain.last() {
+            Some(s) => {
+                s.borrow_mut().remove(name.as_ref());
+            }
+            None => {
+                self.globals.borrow_mut().remove(name.as_ref());
+            }
+        }
+    }
+
     // ---- statements -------------------------------------------------------
 
     pub fn run(&mut self, body: &[Stmt]) -> R<()> {
@@ -263,7 +280,25 @@ impl Interp {
                     self.assign(target, cur)?;
                     return Ok(Flow::Normal);
                 }
-                let nv = self.binop(*op, &cur, &rhs)?;
+                // CPython names the IN-PLACE operator in this TypeError —
+                // `unsupported operand type(s) for +=: 'module' and 'int'` —
+                // and the binary operator printed `+` without the `=`.
+                let nv = match self.binop(*op, &cur, &rhs) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        const HEAD: &str = "unsupported operand type(s) for ";
+                        let m = err_msg(&e);
+                        match m.strip_prefix(HEAD).and_then(|t| t.split_once(": ")) {
+                            Some((_, rest)) if err_kind(&e) == "TypeError" => {
+                                return Err(type_err(format!(
+                                    "{HEAD}{}=: {rest}",
+                                    crate::ops::op_sym(*op)
+                                )))
+                            }
+                            _ => return Err(e),
+                        }
+                    }
+                };
                 self.assign(target, nv)?;
             }
             Stmt::If { arms, els } => {
@@ -470,6 +505,17 @@ impl Interp {
                                     self.handling.push((kind, msg));
                                     handled = Some(self.exec_block(&h.body));
                                     self.handling.pop();
+                                    // `except E as N` ends in CPython with an
+                                    // implicit `N = None; del N`, on every path
+                                    // out of the handler, so the name is UNBOUND
+                                    // afterwards — including a name the program
+                                    // had bound before the try. Leaving it bound
+                                    // printed `x` at exit 0 for
+                                    // `x = 1` / `except ValueError as x: pass` /
+                                    // `print(x)`, where CPython raises NameError.
+                                    if let Some(n) = &h.name {
+                                        self.unbind(n);
+                                    }
                                     break;
                                 }
                             }
