@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pipeline.jsonio import append_jsonl, read_jsonl, sha256_of, write_json
 from pipeline.training_metrics import BENCHMARK_MIN_FAMILY_CASES, CheckpointGate
-from pipeline.evaluation_reuse import fresh_lora_is_noop, reuse_evaluation
+from pipeline.evaluation_reuse import fresh_lora_is_noop, reuse_evaluation, reuse_step_zero
 from pipeline.training import (ISOLATED_KINDS, TrainingError, Verifier,
     assistant_turn, chat_prompt_token_ids, execution_runner, load_bundle, messages,
     program_from_completion)
@@ -56,6 +56,9 @@ def parser():
     p.add_argument("--revision", required=True, help="immutable 40-character base-model Hub commit")
     p.add_argument("--adapter", type=Path, help="local adapter for GRPO warm start or evaluation")
     p.add_argument("--reuse-evaluation", type=Path, help="eval only: reuse a completed equivalent-policy arm")
+    p.add_argument("--reuse-step0", type=Path,
+                   help="SFT only: record step 0 from this job's base-dev evaluation when the fresh "
+                        "LoRA is a verified no-op (evaluation_reuse.reuse_step_zero)")
     p.add_argument("--from-base", action="store_true", help="explicit GRPO-from-base ablation")
     p.add_argument("--plan", action="store_true", help="validate experiment without GPU/downloads")
     p.add_argument("--smoke", action="store_true", help="tiny random Qwen model, two real trainer steps")
@@ -76,6 +79,9 @@ def parser():
     p.add_argument("--eval-sequences", type=int, default=256,
                    help="sequences per generate call in evaluation: cases per chunk = this // draws")
     p.add_argument("--score-workers", type=int, default=16, help="concurrent verifier scorings per chunk")
+    p.add_argument("--serial-scoring", action="store_true",
+                   help="diagnosis: score each chunk before generating the next, instead of while "
+                        "it generates; the same rows either way, only slower")
     p.add_argument("--greedy", action="store_true", help="eval-only diagnostic; not checkpoint selection")
     p.add_argument("--warmup-ratio", type=float, default=0.1)
     p.add_argument("--max-seq", type=int, default=4096)
@@ -177,6 +183,16 @@ def preflight(args):
         raise TrainingError("--sft-targets is only valid for SFT")
     if args.reuse_evaluation is not None and args.stage != "eval":
         raise TrainingError("--reuse-evaluation is only for standalone evaluation")
+    if args.reuse_step0 is not None and args.stage != "sft":
+        raise TrainingError("--reuse-step0 is only for SFT, whose step 0 is the unadapted base")
+    if args.reuse_step0 is not None and not args.plan:
+        # Here, before the 55 GB load: otherwise both surface only once the
+        # model is in memory, after the job has paid for it.
+        if not os.environ.get("JOB_ID"):
+            raise TrainingError("--reuse-step0 needs JOB_ID: without it no stage can show the same job")
+        if not (args.reuse_step0 / "metrics.json").is_file():
+            raise TrainingError("--reuse-step0 needs a completed evaluation (metrics.json) in "
+                                + str(args.reuse_step0))
     if args.stage != "eval" and args.eval_split != "dev":
         raise TrainingError("test split cannot select a checkpoint")
     if not math.isfinite(args.warmup_ratio) or not 0 <= args.warmup_ratio < 1:
@@ -658,6 +674,9 @@ def run(args, bundle, adapter_info):
                 "hardware": {"device": device, "dtype": str(dtype), "cuda": torch.version.cuda,
                     "gpu": torch.cuda.get_device_name() if device == "cuda" else None},
                 "code_sha256": source_identity(Path(__file__).resolve().parents[1]),
+                # Which job ran this stage: step-0 reuse admits only an
+                # evaluation written by the SAME job (`reuse_step_zero`).
+                "job_id": os.environ.get("JOB_ID"),
                 "sft_targets": ({"run_id": target_report["run_id"],
                                  "sft_sha256": target_report["sft_sha256"],
                                  "rows": target_report["rows"],
@@ -672,7 +691,11 @@ def run(args, bundle, adapter_info):
                               if args.stage in ("sft", "grpo") and not args.adapter else None),
                 "sft_optimizer": (dict(SFT_OPTIMIZER, name="AdamW", max_grad_norm=MAX_GRAD_NORM)
                                   if args.stage == "sft" else None),
-                "grpo_geometry": grpo_geometry(args)}
+                "grpo_geometry": grpo_geometry(args),
+                # How evaluation spent the wall clock, not what it measured:
+                # both modes write the same rows (`verified_evaluation.ScoringStage`),
+                # so this is in no reuse or arm identity.
+                "scoring": "serial" if args.serial_scoring else "overlapped"}
     if adapter_info:
         prior = adapter_info["experiment"]
         for key in ("tokenizer_sha256", "model_config_sha256", "enable_thinking"):
@@ -693,7 +716,8 @@ def run(args, bundle, adapter_info):
             args.output / "probe-rollouts.jsonl", 0, torch,
             seed=args.seed, draws=args.generations, return_records=True,
             witness_path=args.output / "eval-blocked-witnesses.jsonl",
-            sequences_per_call=args.eval_sequences, score_workers=args.score_workers)
+            sequences_per_call=args.eval_sequences, score_workers=args.score_workers,
+            overlapped=not args.serial_scoring)
         contract = probe_contract(bundle, args.revision, adapter_info, policy,
                                   args.seed, args.generations, args.smoke)
         write_json(args.output / "probe.json", probe_report(records, contract))
@@ -705,12 +729,21 @@ def run(args, bundle, adapter_info):
                         seed=args.seed, draws=1 if args.greedy else args.eval_draws,
                         witness_path=args.output / "eval-blocked-witnesses.jsonl",
                         sequences_per_call=args.eval_sequences, score_workers=args.score_workers,
-                        **metric_policy(bundle))
+                        overlapped=not args.serial_scoring, **metric_policy(bundle))
     if args.reuse_evaluation is not None and reuse_evaluation(
             args.reuse_evaluation, args.output, manifest, dev_cases):
         core.log("eval reused equivalent policy; provenance saved in reuse.json")
         return
-    baseline = measure(0)
+    baseline = None
+    if args.reuse_step0 is not None:
+        # Before any optimizer step: a fresh LoRA with finite tensors and zero B
+        # IS the base, so base-dev's draws are step 0's. No proof, no reuse.
+        baseline = reuse_step_zero(args.reuse_step0, args.output, manifest, dev_cases,
+                                   fresh_lora_is_noop(model))
+        core.log("sft step 0 %s" % ("reused from base-dev; provenance saved in reuse.json"
+                                    if baseline is not None else "measured: no no-op proof"))
+    if baseline is None:
+        baseline = measure(0)
     if args.stage == "eval":
         write_json(args.output / "metrics.json", baseline)
         return

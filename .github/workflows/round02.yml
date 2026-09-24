@@ -99,9 +99,12 @@ env:
   PILOT_EVAL_EVERY: "350"
   # Where eval-2 runs: `same-job`, or `separate` -- the pilot stops after the
   # test split and an `eval2` dispatch (eval2_of = that job) runs 7g from its
-  # sealed selection. Scheduling, not the arm; set after the hardware smoke's
-  # projection says whether one 720m job holds the whole arm.
-  PILOT_EVAL2: "same-job"
+  # sealed selection. Scheduling, not the arm. `separate` since the h200
+  # hardware smoke (job 6ab4582d6b030d633f68c90e, 2026-09-24): even without the
+  # probe and with SFT step 0 reused, the whole arm in one job projects over
+  # the 648-minute budget at every reading but the lowest; the two jobs'
+  # projections, and which of them fit, are in `training/PLAN.md` Step 4.
+  PILOT_EVAL2: "separate"
   # The hardware smoke's ceiling: deps, the 55 GB pull, one load, three generate
   # calls and 34 SFT steps, on the pilot's flavor (launch.py HWSMOKE_TIMEOUT).
   HWSMOKE_TIMEOUT: "90m"
@@ -121,16 +124,17 @@ env:
   # second stage, after the pilot bundle was already built.
   PILOT_SCORERS: "48"
   PILOT_POOL_HOSTS: "16"
-  # S4 arm A is rejection-sampling SFT and nothing after it: the job still runs
-  # the probe (arm C's admission evidence) and writes grpo-skipped.json. The
-  # only GRPO dose this workflow ever billed was 20 steps x 4 generations, the
-  # one PLAN.md retired with seed 1111's configuration; arm C sets its own dose
-  # here, in a reviewed commit, when it is launched.
+  # S4 arm A is rejection-sampling SFT and nothing after it: the job skips the
+  # probe and GRPO and writes grpo-skipped.json (a probe binds its adapter and
+  # code, so arm C re-probes in its own job). The only GRPO dose this workflow
+  # ever billed was 20 steps x 4 generations, the one PLAN.md retired with seed
+  # 1111's configuration; arm C sets its own dose here, in a reviewed commit,
+  # when it is launched.
   PILOT_GRPO_STEPS: "0"
   # Arm C's group size and prompt groups per GRPO step, passed so that arm C's
   # dose is one reviewed edit here rather than a launcher default nobody saw.
-  # 4 and 4 are launch.py's defaults: an arm-A probe stays comparable with
-  # seed 1111's, and with PILOT_GRPO_STEPS at 0 no GRPO step reads them.
+  # 4 and 4 are launch.py's defaults (seed 1111's group size); with
+  # PILOT_GRPO_STEPS at 0 neither the probe nor GRPO runs, so nothing reads them.
   PILOT_GRPO_GENERATIONS: "4"
   PILOT_GRPO_PROMPTS: "4"
   # Dev draws per case in the stages that SELECT a checkpoint. It used to be

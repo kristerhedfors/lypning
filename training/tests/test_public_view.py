@@ -270,15 +270,17 @@ def test_pilot_report_line_prints_paired_without_the_key(tmp_path):
 
 
 def test_pilot_probe_verdict_prints_without_the_key(tmp_path):
-    body = pilot().split('GRPO_STEPS="$GRPO_STEPS" python3 - <<\'PYEOF\'\n', 1)[1]
+    text = pilot()
+    gate = text[text.index('echo "== read $ROUND/probe/probe.json'):]
+    body = gate.split("python3 - <<'PYEOF'\n", 1)[1]
     program = body.split("\nPYEOF\n", 1)[0]
     probe = tmp_path / "work" / "round-02" / "probe"
     probe.mkdir(parents=True)
     (probe / "probe.json").write_text(json.dumps({
         "admitted": True, "informative_groups": {"n": 3, "case_clusters": clusters()},
         "groups": 8, "correct_draws": COUNTS, "truncated_draws": 0, "draws": 32}))
-    done = run_python(["-c", program], tmp_path, GRPO_STEPS="0")
-    assert done.returncode == 3, done.stderr
+    done = run_python(["-c", program], tmp_path)
+    assert done.returncode == 0, done.stderr        # admitted: GRPO runs (arm C)
     verdict = next(l for l in done.stdout.splitlines() if l.startswith("== probe verdict:"))
     assert "case_clusters" not in verdict and DIGEST not in verdict
 
