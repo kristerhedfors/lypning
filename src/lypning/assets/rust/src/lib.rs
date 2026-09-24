@@ -118,6 +118,12 @@ pub mod route;
 /// merely unreachable in it.
 #[cfg(feature = "cap-statistics")]
 pub mod statistics;
+
+/// `textwrap.dedent` / `indent` / `wrap` / `fill` / `shorten` — the
+/// `cap-textwrap` capability. Absent from the smaller variant entirely, not
+/// merely unreachable in it.
+#[cfg(feature = "cap-textwrap")]
+pub mod textwrap;
 pub mod value;
 
 // The handle types are named the way C names them, because they ARE the C

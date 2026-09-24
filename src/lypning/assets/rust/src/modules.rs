@@ -67,6 +67,8 @@ pub const MODULES: &[&str] = &[
     "itertools",
     #[cfg(feature = "cap-difflib")]
     "difflib",
+    #[cfg(feature = "cap-textwrap")]
+    "textwrap",
 ];
 // A `cap-*` is never built except as part of `variant-l`: `build.rs` refuses
 // any `CARGO_FEATURE_CAP_*` without `variant-l`, one rule that needs no list,
@@ -294,6 +296,12 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
         // row there is EMPTY, so every `difflib.<name>` is the arm below.
         #[cfg(feature = "cap-itertools")]
         ("itertools", _) => return crate::itertools::module_attr(name),
+        // `textwrap.dedent` / `indent` / `wrap` / `fill` / `shorten`. Every
+        // other name — `TextWrapper`, `__file__` — refuses with the
+        // `module-attr` kind, which `route::MODULE_ATTRS` makes a STATIC block
+        // in the core's walk.
+        #[cfg(feature = "cap-textwrap")]
+        ("textwrap", _) => return crate::textwrap::module_attr(name),
         _ => {
             return Err(unsupported(
                 "module-attr",
@@ -401,6 +409,8 @@ pub fn call_module_method(
         ("statistics", _) => return crate::statistics::call(it, name, args, &kw),
         #[cfg(feature = "cap-itertools")]
         ("itertools", _) => return crate::itertools::call(it, name, args, &kw),
+        #[cfg(feature = "cap-textwrap")]
+        ("textwrap", _) => return crate::textwrap::call(it, name, args, &kw),
         ("random", _) => return crate::random::call(it, name, args, &kw),
         ("math", _) => return crate::math::call(it, name, args, &kw),
         // `Path.cwd()`. A classmethod on the type object, reached through

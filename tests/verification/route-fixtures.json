@@ -93,6 +93,15 @@
   "route": "cpython\tmodule-attr: difflib.SequenceMatcher"
  },
  {
+  "program": "import textwrap; print(textwrap.fill(\"a b c\", 3))",
+  "route": "lypning-l\tmodule: import textwrap",
+  "note": "Since cap-textwrap the core routes dedent, fill, indent, shorten and wrap into lypning-l. TextWrapper is not served and stays cpython, out of route::MODULE_ATTRS — the next row."
+ },
+ {
+  "program": "import textwrap; print(textwrap.TextWrapper(width=3).fill(\"a b c\"))",
+  "route": "cpython\tmodule-attr: textwrap.TextWrapper"
+ },
+ {
   "program": "class A: pass",
   "route": "cpython\tclass: class definition"
  },

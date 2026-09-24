@@ -50,7 +50,7 @@ variant-m = []
 # The 4 MB point. Names the smaller variant so cargo's feature union makes it a
 # superset by construction — the monotonicity the router assumes. It grows one
 # `cap-*` per step; `variant-m` is FROZEN and gains none of them.
-variant-l = ["variant-m", "cap-base64", "cap-bigint", "cap-collections", "cap-csv", "cap-difflib", "cap-glob", "cap-hashlib", "cap-itertools", "cap-pathlib", "cap-re", "cap-statistics"]
+variant-l = ["variant-m", "cap-base64", "cap-bigint", "cap-collections", "cap-csv", "cap-difflib", "cap-glob", "cap-hashlib", "cap-itertools", "cap-pathlib", "cap-re", "cap-statistics", "cap-textwrap"]
 
 # `collections.Counter` and `collections.defaultdict` — 83 of the corpus
 # programs measured on 2026-09-04 import `collections`, and between them they
@@ -125,6 +125,7 @@ cap-hashlib = []
 # walk. 34 corpus programs (census 2026-09-24) are blocked first on `import
 # statistics`. `src/statistics.rs` is the whole of it.
 cap-statistics = []
+
 # `itertools.product` and `itertools.combinations`, their inputs drained at
 # construction and their results produced lazily by an index counter — an
 # `Iter` arm inside `Value::IterObj`, never a new `Value` variant. Every other
@@ -138,6 +139,16 @@ cap-itertools = []
 # walk and only a program that imports the module without touching it is
 # admitted. No source file; `modules::MODULES` is the whole of it.
 cap-difflib = []
+
+# `textwrap.dedent`, `indent` (default predicate), `wrap`, `fill` and
+# `shorten`, ported statement for statement from CPython 3.14's
+# `Lib/textwrap.py`, with the `break_on_hyphens` regex as a hand-written
+# scanner. `TextWrapper` and every keyword outside `width`, `initial_indent`,
+# `subsequent_indent`, `break_long_words`, `break_on_hyphens` (and `shorten`'s
+# `placeholder`) are refused in the WALK. 44 corpus programs (census
+# 2026-09-24) were blocked first on `import textwrap`. `src/textwrap.rs` is the
+# whole of it.
+cap-textwrap = []
 
 capi = []
 

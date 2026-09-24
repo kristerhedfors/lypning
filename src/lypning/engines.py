@@ -70,10 +70,13 @@ SPECTRUM = (LYPNING, LYPNING_L)
 #: refuses as ``module-attr`` from the WALK, out of the same table),
 #: ``cap-difflib`` (``import difflib`` and nothing on it: its table row is
 #: EMPTY, so every ``difflib.<name>`` refuses from the WALK),
-#: ``cap-pathlib`` (``pathlib.Path``),
-#: ``cap-re`` (the ``re`` matcher) and ``cap-statistics`` (``mean`` / ``median``
-#: / ``median_low`` / ``median_high``; every other name refuses as
-#: ``module-attr`` from the WALK, out of ``route::MODULE_ATTRS``) are on the larger
+#: ``cap-pathlib`` (``pathlib.Path``), ``cap-re`` (the ``re`` matcher),
+#: ``cap-statistics`` (``mean`` / ``median`` / ``median_low`` / ``median_high``;
+#: every other name refuses as ``module-attr`` from the WALK, out of
+#: ``route::MODULE_ATTRS``) and
+#: ``cap-textwrap`` (``dedent`` / ``indent`` / ``wrap`` / ``fill`` /
+#: ``shorten``; ``TextWrapper`` and every unserved keyword refuse from the
+#: WALK) are on the larger
 #: variant ONLY. The core is
 #: frozen: it gains no capability feature, and a capability that appeared in both
 #: columns would buy the chain nothing — the whole point of the column is that
@@ -83,7 +86,7 @@ VARIANT_CAPS: dict = {
     LYPNING_L: (
         "cap-base64", "cap-bigint", "cap-collections", "cap-csv", "cap-difflib",
         "cap-glob", "cap-hashlib", "cap-itertools", "cap-pathlib", "cap-re",
-        "cap-statistics",
+        "cap-statistics", "cap-textwrap",
     ),
 }
 

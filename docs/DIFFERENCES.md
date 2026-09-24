@@ -134,7 +134,7 @@ the user's own — is `unsupported: module: import <name>` on both engines, and
 
 ### 4.3 Modules served in part
 
-Seven modules on `lypning-l` are served as a named list of attributes rather than
+Eight modules on `lypning-l` are served as a named list of attributes rather than
 whole, so the walk in the *smaller* engine can decide statically whether the
 larger one would answer. Everything not listed is `unsupported: module-attr:
 <module>.<name>` — including under `from <module> import <name>`:
@@ -148,6 +148,7 @@ larger one would answer. Everything not listed is `unsupported: module-attr:
 | `statistics` | `mean` `median` `median_high` `median_low` | `statistics.rs:SERVED` — `mean` exact over ints, bools and floats; empty data, a float beside an int past 64 bits, a median over items `<` does not totally order (mixed kinds past the first pair, a nested NaN, a set, an int past 2**53 beside a float) and the spread functions are CPython's |
 | `itertools` | `combinations` `product` | `itertools.rs:SERVED` — `chain`, `islice`, `permutations` and the rest are CPython's |
 | `difflib` | nothing: the import alone | `route.rs:MODULE_ATTRS` — an EMPTY row, so every `difflib.<name>` is CPython's |
+| `textwrap` | `dedent` `fill` `indent` `shorten` `wrap` | `route.rs:TEXTWRAP_SERVED` — `TextWrapper`, `max_lines`, `indent`'s `predicate` and the other `TextWrapper` keywords are CPython's |
 
 `collections` serves `Counter` and `defaultdict`; `pathlib` serves `Path`. Both
 are whole-module claims in `route.rs:CAPS`, so an attribute neither serves —
@@ -156,7 +157,7 @@ rather than in the smaller engine's walk, which costs one spawn and no answer.
 
 ## 5. What `lypning-l` adds
 
-`lypning-l` is the same crate built with eleven `cap-*` features
+`lypning-l` is the same crate built with twelve `cap-*` features
 (`engines.VARIANT_CAPS`, `route.rs:CAPS`, and `lypning route --spectrum` from
 either binary):
 
@@ -173,6 +174,7 @@ either binary):
 | `cap-pathlib` | the `pathlib` module — `Path` | `pathlib.rs` |
 | `cap-re` | the `re` module and its matcher | `re.rs` |
 | `cap-statistics` | the `statistics` module — four functions of it | `statistics.rs` |
+| `cap-textwrap` | the `textwrap` module — five functions of it | `textwrap.rs` |
 
 `cap-re` serves a **slice** of the pattern language, and the rest of it is
 refusals rather than a best effort: non-ASCII group names, backreferences, lookaround,
