@@ -1332,6 +1332,12 @@ fn bound_kind(recv: &Value, name: &str) -> Callable {
             // and `hashlib.md5`.
             #[cfg(feature = "cap-csv")]
             ("csv", "DictReader") => Class("DictReader"),
+            // Both are C TYPES, and a C type's `tp_name` is dotted: CPython's
+            // own AttributeError says `type object 'itertools.product'`.
+            #[cfg(feature = "cap-itertools")]
+            ("itertools", "product") => Class("itertools.product"),
+            #[cfg(feature = "cap-itertools")]
+            ("itertools", "combinations") => Class("itertools.combinations"),
             _ => Builtin,
         },
         // The UNBOUND method off a type object — `str.upper`, which

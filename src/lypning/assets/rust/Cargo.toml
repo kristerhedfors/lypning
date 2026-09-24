@@ -50,7 +50,7 @@ variant-m = []
 # The 4 MB point. Names the smaller variant so cargo's feature union makes it a
 # superset by construction — the monotonicity the router assumes. It grows one
 # `cap-*` per step; `variant-m` is FROZEN and gains none of them.
-variant-l = ["variant-m", "cap-base64", "cap-bigint", "cap-collections", "cap-csv", "cap-glob", "cap-hashlib", "cap-pathlib", "cap-re"]
+variant-l = ["variant-m", "cap-base64", "cap-bigint", "cap-collections", "cap-csv", "cap-difflib", "cap-glob", "cap-hashlib", "cap-itertools", "cap-pathlib", "cap-re"]
 
 # `collections.Counter` and `collections.defaultdict` — 83 of the corpus
 # programs measured on 2026-09-04 import `collections`, and between them they
@@ -116,6 +116,20 @@ cap-base64 = []
 # (mined 2026-09-06) are blocked first on `import hashlib`; 10 of them need
 # nothing else this variant lacks. `src/hashlib.rs` is the whole of it.
 cap-hashlib = []
+
+# `itertools.product` and `itertools.combinations`, their inputs drained at
+# construction and their results produced lazily by an index counter — an
+# `Iter` arm inside `Value::IterObj`, never a new `Value` variant. Every other
+# name on the module is absent, so `route::MODULE_ATTRS` blocks it in the
+# CORE's walk. 37 corpus programs (census 2026-09-24) were blocked first on
+# `import itertools`. `src/itertools.rs` is the whole of it.
+cap-itertools = []
+
+# `import difflib` and NOTHING on it: `route::MODULE_ATTRS` carries an EMPTY
+# row, so every `difflib.<name>` is a static `module-attr` block in the core's
+# walk and only a program that imports the module without touching it is
+# admitted. No source file; `modules::MODULES` is the whole of it.
+cap-difflib = []
 
 capi = []
 

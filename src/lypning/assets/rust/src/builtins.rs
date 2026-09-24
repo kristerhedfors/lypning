@@ -2121,6 +2121,27 @@ pub fn call_builtin(
                 .get(1)
                 .cloned()
                 .ok_or_else(|| type_err("isinstance expected 2 arguments, got 1"))?;
+            // A class a capability holds as a MODULE ATTRIBUTE — `csv.DictReader`,
+            // `itertools.product` — is a `Value::Bound`, not the `Value::Builtin`
+            // the arms below compare, so it fell to `arg 2 must be a type, not
+            // type`: a TypeError at exit 1 where CPython answers True or False.
+            #[cfg(any(feature = "cap-csv", feature = "cap-itertools"))]
+            {
+                let held = |c: &Value| {
+                    matches!(c, Value::Bound(..))
+                        && matches!(callable_kind(c), Some(crate::value::Callable::Class(_)))
+                };
+                let hit = match &cls {
+                    Value::Tuple(t) => t.iter().any(held),
+                    c => held(c),
+                };
+                if hit {
+                    return Err(unsupported(
+                        "isinstance",
+                        "isinstance() against a class a capability module holds as an attribute",
+                    ));
+                }
+            }
             // `&'static str`, not `String`: these come out of `Value::Builtin`,
             // which already interns them, and building a `String` per class was
             // an allocation for a comparison.

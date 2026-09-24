@@ -59,8 +59,10 @@ pub const SPECTRUM: &[Variant] = &[
             "cap-bigint",
             "cap-collections",
             "cap-csv",
+            "cap-difflib",
             "cap-glob",
             "cap-hashlib",
+            "cap-itertools",
             "cap-pathlib",
             "cap-re",
         ],
@@ -135,6 +137,13 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// refusal is a keyword CPython owns or an attribute whose answer is CPython's
 /// to print, and there is no rung above `lypning-l` to carry the kind to.
 ///
+/// `cap-itertools` serves the `itertools` MODULE — two classes of it, and only
+/// the names [`MODULE_ATTRS`] lists — and `cap-difflib` serves the `difflib`
+/// module with NO name at all, which is why its row there is present and
+/// empty: an absent row would claim the whole surface. Neither answers a
+/// runtime kind, for the reason `cap-hashlib` gives: there is no rung above
+/// `lypning-l` to carry one to.
+///
 /// `cap-glob` serves the `glob` MODULE and answers no runtime kind either. It
 /// is the SECOND module served only in part, and it needs no [`MODULE_ATTRS`]
 /// row to say so: the walk below carries [`GLOB_SERVED`] unconditionally, so
@@ -150,8 +159,10 @@ pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-bigint", &[], &["bigint", "int-div-precision"]),
     ("cap-collections", &["collections"], &[]),
     ("cap-csv", &["csv"], &[]),
+    ("cap-difflib", &["difflib"], &[]),
     ("cap-glob", &["glob"], &[]),
     ("cap-hashlib", &["hashlib"], &[]),
+    ("cap-itertools", &["itertools"], &[]),
     ("cap-pathlib", &["pathlib"], &[]),
     ("cap-re", &["re"], &[]),
 ];
@@ -207,6 +218,17 @@ pub const MODULE_ATTRS: &[(&str, &[&str])] = &[
     // `sha3_*`, `sha224`, `sha384`, `pbkdf2_hmac`, `scrypt`, `file_digest` —
     // is blocked HERE, in the core's walk, and never reaches the variant.
     ("hashlib", &["md5", "sha1", "sha256", "sha512"]),
+    // Held to `itertools::SERVED` by
+    // `itertools::tests::the_route_table_names_exactly_what_is_served`. Every
+    // other name — `chain`, `islice`, `permutations`, `count`, `groupby`,
+    // `accumulate`, `zip_longest`, `tee`, … — is blocked HERE, in the core's
+    // walk, and never reaches the variant.
+    ("itertools", &["combinations", "product"]),
+    // EMPTY on purpose, and present on purpose: `import difflib` is served
+    // and nothing on it is, so `difflib.SequenceMatcher` and every other name
+    // is a `module-attr` block in the core's walk. Held to `modules::get_attr`
+    // by `the_difflib_row_is_empty_and_the_variant_serves_nothing_on_it`.
+    ("difflib", &[]),
 ];
 
 /// Does some variant on the spectrum answer `module.name`, as far as
@@ -663,6 +685,17 @@ mod spectrum_tests {
         }
     }
 
+    #[cfg(feature = "cap-difflib")]
+    #[test]
+    fn the_difflib_row_is_empty_and_the_variant_serves_nothing_on_it() {
+        let row = MODULE_ATTRS.iter().find(|(m, _)| *m == "difflib").expect("no difflib row");
+        assert!(row.1.is_empty());
+        let m = crate::value::Value::Module("difflib");
+        for n in ["SequenceMatcher", "unified_diff", "ndiff", "get_close_matches", "Differ"] {
+            assert!(crate::modules::get_attr(&m, n).is_err(), "difflib.{n}");
+        }
+    }
+
     #[test]
     fn the_caps_this_binary_was_built_with_are_its_row() {
         let built: Vec<&str> = SELF_CAPS.split(',').filter(|s| !s.is_empty()).collect();
@@ -1085,14 +1118,24 @@ impl Requirements {
     /// than the one already recorded: same module, and `answers` returns false
     /// for `module-attr`, so the program goes to CPython in one step instead of
     /// two. Only over a `module` blocker naming the SAME module — a blocker on
-    /// some other import is a different program's problem and stays put.
+    /// some other import keeps the `--plan` row.
+    ///
+    /// It does NOT keep the route. `import re, itertools` blocks first on `re`,
+    /// which lypning-l answers, and `itertools.count` three statements later
+    /// was dropped — so the core sent the program to a sibling that refuses it
+    /// at RUNTIME: a spawn wasted, and past a committed barrier exit 1. No rung
+    /// serves the attribute, which is what the stop slot says, so it is
+    /// recorded there and [`finish_route`] routes the program to CPython.
     fn escalate(&mut self, module: &str, name: &str) {
         let same = match &self.blocker {
             Some((k, d)) => k == "module" && module_of(d) == module,
             None => true,
         };
+        let detail = format!("{module}.{name}");
         if same {
-            self.blocker = Some(("module-attr".to_string(), format!("{module}.{name}")));
+            self.blocker = Some(("module-attr".to_string(), detail));
+        } else {
+            self.stop_only("module-attr", detail);
         }
     }
 

@@ -88,6 +88,11 @@ pub enum Iter {
     /// the same exit code with nothing on stdout.
     #[cfg(feature = "cap-hashlib")]
     Hash(Box<crate::hashlib::Hasher>),
+    /// An `itertools.product` or `itertools.combinations`: its pools drained
+    /// at construction, its results produced one index step per `next`. An
+    /// `Iter` arm for the reason the two above give, and never a `Value`.
+    #[cfg(feature = "cap-itertools")]
+    Itertools(Box<crate::itertools::Combo>),
 }
 
 /// Where a text stream's next line ends, given what `open(newline=…)` asked for.
@@ -430,6 +435,8 @@ impl Interp {
             // same thing at the same exit code.
             #[cfg(feature = "cap-hashlib")]
             Iter::Hash(_) => return Err(crate::hashlib::not_iterable()),
+            #[cfg(feature = "cap-itertools")]
+            Iter::Itertools(c) => crate::itertools::next(c),
             Iter::Stdin => match mio::stdin_line()? {
                 Some(b) => Some(Value::Str(decode_text(
                     &b,
