@@ -30,7 +30,8 @@
 //! to this list. At runtime (kind `statistics`): empty data, which CPython
 //! answers with a `StatisticsError` this engine has no class for; a float or
 //! non-numeric element in `mean`; keywords and a wrong argument count, whose
-//! TypeError wording is CPython's.
+//! TypeError wording is CPython's; and a set-like element in a median, which
+//! CPython sorts by the subset partial order and the engine's sort does not.
 
 use crate::args::Args;
 use crate::ast::BinOp;
@@ -74,6 +75,15 @@ pub fn call(
     if name == "mean" {
         return mean(it, &items);
     }
+    // A set is ordered by SUBSET in CPython — a partial order the engine's sort
+    // does not implement (`sorted([{2}, {1, 2}])` is `[{2}, {1, 2}]` there and a
+    // TypeError here). The medians would expose that, so a set, a frozenset or
+    // a set-like dict view anywhere an element's comparison can reach refuses.
+    if items.iter().any(|x| set_like(x, 0)) {
+        return Err(refuse(&format!(
+            "statistics.{name}() over sets, which CPython orders by subset"
+        )));
+    }
     let mut keys = items.clone();
     crate::ops::sort_values(&mut items, &mut keys, false)?;
     let n = items.len();
@@ -88,6 +98,22 @@ pub fn call(
         "median_low" if n % 2 == 0 => items.swap_remove(n / 2 - 1),
         _ => items.swap_remove(n / 2),
     })
+}
+
+/// Whether comparing `v` can reach a set-like value: a set, a frozenset or a
+/// dict view, directly or through the tuples and lists that compare
+/// element-wise. Past a nesting depth of 32 (a list that contains itself) the
+/// answer is yes, which refuses rather than recurses.
+fn set_like(v: &Value, depth: u32) -> bool {
+    if depth > 32 {
+        return true;
+    }
+    match v {
+        Value::Set(_) | Value::DictView(..) => true,
+        Value::Tuple(t) => t.iter().any(|x| set_like(x, depth + 1)),
+        Value::List(l) => l.borrow().iter().any(|x| set_like(x, depth + 1)),
+        _ => false,
+    }
 }
 
 /// The exact integer mean: `total // n` when it divides, else the engine's

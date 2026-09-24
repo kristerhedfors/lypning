@@ -154,6 +154,33 @@ REFUSED = [
     "import statistics as st\nprint(st.quantiles([1, 2, 3, 4]))",
 ]
 
+#: A median over sets. CPython orders sets by SUBSET, a partial order the
+#: engine's sort does not implement, so the medians refuse any set-like element
+#: (set, frozenset, dict view, or one inside a tuple or list) rather than raise
+#: a TypeError CPython never raises. Each row is pinned to CPython 3.14.5's
+#: exact stdout and exit code, measured 2026-09-24.
+SET_MEDIANS = {
+    S + "print(statistics.median_low([{2},{1,2}]))": ("{2}\n", 0),
+    S + "print(statistics.median_low([{1},{2}]), statistics.median_high([{1},{2}]))":
+        ("{1} {2}\n", 0),
+    S + "print(statistics.median([{2},{1}]))": ("", 1),
+    S + "print(statistics.median_high([({2},),({1,2},)]))": ("({1, 2},)\n", 0),
+    S + "print(statistics.median_low([frozenset({2}),frozenset({1,2})]))":
+        ("frozenset({2})\n", 0),
+    S + "print(statistics.median_low([{1:0}.keys(), {1:0,2:0}.keys()]))":
+        ("dict_keys([1])\n", 0),
+    S + "print('x')\nprint(statistics.median([[{1}], [{2}]]))": ("x\n", 1),
+}
+REFUSED += list(SET_MEDIANS)
+
+
+@pytest.mark.skipif(sys.version_info[:3] != (3, 14, 5), reason="pinned to CPython 3.14.5")
+@pytest.mark.parametrize("program", list(SET_MEDIANS), ids=range(len(SET_MEDIANS)))
+def test_the_set_median_rows_are_pinned_to_cpython(program: str) -> None:
+    ref = _run([sys.executable], program)
+    assert (ref.stdout, ref.returncode) == SET_MEDIANS[program]
+
+
 #: The CORE routes each of these to CPython: its first blocker is `module:
 #: import statistics`, which lypning-l answers, but the attribute is one no rung
 #: serves, and `route::MODULE_ATTRS` says so in the core's own walk.
