@@ -36,11 +36,35 @@ What was wrong, one line each:
   * ``float('-nan')`` lost its sign bit.
   * ``def f(*a: int, **k: str)`` was a SyntaxError at exit 1.
 
-Not fixed, and recorded here so that nobody fixes it by accident: on 3.14,
-annotations are evaluated lazily (PEP 649). This engine still evaluates them
-when the ``def`` runs, so an annotation with a side effect or a NameError
-disagrees with a 3.14 reference. Whether to follow the reference's minor
-version is a separate decision.
+Round 2 of the same track, from the verifier's probes:
+
+  * ``comp_assign`` set the WHOLE ``global`` table aside for a comprehension
+    target, so ``global d; [0 for d['k'] in [1]]`` read ``d`` as an unbound
+    local. Only the names the target binds leave the table now.
+  * ``def f(**k, x)`` and ``def f(*a, *b)`` parsed; ``def f(*a=1)`` had the
+    wrong SyntaxError. All three are CPython's SyntaxError now.
+  * A genexp evaluated its first iterable at the first ``next()``. It is
+    evaluated, and ``iter()`` taken, where the genexp is created.
+  * An engine-raised OSError had ``args == (message,)``; it is ``(errno,
+    strerror)`` and ``repr`` follows. ``UnicodeDecodeError('x')`` is CPython's
+    arity TypeError.
+  * ``float(b'1')`` was a TypeError.
+  * On a 3.14 reference annotations are lazy (PEP 649) and are no longer
+    evaluated when the ``def`` runs.
+  * A genexp reading a name its creating function binds later raises CPython's
+    free-variable NameError, not UnboundLocalError.
+
+  * ``global x`` in a function nested in another read the ENCLOSING
+    function's ``x``. A declared name now skips every scope below the frame's
+    own comprehensions.
+
+And refused: a ``def``/``lambda`` made inside a nested function that declares
+``global``; ordering sets in
+``sorted``/``min``/``max``/a sequence; ``math.copysign`` of a NaN (its sign
+depends on how CPython's compiler ordered the operands that made it); a
+Unicode*Error's constructor arguments; ``OSError.filename2``; ``t[*a]``; a
+NameError two scopes deep, whose message depends on enclosing assignments.
+``sys.platform`` is the host's (``darwin``/``linux``), not always ``linux``.
 """
 
 from __future__ import annotations
@@ -143,11 +167,6 @@ ANSWERED = [
     ("y=3\ndef h():\n    global y\n    g=(y for _ in [1])\n    y=4\n    return list(g)\nprint(h(), y)",
      "[4] 4\n", 0),
     # --- float('-nan') -------------------------------------------------------
-    ("import math\nprint(math.copysign(1.0, float('-nan')))\n"
-     "print(math.copysign(1.0, float('nan')))\nprint(float('-nan'))",
-     "-1.0\n1.0\nnan\n", 0),
-    ("import math\nprint(math.copysign(1.0, float('-NaN')), math.copysign(1.0, float('  -nan  ')))",
-     "-1.0 -1.0\n", 0),
     ("x=float('-nan')\nprint(x, repr(x), x!=x, f'{x}', '%f' % x)", "nan nan True nan nan\n", 0),
     # --- star-parameter annotations ------------------------------------------
     ("def f(*a: int, **k: str):\n    return a, k\nprint(f(1,2,x='y'))",
@@ -155,6 +174,66 @@ ANSWERED = [
     ("def f(a: int, *b: str, **c: float) -> None:\n    print(a, b, c)\nf(1, 'x', k=2.0)",
      "1 ('x',) {'k': 2.0}\n", 0),
     ("print((lambda *a, **k: (a, k))(1, z=2))", "((1,), {'z': 2})\n", 0),
+    # --- round 2: a comprehension target that READS a global -----------------
+    ("d = {}\ndef f():\n    global d\n    d = {}\n    [0 for d['k'] in [1]]\n    return d\nprint(f())",
+     "{'k': 1}\n", 0),
+    ("d = {}\ndef f():\n    global d\n    d = {}\n    print(list(0 for d['k'] in [1,2]))\n"
+     "    return d\nprint(f())",
+     "[0, 0]\n{'k': 2}\n", 0),
+    ("def f():\n    global i\n    i = 0\n    d = [0,0]\n    [0 for d[i] in [5]]\n    return d\nprint(f())",
+     "[5, 0]\n", 0),
+    ("d = {}\ndef f():\n    global d\n    d = {}\n    print([d.get('k') for d['k'] in [1,2]])\n"
+     "    return d\nprint(f())",
+     "[1, 2]\n{'k': 2}\n", 0),
+    ("d = {}\ndef f():\n    global d\n    d = {}\n    [0 for a, d['k'] in [(1, 2)]]\n    return d\nprint(f())",
+     "{'k': 2}\n", 0),
+    # --- round 2: `global` in a nested function skips the enclosing local ---
+    ("x = 0\ndef f():\n    x = 1\n    def g():\n        global x\n        return x\n    return g()\nprint(f())",
+     "0\n", 0),
+    ("x = 0\ndef f():\n    x = 1\n    def g():\n        global x\n"
+     "        return [x for _ in [1]], list(x for _ in [1]), [x for x in [7]], x\n    return g()\nprint(f(), x)",
+     "([0], [0], [7], 0) 0\n", 0),
+    ("x = 5\ndef f():\n    x = 1\n    def g():\n        global x\n        x += 1\n        return x\n"
+     "    return g(), x\nprint(f(), x)",
+     "(6, 1) 6\n", 0),
+    # --- round 2: the genexp's first iterable is evaluated at creation --------
+    ("def f():\n    print('f called')\n    return [1, 2]\ng = (x for x in f())\nprint('created')\n"
+     "print(list(g))",
+     "f called\ncreated\n[1, 2]\n", 0),
+    ("try:\n    g = (x for x in 5)\n    print('created')\nexcept TypeError as e:\n    print('TE', e)",
+     "TE 'int' object is not iterable\n", 0),
+    ("def outer():\n    items=[1,2]\n    g=(i for i in items)\n    items=[3]\n    return list(g)\nprint(outer())",
+     "[1, 2]\n", 0),
+    ("def f():\n    g = (x for _ in [1])\n    return list(g)\n    x = 1\ntry:\n    print(f())\n"
+     "except NameError as e:\n    print(type(e).__name__, e)",
+     "NameError cannot access free variable 'x' where it is not associated with a value in enclosing scope\n", 0),
+    # --- round 2: OS errors, Unicode errors ----------------------------------
+    ("try:\n    open('/nonexistent/zz')\nexcept OSError as e:\n    print(e.args, repr(e), [e])",
+     "(2, 'No such file or directory') FileNotFoundError(2, 'No such file or directory') "
+     "[FileNotFoundError(2, 'No such file or directory')]\n", 0),
+    ("try:\n    UnicodeDecodeError('x')\nexcept TypeError as e:\n    print(e)",
+     "function takes exactly 5 arguments (1 given)\n", 0),
+    ("try:\n    raise UnicodeDecodeError\nexcept TypeError as e:\n    print(e)",
+     "function takes exactly 5 arguments (0 given)\n", 0),
+    # --- round 2: float(bytes) ----------------------------------------------
+    ("print(float(b'1'), float(b' 2.5 '), float(b'-inf'), float(b'1_0'))", "1.0 2.5 -inf 10.0\n", 0),
+    ("try:\n    float(b'\\xff')\nexcept ValueError as e:\n    print(e)",
+     "could not convert string to float: b'\\xff'\n", 0),
+    # --- round 2: annotations are lazy on 3.14 -------------------------------
+    ("def f(a: print('ann'), *b: print('b'), **k: Undefined) -> print('r'):\n    pass\nprint('ok')",
+     "ok\n", 0),
+]
+
+#: Programs CPython rejects at compile time; the LAST stderr line is pinned
+#: (CPython 3.14.5, 2026-09-24), and both exit 1.
+SYNTAX = [
+    ("def f(**k, x):\n    pass", "SyntaxError: arguments cannot follow var-keyword argument"),
+    ("def f(**k: int, x):\n    pass", "SyntaxError: arguments cannot follow var-keyword argument"),
+    ("def f(*a, **k, *b):\n    pass", "SyntaxError: arguments cannot follow var-keyword argument"),
+    ("f = lambda **k, x: 0", "SyntaxError: arguments cannot follow var-keyword argument"),
+    ("def f(*a, *b):\n    pass", "SyntaxError: * argument may appear only once"),
+    ("def f(*a: int = 1):\n    pass", "SyntaxError: var-positional argument cannot have default value"),
+    ("def f(**a = 1):\n    pass", "SyntaxError: var-keyword argument cannot have default value"),
 ]
 
 #: Valid Python that exited 1 (or answered wrongly) and must now refuse.
@@ -184,6 +263,33 @@ REFUSED = [
     "def f(x):\n    raise StopIteration('m')\nprint(list(map(f, [1])))",
     # `from __future__` inside a def: CPython's own SyntaxError, never exit 1 here
     "def f():\n    from __future__ import annotations\n    return 1\nprint(f())",
+    # --- round 2 ------------------------------------------------------------
+    # a closure made in a nested function that declares `global`: its free
+    # variable resolves through the declaration, which the chain does not carry
+    "x = 0\ndef f():\n    x = 1\n    def g():\n        global x\n        return (lambda: x)()\n    return g()\nprint(f())",
+    # sets are partially ordered: CPython's answer is timsort's comparison order
+    "print(sorted([{1,2},{3},{1}]))",
+    "print(min([{1,2},{3},{1}]))",
+    "print(max([{1},{1,2}]))",
+    "print([{1}] < [{2}])",
+    # the sign of a NaN depends on how CPython made it
+    "import math\nx = float('-nan')\nprint(math.copysign(1, x ** 1))",
+    "import math\nn = float('nan')\nprint(math.copysign(1, -n + n))",
+    "import math\nprint(math.copysign(1.0, float('-nan')))",
+    # a Unicode*Error keeps only its message, not its five arguments
+    "try:\n    b'\\xff'.decode()\nexcept UnicodeDecodeError as e:\n    print(e.args)",
+    "try:\n    b'\\xff'.decode()\nexcept UnicodeDecodeError as e:\n    print(repr(e))",
+    "try:\n    b'\\xff'.decode()\nexcept UnicodeDecodeError as e:\n    print(e.start, e.reason)",
+    "try:\n    'é'.encode('ascii')\nexcept UnicodeEncodeError as e:\n    print(e.args)",
+    "try:\n    open('/nonexistent/zz')\nexcept OSError as e:\n    print(e.filename2)",
+    # a message spelled like an engine OS error would be read back as one
+    "e = FileNotFoundError('[Errno 2] x')\nprint(e.errno)",
+    # a starred subscript
+    "t = {(1, 2): 'x'}\na = [1, 2]\nprint(t[*a])",
+    "t = {(0, 1, 2): 'x'}\na = [1, 2]\nprint(t[0, *a])",
+    # a free variable of a nested function, read before the enclosing binds it
+    "def f():\n    g = lambda: x\n    return g()\n    x = 1\ntry:\n    print(f())\n"
+    "except NameError as e:\n    print(e)",
 ]
 
 #: Rows the CORE's static walk must send to CPython. The walk can see them, so
@@ -193,6 +299,7 @@ ROUTED_TO_CPYTHON = [
     "def f(a):\n    return 0, *a\nprint(f([1]))",
     "a=[1,2]\nprint([0,*a])",
     "la=[1,2]\nprint('%s %s' % (0,*la))",
+    "t = {(1, 2): 'x'}\na = [1, 2]\nprint(t[*a])",
 ]
 
 
@@ -274,3 +381,26 @@ def test_the_walk_sends_a_starred_display_to_cpython(program: str) -> None:
         "routed to %r\n  program: %r\n  blocker: %s: %s"
         % (route.engine, program, route.kind, route.detail)
     )
+
+
+@pytest.mark.parametrize("engine,binary", BUILT)
+@pytest.mark.parametrize("program,last", SYNTAX, ids=range(len(SYNTAX)))
+def test_the_syntax_errors_are_cpythons(engine: str, binary: Path, program: str, last: str) -> None:
+    got = _run([str(binary)], program)
+    assert (got.stdout, got.returncode, got.stderr.strip().splitlines()[-1:]) == ("", 1, [last]), (
+        "%s: %r exit %d %r\n  program: %r" % (engine, got.stdout, got.returncode, got.stderr, program))
+
+
+@pytest.mark.parametrize("program,last", SYNTAX, ids=range(len(SYNTAX)))
+def test_the_pinned_syntax_errors_are_this_cpythons(program: str, last: str) -> None:
+    ref = _run([sys.executable], program)
+    assert (ref.returncode, ref.stderr.strip().splitlines()[-1:]) == (1, [last])
+
+
+@pytest.mark.parametrize("engine,binary", BUILT)
+def test_sys_platform_is_the_hosts(engine: str, binary: Path) -> None:
+    """`sys.platform` was `linux` everywhere; on macOS CPython says `darwin`."""
+    if sys.platform not in ("darwin", "linux"):
+        pytest.skip("sys.platform refuses on %s" % sys.platform)
+    got = _run([str(binary)], "import sys\nprint(sys.platform)")
+    assert (got.stdout, got.returncode) == (sys.platform + "\n", 0), got.stderr

@@ -906,6 +906,23 @@ impl Interp {
             }
         }
         if let Value::Exc(kind, msg) = base {
+            // A UnicodeDecodeError's `args` is its five constructor arguments,
+            // and `.start`/`.end`/`.reason`/`.object`/`.encoding` read them;
+            // this value keeps only the message, so every one refuses.
+            if is_unicode_error(kind) && !name.starts_with("__") {
+                return Err(unsupported(
+                    "exception",
+                    &format!("{kind}.{name}, whose constructor arguments this value does not keep"),
+                ));
+            }
+            if name == "args" {
+                if let Some((n, text)) = errno_args(kind, msg)? {
+                    return Ok(Value::Tuple(Rc::new(vec![ival(n), Value::Str(text.into())])));
+                }
+            }
+            if name == "filename2" {
+                return Err(unsupported("exception", "OSError.filename2"));
+            }
             match name {
                 // `SystemExit.code` is the exit status, typed — the message is
                 // its `str()`, and the constructor kept the two reversible.
@@ -1727,6 +1744,13 @@ fn order_as(sym: &str, a: &Value, b: &Value) -> R<Ordering> {
         // list containing one.
         return Ok(x.partial_cmp(&y).unwrap_or(Ordering::Equal));
     }
+    // Two SETS order by subset, a partial order: `sorted`, `min` and `max`
+    // over them answer whatever timsort's comparison sequence happens to
+    // leave, and a sequence comparison asks `<` of one element pair. Neither
+    // is an `Ordering`; both were TypeError at exit 1 where CPython answers.
+    if let (Value::Set(_), Value::Set(_)) = (a, b) {
+        return Err(unsupported("set-order", "sets ordered by sorted()/min()/max() or inside a sequence"));
+    }
     Ok(match (a, b) {
         (Value::Str(x), Value::Str(y)) => x.as_bytes().cmp(y.as_bytes()),
         (Value::Bytes(x), Value::Bytes(y)) => x.cmp(y),
@@ -2471,4 +2495,31 @@ fn check_alloc(unit: usize, n: usize, limit: usize, what: &str) -> R<usize> {
         ));
     }
     Ok(n)
+}
+
+/// An `OSError` the ENGINE raised carries `(errno, strerror)` as its `args`,
+/// and its `repr` is `FileNotFoundError(2, 'No such file or directory')`; the
+/// message is `[Errno 2] No such file or directory: 'path'`. They answered
+/// `("[Errno 2] …: 'path'",)`. The constructor refuses a message of that shape
+/// (`builtins.rs`), so one here is always the engine's. `None` for any other
+/// exception; a refusal for the plain `OSError` fallback, whose text is not
+/// CPython's `strerror`.
+pub fn errno_args<'a>(kind: &str, msg: &'a str) -> R<Option<(i64, &'a str)>> {
+    let Some(rest) = msg.strip_prefix("[Errno ") else { return Ok(None) };
+    let known = matches!(
+        kind,
+        "FileNotFoundError" | "PermissionError" | "FileExistsError" | "NotADirectoryError"
+    );
+    let parsed = rest.split_once("] ").and_then(|(n, tail)| {
+        Some((n.parse::<i64>().ok()?, tail.split_once(": '").map_or(tail, |(t, _)| t)))
+    });
+    match parsed {
+        Some(p) if known => Ok(Some(p)),
+        _ => Err(unsupported("exception", &format!("{kind}.args of an OS error"))),
+    }
+}
+
+/// The three exceptions whose `args` are the codec's constructor arguments.
+pub fn is_unicode_error(kind: &str) -> bool {
+    matches!(kind, "UnicodeDecodeError" | "UnicodeEncodeError" | "UnicodeTranslateError")
 }

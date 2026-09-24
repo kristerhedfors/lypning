@@ -492,6 +492,17 @@ impl Parser {
             if self.is_op(terminator) {
                 break;
             }
+            // `**k` is last, and `*` comes once: CPython's two SyntaxErrors,
+            // word for word. Both were accepted at exit 0.
+            if p.dstar.is_some() {
+                return Err(LypningError::syntax(
+                    self.line(),
+                    "arguments cannot follow var-keyword argument",
+                ));
+            }
+            if p.star.is_some() && self.is_op("*") {
+                return Err(LypningError::syntax(self.line(), "* argument may appear only once"));
+            }
             if self.eat_op("/") {
                 // Positional-only marker. The names before it may not be given
                 // by keyword, which is `posonly`; before that field existed the
@@ -512,12 +523,12 @@ impl Parser {
                 p.star = Some(p.names.len());
                 p.names.push(self.ident()?);
                 p.defaults.push(None);
-                self.star_annotation(lambda, &mut p)?;
+                self.star_annotation(lambda, &mut p, "var-positional")?;
             } else if self.eat_op("**") {
                 p.dstar = Some(p.names.len());
                 p.names.push(self.ident()?);
                 p.defaults.push(None);
-                self.star_annotation(lambda, &mut p)?;
+                self.star_annotation(lambda, &mut p, "var-keyword")?;
             } else {
                 // A NAME AFTER `*args` IS KEYWORD-ONLY, exactly as one after a
                 // bare `*` is, and the bare form is refused four lines up. This
@@ -564,12 +575,18 @@ impl Parser {
     /// is recorded with the others in source order. It was `expected ')',
     /// found ':'`, a SyntaxError at exit 1 on valid Python. `*a: *Ts` (a
     /// starred annotation) stays refused.
-    fn star_annotation(&mut self, lambda: bool, p: &mut Params) -> R<()> {
+    fn star_annotation(&mut self, lambda: bool, p: &mut Params, what: &str) -> R<()> {
         if !lambda && self.eat_op(":") {
             if self.is_op("*") {
                 return Err(unsupported("unpack", "starred annotation on *args"));
             }
             p.anns.push(self.expr()?);
+        }
+        if self.is_op("=") {
+            return Err(LypningError::syntax(
+                self.line(),
+                &format!("{what} argument cannot have default value"),
+            ));
         }
         Ok(())
     }
@@ -1183,7 +1200,12 @@ impl Parser {
     }
 
     fn subscript_tail(&mut self, base: Expr) -> R<Expr> {
-        // `a[:]`, `a[i]`, `a[i:j]`, `a[i:j:k]`
+        // `a[:]`, `a[i]`, `a[i:j]`, `a[i:j:k]`. `t[*a]` (3.11) is a tuple
+        // subscript this parser does not build; it was `invalid syntax` at
+        // exit 1 on valid Python.
+        if self.is_op("*") {
+            return Err(unsupported("unpack", "* in a subscript"));
+        }
         let lo = if self.is_op(":") {
             None
         } else {
@@ -1230,6 +1252,9 @@ impl Parser {
             while self.eat_op(",") {
                 if self.is_op("]") {
                     break;
+                }
+                if self.is_op("*") {
+                    return Err(unsupported("unpack", "* in a subscript"));
                 }
                 items.push(self.expr()?);
             }
@@ -1580,7 +1605,7 @@ fn parse_fstring(raw: &str, raw_prefix: bool) -> R<Vec<FPart>> {
                     i: 0,
                     depth: 0,
                     chain_ops: 0,
-                };
+                            };
                 let e = p.expr_list()?;
                 if !matches!(p.peek(), Tok::Newline | Tok::Eof) {
                     return Err(LypningError::syntax(0, "invalid f-string expression"));

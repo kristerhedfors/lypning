@@ -196,7 +196,6 @@ pub struct GenState {
     /// the recursion guard already lives there.
     pub scope: Option<Scope>,
     pub stack: Vec<Iter>,
-    pub started: bool,
     pub done: bool,
     /// Set while the generator is being advanced, so a self-referential
     /// generator is reported rather than panicking on the RefCell.
@@ -211,14 +210,14 @@ impl GenState {
         elt: Rc<Expr>,
         env: Vec<Scope>,
         frame: crate::eval::GenFrame,
+        first: Iter,
     ) -> Self {
         GenState {
             clauses,
             elt,
             env,
             scope: Some(crate::eval::new_scope()),
-            stack: Vec::new(),
-            started: false,
+            stack: vec![first],
             done: false,
             running: false,
             frame,
@@ -242,7 +241,6 @@ impl GenState {
             env: Vec::new(),
             scope: None,
             stack: Vec::new(),
-            started: true,
             done: true,
             running: true,
             frame: (real.frame.0.clone(), None),
@@ -594,12 +592,6 @@ impl Interp {
     }
 
     fn gen_step(&mut self, st: &mut GenState) -> R<Option<Value>> {
-        if !st.started {
-            st.started = true;
-            let v = self.eval(&st.clauses[0].iter)?;
-            let it = self.make_iter(v)?;
-            st.stack.push(it);
-        }
         while !st.stack.is_empty() {
             let level = st.stack.len() - 1;
             let mut cur = st.stack.pop().unwrap();

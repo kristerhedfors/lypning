@@ -60,9 +60,12 @@ pub struct Interp {
     /// `global` is a statement almost no function contains: the entry is then a
     /// null pointer pushed and popped, where an inline table was a whole empty
     /// hash set constructed, moved and dropped on every single call.
-    global_decls: Vec<Option<Box<FastSet<Rc<str>>>>>,
+    global_decls: Vec<Option<Box<Globals>>>,
     /// Names assigned somewhere in the current function body.
     assigned: Vec<Rc<Names>>,
+    /// The `assigned` depth of each generator-expression frame being
+    /// advanced, innermost last: is the current frame a genexp's?
+    gen_marks: Vec<usize>,
     pub modules: Map<Rc<str>, Value>,
     /// The `random` module's generator, `None` until `random.seed(int)`
     /// runs — an unseeded stream is a refusal (`random.rs`). Boxed: the
@@ -118,7 +121,18 @@ const CHAIN_POOL_MAX: usize = 64;
 
 /// What [`Interp::gen_frame`] captures: the creating frame's assigned names and
 /// its `global` table.
-pub(crate) type GenFrame = (Rc<Names>, Option<Box<FastSet<Rc<str>>>>);
+pub(crate) type GenFrame = (Rc<Names>, Option<Box<Globals>>);
+
+/// One frame's `global` declarations, and where that frame's own scope sits
+/// in the chain. A declared name is looked up only in the scopes from `base`
+/// on — the comprehensions of this frame — and then in the module: in a
+/// function nested in another, the ENCLOSING function's local of the same
+/// name used to answer (`1` where CPython answers the module's `0`).
+#[derive(Clone)]
+pub(crate) struct Globals {
+    base: usize,
+    names: FastSet<Rc<str>>,
+}
 
 /// The same bound for [`Interp::scope_pool`], and for the same reason: a deep
 /// recursion must not leave the pool holding its whole depth for the rest of
@@ -132,6 +146,7 @@ impl Interp {
             chain: Vec::new(),
             global_decls: Vec::new(),
             assigned: Vec::new(),
+            gen_marks: Vec::new(),
             modules: crate::hash::map(),
             rng: None,
             depth: 0,
@@ -151,7 +166,11 @@ impl Interp {
     // ---- names ------------------------------------------------------------
 
     pub fn lookup(&self, name: &str) -> R<Value> {
-        for s in self.chain.iter().rev() {
+        let from = match self.global_decls.last() {
+            Some(Some(g)) if g.names.contains(name) => g.base.min(self.chain.len()),
+            _ => 0,
+        };
+        for s in self.chain[from..].iter().rev() {
             if let Some(v) = s.borrow().get(name) {
                 return Ok(v.clone());
             }
@@ -159,6 +178,14 @@ impl Interp {
         if let Some(f) = self.assigned.last() {
             // Assigned somewhere in this function but not bound yet.
             if f.contains(name) && !self.declared_global(name) {
+                // Read from a generator expression, the name is a FREE
+                // variable of the genexp's own scope, and CPython says so.
+                if self.gen_marks.last() == Some(&self.assigned.len()) {
+                    return Err(LypningError::exc(
+                        "NameError",
+                        format!("cannot access free variable '{name}' where it is not associated with a value in enclosing scope"),
+                    ));
+                }
                 return Err(LypningError::exc(
                     "UnboundLocalError",
                     format!("cannot access local variable '{name}' where it is not associated with a value"),
@@ -171,6 +198,15 @@ impl Interp {
         if let Some(v) = crate::builtins::builtin(name) {
             return Ok(v);
         }
+        // Two scopes deep, the name may be one an ENCLOSING function assigns
+        // later, and CPython's NameError then reads "cannot access free
+        // variable"; which enclosing function assigns what is not kept here.
+        if self.chain.len() > 1 {
+            return Err(unsupported(
+                "name-error",
+                &format!("NameError for '{name}' in a nested scope, whose message depends on enclosing assignments"),
+            ));
+        }
         Err(name_err(name))
     }
 
@@ -182,7 +218,22 @@ impl Interp {
     fn declared_global(&self, name: &str) -> bool {
         self.global_decls
             .last()
-            .is_some_and(|g| g.as_ref().is_some_and(|g| g.contains(name)))
+            .is_some_and(|g| g.as_ref().is_some_and(|g| g.names.contains(name)))
+    }
+
+    /// A `def` or `lambda` made inside a NESTED function that declares
+    /// `global`: its free variables resolve through that declaration, which
+    /// the closure's scope chain does not carry — it would find the enclosing
+    /// function's local instead. Refused; a top-level function has no
+    /// enclosing locals to find, and is untouched.
+    fn nested_global_guard(&self) -> R<()> {
+        match self.global_decls.last() {
+            Some(Some(g)) if g.base >= 2 => Err(unsupported(
+                "global",
+                "a function made inside a nested function that declares `global`",
+            )),
+            _ => Ok(()),
+        }
     }
 
     /// Bind a comprehension's or generator expression's loop TARGET.
@@ -190,19 +241,35 @@ impl Interp {
     /// A comprehension is its own scope, so its target is always local to it —
     /// even when the enclosing function declared the same name `global`. [`bind`]
     /// consults the frame's `global` table first, so `global v; [v for v in
-    /// [1]]` wrote `1` into the module's `v` where CPython leaves it alone. The
-    /// table is set aside for the one assignment and put back, so a name the
-    /// target does not bind still resolves exactly as it did.
+    /// [1]]` wrote `1` into the module's `v` where CPython leaves it alone.
+    ///
+    /// Only the names the target BINDS leave the table, for the one
+    /// assignment. Setting the whole table aside was wrong the other way: in
+    /// `global d; d = {}; [0 for d['k'] in [1]]` the target READS `d`, which is
+    /// still the module's, and found it unbound as a local (UnboundLocalError
+    /// where CPython answers `{'k': 1}`).
     ///
     /// [`bind`]: Interp::bind
     pub(crate) fn comp_assign(&mut self, t: &Target, v: Value) -> R<()> {
-        let decls = match self.global_decls.last_mut() {
-            Some(g) if g.is_some() => g.take(),
-            _ => return self.assign(t, v),
+        let hit = match self.global_decls.last() {
+            Some(Some(g)) => binds_any(t, &g.names),
+            _ => false,
         };
+        if !hit {
+            return self.assign(t, v);
+        }
+        let mut saved = None;
+        if let Some(slot) = self.global_decls.last_mut() {
+            saved = slot.take();
+            let mut narrowed = saved.clone();
+            if let Some(g) = narrowed.as_mut() {
+                unbind(t, &mut g.names);
+            }
+            *slot = narrowed;
+        }
         let r = self.assign(t, v);
         if let Some(g) = self.global_decls.last_mut() {
-            *g = decls;
+            *g = saved;
         }
         r
     }
@@ -225,9 +292,11 @@ impl Interp {
     pub(crate) fn push_gen_frame(&mut self, f: &mut GenFrame) {
         self.assigned.push(f.0.clone());
         self.global_decls.push(f.1.take());
+        self.gen_marks.push(self.assigned.len());
     }
 
     pub(crate) fn pop_gen_frame(&mut self, f: &mut GenFrame) {
+        self.gen_marks.pop();
         self.assigned.pop();
         f.1 = self.global_decls.pop().flatten();
     }
@@ -419,6 +488,7 @@ impl Interp {
                 };
                 return Err(match e {
                     Value::Exc(k, m) => LypningError::exc(k, m.to_string()),
+                    Value::Builtin("UnicodeDecodeError") => crate::builtins::unicode_decode_arity(0),
                     Value::Builtin(name) if crate::builtins::is_exception_name(name) => {
                         LypningError::exc(crate::builtins::exception_static(name), "")
                     }
@@ -431,11 +501,17 @@ impl Interp {
                 });
             }
             Stmt::Def { name, params, body } => {
-                // Annotations run when the `def` does, and their VALUES are
-                // discarded -- what survives is whatever they raised or printed
-                // on the way. Before the defaults, as CPython orders it.
-                for a in &params.anns {
-                    self.eval(a)?;
+                self.nested_global_guard()?;
+                // Before 3.14 annotations run when the `def` does, and their
+                // VALUES are discarded -- what survives is whatever they raised
+                // or printed on the way. Before the defaults, as CPython orders
+                // it. From 3.14 (PEP 649) they are evaluated lazily, only when
+                // `__annotations__` is read, which nothing here can do: a side
+                // effect or a NameError in one is simply never seen.
+                if crate::err::REF_PY_MINOR < 14 {
+                    for a in &params.anns {
+                        self.eval(a)?;
+                    }
                 }
                 let mut defaults = Vec::with_capacity(params.defaults.len());
                 for d in &params.defaults {
@@ -456,10 +532,11 @@ impl Interp {
                 self.bind(name, f);
             }
             Stmt::Global(names) => {
+                let base = self.chain.len();
                 if let Some(g) = self.global_decls.last_mut() {
-                    let g = g.get_or_insert_with(|| Box::new(crate::hash::set()));
+                    let g = g.get_or_insert_with(|| Box::new(Globals { base, names: crate::hash::set() }));
                     for n in names {
-                        g.insert(n.clone());
+                        g.names.insert(n.clone());
                     }
                 }
             }
@@ -1063,6 +1140,7 @@ impl Interp {
                 Value::Str(out.into())
             }
             Expr::Lambda { params, body } => {
+                self.nested_global_guard()?;
                 let mut defaults = Vec::with_capacity(params.defaults.len());
                 for d in &params.defaults {
                     defaults.push(match d {
@@ -1086,7 +1164,7 @@ impl Interp {
                 val,
                 clauses,
             } => match kind {
-                CompKind::Gen => self.make_gen(clauses, elt),
+                CompKind::Gen => self.make_gen(clauses, elt)?,
                 _ => self.eval_comp(*kind, elt, val.as_deref(), clauses)?,
             },
             Expr::Call {
@@ -1521,17 +1599,24 @@ impl Interp {
     /// same 8% survived three other explanations (a `thread_local`, an
     /// extracted helper, and code layout, which is worth only ~1% here).
     #[inline(never)]
-    fn make_gen(&mut self, clauses: &[crate::ast::CompClause], elt: &Expr) -> Value {
+    fn make_gen(&mut self, clauses: &[crate::ast::CompClause], elt: &Expr) -> R<Value> {
+        // The FIRST iterable is evaluated, and `iter()` called on it, here in
+        // the creating frame, as CPython does: `(x for x in 5)` raises at
+        // creation, and `g = (i for i in items); items = [3]` still iterates
+        // the old list. It used to wait for the first `next()`.
+        let v = self.eval(&clauses[0].iter)?;
+        let first = self.make_iter(v)?;
         // Deep-cloned ONCE, when the generator is created, where it used to be
         // deep-cloned again for every element the generator yielded. Making
         // `Expr::Comp` hold the `Rc` itself would remove this one too and is a
         // separate change.
-        Value::Gen(Rc::new(RefCell::new(crate::iter::GenState::new(
+        Ok(Value::Gen(Rc::new(RefCell::new(crate::iter::GenState::new(
             Rc::new(clauses.to_vec()),
             Rc::new(elt.clone()),
             self.chain.clone(),
             self.gen_frame(),
-        ))))
+            first,
+        )))))
     }
 
     /// An empty scope-chain vector, from the pool if one is waiting.
@@ -1845,5 +1930,27 @@ pub fn dismantle_interp(it: Interp) {
     }
     for (_, v) in modules {
         crate::value::dismantle(v);
+    }
+}
+
+/// Does this comprehension target bind a name the frame declared `global`?
+fn binds_any(t: &Target, g: &FastSet<Rc<str>>) -> bool {
+    match t {
+        Target::Name(n) => g.contains(n),
+        Target::Tuple(v) => v.iter().any(|x| binds_any(x, g)),
+        Target::Star(x) => binds_any(x, g),
+        _ => false,
+    }
+}
+
+/// Take every name `t` binds out of a `global` table (see `Interp::comp_assign`).
+fn unbind(t: &Target, g: &mut FastSet<Rc<str>>) {
+    match t {
+        Target::Name(n) => {
+            g.remove(n);
+        }
+        Target::Tuple(v) => v.iter().for_each(|x| unbind(x, g)),
+        Target::Star(x) => unbind(x, g),
+        _ => {}
     }
 }
