@@ -1,0 +1,37 @@
+name: round-02 pilot SFT readout (aggregates only)
+
+# Free and read-only: prints a pilot job's SFT selection and base-dev headline
+# metrics from the private artifact repo. No GPU, no provider, no case text.
+on:
+  workflow_dispatch:
+    inputs:
+      job:
+        description: HF job id of the pilot (24 hex)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  readout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      HF_HUB_DISABLE_PROGRESS_BARS: "1"
+      HF_HUB_VERBOSITY: error
+      LYPNING_CAPTURE: "0"
+      LYPNING_HARVEST: "0"
+      PILOT_JOB: ${{ inputs.job }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q "huggingface-hub==1.31.0"
+      - name: Read the selection and print only aggregates
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python .github/scripts/pilot_readout.py
