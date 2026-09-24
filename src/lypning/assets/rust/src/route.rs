@@ -67,6 +67,7 @@ pub const SPECTRUM: &[Variant] = &[
             "cap-re",
             "cap-statistics",
             "cap-textwrap",
+            "cap-time",
         ],
     },
 ];
@@ -167,6 +168,12 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// runtime kind. Its runtime refusals (`textwrap:`) are a computed argument of
 /// the wrong type or a non-ASCII character the hyphen regex would have to
 /// classify, and there is no rung above `lypning-l` to carry either to.
+/// `cap-time` serves the `time` MODULE — the clocks, a bounded `sleep` and the
+/// one fused UTC stamp, and only the names [`MODULE_ATTRS`] lists — and
+/// answers no runtime kind. Every `time:` refusal is a SHAPE lypning-l's own
+/// walk decides before the program starts (a function used as a value, a
+/// `sleep` the walk cannot bound, `strftime` outside the fused shape), and
+/// there is no rung above lypning-l to carry the kind to.
 pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-base64", &["base64"], &[]),
     ("cap-bigint", &[], &["bigint", "int-div-precision"]),
@@ -180,6 +187,7 @@ pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-re", &["re"], &[]),
     ("cap-statistics", &["statistics"], &[]),
     ("cap-textwrap", &["textwrap"], &[]),
+    ("cap-time", &["time"], &[]),
 ];
 
 /// The module attributes a capability answers, for the modules whose surface is
@@ -255,6 +263,21 @@ pub const MODULE_ATTRS: &[(&str, &[&str])] = &[
     // `TextWrapper`, `__file__` and every private name are blocked HERE, in
     // the core's walk.
     ("textwrap", TEXTWRAP_SERVED),
+    // Held to `time::SERVED` by
+    // `time::tests::the_route_table_names_exactly_what_is_served`. Every
+    // local-time name — `localtime`, `ctime`, `asctime`, `mktime`, `strptime`,
+    // `timezone`, `tzname`, `altzone`, `daylight` — and the rest of the module
+    // (`process_time`, `thread_time`, `get_clock_info`, `struct_time`, the
+    // `clock_*` functions and constants) is blocked HERE, in the core's walk.
+    // A served name used in a shape lypning-l does not serve is lypning-l's
+    // own walk to refuse, before its first statement.
+    (
+        "time",
+        &[
+            "gmtime", "monotonic", "monotonic_ns", "perf_counter", "perf_counter_ns", "sleep",
+            "strftime", "time", "time_ns",
+        ],
+    ),
 ];
 
 /// The `textwrap` functions lypning-l serves, and therefore the only ones ANY
@@ -814,6 +837,9 @@ pub const ONLY_CPYTHON_KINDS: &[&str] = &[
     // and EVERY variant carries the same `math.rs` — so falling to a larger
     // sibling would spend a spawn to be told no in the same words.
     "math",
+    // An uncaught NameError on a module name: CPython's import hint rests on a
+    // suggestion search no variant runs (`err::forgot_import`).
+    "name-hint",
     "nan-identity",
     "nan-order",
     "percent-format",
@@ -873,7 +899,7 @@ pub fn route(src: &str) -> Route {
             // Only for a source that mentions the module at all, so a program
             // with no glob in it pays one substring search.
             req.glob_wrappers = trusted_wrappers(src);
-            walk_block(&body, &mut req);
+            walk_program(&body, &mut req);
             imports = req.imports.iter().cloned().collect();
             let reads_stdin = reads_stdin || req.reads_stdin;
             // A refusal the walk spelled outright is the more specific one and
@@ -1014,6 +1040,25 @@ struct Requirements {
     /// the name leaves it here, which can only over-refuse.
     #[cfg(feature = "cap-textwrap")]
     textwrap_names: Vec<(String, String)>,
+    /// Every name `import time [as t]` bound to the MODULE, and every name
+    /// `from time import f [as g]` bound to a served FUNCTION. Deliberately
+    /// NOT scoped or cleared by a rebinding, unlike the pattern table: every
+    /// question the walk asks through these is "must this refuse?", so a name
+    /// held too long costs a CPython spawn and a name given up too early could
+    /// let a `struct_time` or a long sleep through. Only on the variant that
+    /// serves the module; the core blocks the import instead.
+    #[cfg(feature = "cap-time")]
+    time_mods: Vec<String>,
+    #[cfg(feature = "cap-time")]
+    time_names: Vec<(String, &'static str)>,
+    /// The `time.gmtime()` call nodes a served `strftime(<literal>, …)` above
+    /// them blessed, by identity, as `glob_blessed` does for glob.
+    #[cfg(feature = "cap-time")]
+    time_blessed: Vec<*const Expr>,
+    /// How many loops, `def`s, `lambda`s and comprehensions the walk is inside:
+    /// a `time.sleep` below zero of them runs at most once per run.
+    #[cfg(feature = "cap-time")]
+    time_nest: u32,
     /// `from glob import glob [as g]` — the bound name of a glob FUNCTION, so
     /// that a bare `g(...)` is seen as the call it is. Without it the order
     /// blocker below would miss the one spelling that hides the module name.
@@ -1284,6 +1329,62 @@ fn walk_block(body: &[Stmt], req: &mut Requirements) {
     }
 }
 
+/// A WHOLE program's walk: [`walk_block`] after [`time_prescan`], on the
+/// variant that serves `time`, and exactly `walk_block` everywhere else.
+fn walk_program(body: &[Stmt], req: &mut Requirements) {
+    #[cfg(feature = "cap-time")]
+    time_prescan(body, req);
+    walk_block(body, req);
+}
+
+/// Every name any `import time [as t]` or `from time import f [as g]` binds,
+/// ANYWHERE in the program, collected before the walk judges a single
+/// `time.X`. The walk reads the source in text order and the program does not
+/// run in it: a `def` or `lambda` written above `import time`, a `global time`
+/// imported inside a function, and a loop whose later iteration runs an import
+/// its earlier one skipped all call `time.X` with the module already bound —
+/// and a walk that learned the name only at the import let each of them past
+/// every rule below (a bare 9-tuple printed for a `struct_time`, a sleep in a
+/// loop). Held program-wide and never given up, which only ever refuses more.
+#[cfg(feature = "cap-time")]
+fn time_prescan(body: &[Stmt], req: &mut Requirements) {
+    for s in body {
+        match s {
+            Stmt::Import { names } => {
+                for (path, bound) in names {
+                    if path.as_ref() == "time" && !req.time_mods.iter().any(|m| m == bound.as_ref()) {
+                        req.time_mods.push(bound.to_string());
+                    }
+                }
+            }
+            Stmt::FromImport { module, names } if module.as_ref() == "time" => {
+                for (n, bind) in names {
+                    if let Some(f) = crate::time::SERVED.iter().copied().find(|x| *x == n.as_ref()) {
+                        req.time_names.push((bind.to_string(), f));
+                    }
+                }
+            }
+            Stmt::If { arms, els } => {
+                arms.iter().for_each(|(_, b)| time_prescan(b, req));
+                time_prescan(els, req);
+            }
+            Stmt::For { body, els, .. } | Stmt::While { body, els, .. } => {
+                time_prescan(body, req);
+                time_prescan(els, req);
+            }
+            Stmt::Def { body, .. } => time_prescan(body, req),
+            Stmt::Try { body, handlers, els, finally } => {
+                time_prescan(body, req);
+                handlers.iter().for_each(|h| time_prescan(&h.body, req));
+                time_prescan(els, req);
+                time_prescan(finally, req);
+            }
+            Stmt::With { body, .. } => time_prescan(body, req),
+            _ => {}
+        }
+    }
+}
+
 fn walk_stmt(s: &Stmt, req: &mut Requirements) {
     match s {
         Stmt::Import { names } => {
@@ -1307,6 +1408,10 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                 // The `as` name is a binding like any other, so it gives up
                 // whatever literal that spelling held above it.
                 req.bind_pattern(bound, None);
+                #[cfg(feature = "cap-time")]
+                if path.as_ref() == "time" && !req.time_mods.iter().any(|m| m == bound.as_ref()) {
+                    req.time_mods.push(bound.to_string());
+                }
                 if !crate::modules::MODULES.contains(&path.as_ref()) {
                     req.block("module", format!("import {path}"));
                 }
@@ -1372,6 +1477,26 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                             req.textwrap_names.push((bind.to_string(), n.to_string()));
                         } else {
                             req.stop_only("module-attr", format!("textwrap.{n}"));
+                        }
+                    }
+                }
+                // `from time import perf_counter [as pc]` binds a function whose
+                // calls this walk still decides. `gmtime` and `strftime` are
+                // served in ONE shape, spelled through the module, and a bare
+                // name bound to either is refused: a later rebinding the walk
+                // reads in the wrong order could hand `gmtime()`'s tuple to
+                // something that prints it. An unserved name is a `module-attr`
+                // stop for the run, `stop_only` for the same reason as `hashlib`.
+                #[cfg(feature = "cap-time")]
+                "time" => {
+                    for (n, bind) in names {
+                        match crate::time::SERVED.iter().copied().find(|x| *x == n.as_ref()) {
+                            Some(f @ ("gmtime" | "strftime")) => req.stop(
+                                "time",
+                                format!("from time import {f}: served only as time.strftime(<literal>, time.gmtime())"),
+                            ),
+                            Some(f) => req.time_names.push((bind.to_string(), f)),
+                            None => req.stop_only("module-attr", format!("time.{n}")),
                         }
                     }
                 }
@@ -1476,13 +1601,31 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
             // barrier, exit 1.
             walk_expr(iter, req);
             walk_target(target, req);
+            // The body runs once per item, so a `time.sleep` in it is not one
+            // the walk can bound (`time.rs`, the sleep policy).
+            #[cfg(feature = "cap-time")]
+            {
+                req.time_nest += 1;
+            }
             walk_block(body, req);
             walk_block(els, req);
+            #[cfg(feature = "cap-time")]
+            {
+                req.time_nest -= 1;
+            }
         }
         Stmt::While { cond, body, els } => {
+            #[cfg(feature = "cap-time")]
+            {
+                req.time_nest += 1;
+            }
             walk_expr(cond, req);
             walk_block(body, req);
             walk_block(els, req);
+            #[cfg(feature = "cap-time")]
+            {
+                req.time_nest -= 1;
+            }
         }
         Stmt::Return(Some(e)) | Stmt::Raise { exc: Some(e) } => walk_expr(e, req),
         Stmt::Assert { test, msg } => {
@@ -1503,7 +1646,16 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
             req.bind_pattern(name, None);
             let saved = req.enter_scope();
             req.shadow_params(params);
+            // A body runs once per CALL, and the walk has no call graph.
+            #[cfg(feature = "cap-time")]
+            {
+                req.time_nest += 1;
+            }
             walk_block(body, req);
+            #[cfg(feature = "cap-time")]
+            {
+                req.time_nest -= 1;
+            }
             req.leave_scope(saved);
         }
         Stmt::Try {
@@ -2318,7 +2470,7 @@ pub fn base64_static_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
         return Ok(());
     }
     let mut req = Requirements::default();
-    walk_block(body, &mut req);
+    walk_program(body, &mut req);
     match req.base64_stop {
         Some((k, d)) => Err(crate::err::unsupported(&k, &d)),
         None => Ok(()),
@@ -2766,6 +2918,128 @@ fn textwrap_call_block(
     req.stop("textwrap", detail);
 }
 
+/// Does `b` name the `time` MODULE — `time.…`, or `t.…` after `import time as
+/// t`? Every name `import time` ever bound, in any scope, and never given up:
+/// see [`Requirements::time_mods`] for why the conservative direction is the
+/// only one this may err in.
+#[cfg(feature = "cap-time")]
+fn time_module(b: &Expr, req: &Requirements) -> bool {
+    matches!(b, Expr::Name(n) if req.time_mods.iter().any(|m| m == n.as_ref()))
+}
+
+/// Which served `time` FUNCTION this callee names, if any: `time.f` through a
+/// module name, or a bare name `from time import f [as g]` bound.
+#[cfg(feature = "cap-time")]
+fn time_func(func: &Expr, req: &Requirements) -> Option<&'static str> {
+    match func {
+        Expr::Attr(b, n) if time_module(b, req) => {
+            crate::time::SERVED.iter().copied().find(|x| *x == n.as_ref())
+        }
+        Expr::Name(n) => req.time_names.iter().find(|(b, _)| b == n.as_ref()).map(|(_, f)| *f),
+        _ => None,
+    }
+}
+
+/// Is this `time.sleep` argument one the walk can bound: a literal that either
+/// raises before sleeping (a negative number, `None`, a `str`, `bytes`) or
+/// sleeps for at most one second (`time.rs`, the sleep policy)?
+#[cfg(feature = "cap-time")]
+fn sleep_literal_ok(a: &Expr) -> bool {
+    match a {
+        Expr::Int(i) => i.small().is_some_and(|n| n <= 1),
+        Expr::Float(f) => *f <= 1.0,
+        Expr::Un(UnOp::Neg, x) => matches!(**x, Expr::Int(_) | Expr::Float(_)),
+        Expr::True | Expr::False | Expr::None | Expr::Str(_) | Expr::Bytes(_) => true,
+        _ => false,
+    }
+}
+
+/// Everything about a served `time` call that a walk can decide, decided before
+/// the program starts. `call` is the call node itself, which is how a
+/// `gmtime()` knows whether the `strftime` above it blessed it.
+///
+///   * no keyword, `*` or `**` argument on any of them — CPython takes none
+///     (a `TypeError` whose words this engine does not write), and a splice is
+///     arguments the walk cannot count;
+///   * the six clocks take no argument;
+///   * `sleep` takes one, a literal [`sleep_literal_ok`] bounds, at a call
+///     site outside every loop, `def`, `lambda` and comprehension;
+///   * `strftime` takes exactly `(<str literal>, <time module>.gmtime())`, the
+///     literal ASCII with directives from `%Y %m %d %H %M %S %%` only, and
+///     blesses that `gmtime()` node;
+///   * `gmtime` is served only where a `strftime` blessed it.
+#[cfg(feature = "cap-time")]
+fn time_call_block(
+    req: &mut Requirements,
+    call: &Expr,
+    f: &'static str,
+    args: &[Expr],
+    kwargs: &[(std::rc::Rc<str>, Expr)],
+    star: &[usize],
+    dstar: &[Expr],
+) {
+    let detail = if !kwargs.is_empty() || !star.is_empty() || !dstar.is_empty() {
+        Some(format!("time.{f}() with a keyword, * or ** argument"))
+    } else {
+        match f {
+            "sleep" if args.len() != 1 => Some("time.sleep() without exactly one argument".to_string()),
+            "sleep" if req.time_nest > 0 => Some(
+                "time.sleep() inside a loop, a def, a lambda or a comprehension: a later \
+                 refusal re-runs the program on CPython, and the walk cannot bound how \
+                 long it would have slept"
+                    .to_string(),
+            ),
+            "sleep" if !sleep_literal_ok(&args[0]) => Some(
+                "time.sleep() over anything but a literal of at most one second".to_string(),
+            ),
+            "sleep" => None,
+            "strftime" => {
+                let fmt_ok = match args.first() {
+                    Some(Expr::Str(s)) => crate::time::format_block(s).map(str::to_string),
+                    _ => Some("time.strftime() over a format that is not a str literal".to_string()),
+                };
+                let t = args.get(1).filter(|_| args.len() == 2);
+                let gm = match t {
+                    Some(
+                        g @ Expr::Call { func, args: a, kwargs: k, star: s, dstar: d },
+                    ) if a.is_empty()
+                        && k.is_empty()
+                        && s.is_empty()
+                        && d.is_empty()
+                        && matches!(&**func, Expr::Attr(b, n) if n.as_ref() == "gmtime" && time_module(b, req)) =>
+                    {
+                        Some(g as *const Expr)
+                    }
+                    _ => None,
+                };
+                match (fmt_ok, gm) {
+                    (Some(why), _) => Some(why),
+                    (None, None) => Some(
+                        "time.strftime() other than time.strftime(<literal>, time.gmtime()): \
+                         local time, and a struct_time, are CPython's"
+                            .to_string(),
+                    ),
+                    (None, Some(p)) => {
+                        req.time_blessed.push(p);
+                        None
+                    }
+                }
+            }
+            "gmtime" if req.time_blessed.contains(&(call as *const Expr)) => None,
+            "gmtime" => Some(
+                "time.gmtime() outside time.strftime(<literal>, time.gmtime()): there is no \
+                 struct_time here"
+                    .to_string(),
+            ),
+            _ if !args.is_empty() => Some(format!("time.{f}() with an argument")),
+            _ => None,
+        }
+    };
+    if let Some(d) = detail {
+        req.stop("time", d);
+    }
+}
+
 /// The call's arguments with every `*`/`**` spliced in, as
 /// `(positionals, keywords)` — or `None` when one of them holds a value only
 /// the run can see.
@@ -2920,9 +3194,13 @@ fn glob_bless(
 /// nothing.
 pub fn static_stop_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
     let mentioned = src.contains("glob") || src.contains("hashlib");
-    // Behind the feature, so the frozen core's guard is the bytes it was.
+    // Behind the features, so the frozen core's guard is the bytes it was.
     #[cfg(feature = "cap-textwrap")]
     let mentioned = mentioned || src.contains("textwrap");
+    // `cap-time` widens the guard to `time` on the variant that has it, for
+    // the reason `hashlib` is in it.
+    #[cfg(feature = "cap-time")]
+    let mentioned = mentioned || src.contains("time");
     if !mentioned {
         return Ok(());
     }
@@ -2930,7 +3208,7 @@ pub fn static_stop_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
         glob_wrappers: trusted_wrappers(src),
         ..Requirements::default()
     };
-    walk_block(body, &mut req);
+    walk_program(body, &mut req);
     match req.spectrum_stop {
         Some((k, d)) => Err(crate::err::unsupported(&k, &d)),
         None => Ok(()),
@@ -3088,6 +3366,18 @@ fn capability_module(e: &Expr, req: &Requirements) -> Option<String> {
 fn walk_expr(e: &Expr, req: &mut Requirements) {
     match e {
         Expr::Name(n) => {
+            // The `time` module, or a served `time` function, anywhere but the
+            // callee of a call (which the Call arm never walks down to): a
+            // value this engine would have to print as `<module 'time'
+            // (built-in)>` or `<built-in function time>`, or hand to code that
+            // calls it where the walk cannot see.
+            #[cfg(feature = "cap-time")]
+            if req.time_mods.iter().any(|m| m == n.as_ref())
+                || req.time_names.iter().any(|(b, _)| b == n.as_ref())
+            {
+                req.stop("time", format!("{n} used as a value: only a call to a served time function is served"));
+                return;
+            }
             // A name bound by `from glob import glob` that is NOT the callee of
             // a blessed call: the walk skips the callee of one it served, so
             // reaching here means the function is being passed, stored or
@@ -3112,6 +3402,18 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             }
         }
         Expr::Attr(b, n) => {
+            // `time.<n>` reached as a VALUE — the Call arm does not walk the
+            // callee of a served call — or an unserved name in any position.
+            // Before `b` is walked, which would refuse the module name itself.
+            #[cfg(feature = "cap-time")]
+            if time_module(b, req) {
+                if crate::time::SERVED.contains(&n.as_ref()) {
+                    req.stop("time", format!("time.{n} used as a value: only a call is served"));
+                } else {
+                    req.stop("module-attr", format!("time.{n}"));
+                }
+                return;
+            }
             walk_expr(b, req);
             if matches!(n.as_ref(), "stdin" | "__stdin__") {
                 req.reads_stdin = true;
@@ -3272,6 +3574,19 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             base64_call_block(req, func, args, kwargs, star, dstar);
             #[cfg(feature = "cap-textwrap")]
             textwrap_call_block(req, func, args, kwargs, star, dstar);
+            // A served `time` call: every shape it can refuse is decided here,
+            // and its callee is not walked, because the callee is the one
+            // position a served `time` name may take.
+            #[cfg(feature = "cap-time")]
+            let time_call = match time_func(func, req) {
+                Some(f) => {
+                    time_call_block(req, e, f, args, kwargs, star, dstar);
+                    true
+                }
+                None => false,
+            };
+            #[cfg(not(feature = "cap-time"))]
+            let time_call = false;
             // Is THIS a glob call, and did its parent bless it? A blessed call
             // is served and its callee is not walked; an unblessed one is the
             // blocker, whatever it was going to be handed to. `escape` and
@@ -3299,7 +3614,7 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             if calls_stdin(func, args) {
                 req.reads_stdin = true;
             }
-            if !served_glob {
+            if !served_glob && !time_call {
                 walk_expr(func, req);
             }
             for a in args {
@@ -3378,6 +3693,10 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             // therefore still read against the enclosing table — which is where
             // it is evaluated.
             let saved = req.enter_scope();
+            #[cfg(feature = "cap-time")]
+            {
+                req.time_nest += 1;
+            }
             for c in clauses {
                 walk_expr(&c.iter, req);
                 walk_target(&c.target, req);
@@ -3386,6 +3705,10 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             walk_expr(elt, req);
             if let Some(v) = val {
                 walk_expr(v, req);
+            }
+            #[cfg(feature = "cap-time")]
+            {
+                req.time_nest -= 1;
             }
             req.leave_scope(saved);
         }
@@ -3403,7 +3726,15 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             }
             let saved = req.enter_scope();
             req.shadow_params(params);
+            #[cfg(feature = "cap-time")]
+            {
+                req.time_nest += 1;
+            }
             walk_expr(body, req);
+            #[cfg(feature = "cap-time")]
+            {
+                req.time_nest -= 1;
+            }
             req.leave_scope(saved);
         }
         // `return 0, *a` / `b = 0, *a`: a starred element of a bare tuple in a

@@ -102,7 +102,15 @@ Everything else CPython puts in `builtins` — `frozenset`, `bytearray`,
 listed above — is `unsupported: builtin: <name>` at exit 90. A name **neither**
 has is the program's own bug and keeps CPython's `NameError` at exit 1; the
 split is `err.rs:CPYTHON_BUILTINS`, and without it a typo'd name and a missing
-capability would be indistinguishable to the dispatcher.
+capability would be indistinguishable to the dispatcher. One exception: an
+UNCAUGHT `NameError` on the name of a module some variant serves (`os`, `time`,
+…) is `unsupported: name-hint`, because CPython 3.14 ends that traceback with
+an import hint that rests on a suggestion search the engine does not run
+(`err.rs:forgot_import`). In a program that has run `import time`, every
+uncaught `NameError`, `AttributeError` and unexpected-keyword `TypeError` is
+`name-hint` too, and the run refuses rather than commit past 8 MiB of output
+or `os.rmdir` a directory it did not make, so that refusal stays possible
+(`io.rs:hold`). No other `Did you mean` hint is written.
 
 The methods on the types that do exist are a larger surface with the same rule:
 a method CPython has and the engine lacks refuses as `<type>-method` or
@@ -127,14 +135,14 @@ transcendentals are refused rather than approximated, which is why `math` needs
 no capability feature — a larger engine would answer every `math` program
 exactly as the smaller one does (`math.rs`).
 
-Any other import — `functools`, `time`, `datetime`, `textwrap`,
+Any other import — `functools`, `datetime`,
 `string`, `struct`, `argparse`, `subprocess`, a third-party package, a module of
 the user's own — is `unsupported: module: import <name>` on both engines, and
 `lypning-l` adds the modules in §5.
 
 ### 4.3 Modules served in part
 
-Eight modules on `lypning-l` are served as a named list of attributes rather than
+Nine modules on `lypning-l` are served as a named list of attributes rather than
 whole, so the walk in the *smaller* engine can decide statically whether the
 larger one would answer. Everything not listed is `unsupported: module-attr:
 <module>.<name>` — including under `from <module> import <name>`:
@@ -149,6 +157,7 @@ larger one would answer. Everything not listed is `unsupported: module-attr:
 | `itertools` | `combinations` `product` | `itertools.rs:SERVED` — `chain`, `islice`, `permutations` and the rest are CPython's |
 | `difflib` | nothing: the import alone | `route.rs:MODULE_ATTRS` — an EMPTY row, so every `difflib.<name>` is CPython's |
 | `textwrap` | `dedent` `fill` `indent` `shorten` `wrap` | `route.rs:TEXTWRAP_SERVED` — `TextWrapper`, `max_lines`, `indent`'s `predicate` and the other `TextWrapper` keywords are CPython's |
+| `time` | `gmtime` `monotonic` `monotonic_ns` `perf_counter` `perf_counter_ns` `sleep` `strftime` `time` `time_ns` | `time.rs:SERVED` — everything local-time is CPython's |
 
 `collections` serves `Counter` and `defaultdict`; `pathlib` serves `Path`. Both
 are whole-module claims in `route.rs:CAPS`, so an attribute neither serves —
@@ -157,7 +166,7 @@ rather than in the smaller engine's walk, which costs one spawn and no answer.
 
 ## 5. What `lypning-l` adds
 
-`lypning-l` is the same crate built with twelve `cap-*` features
+`lypning-l` is the same crate built with thirteen `cap-*` features
 (`engines.VARIANT_CAPS`, `route.rs:CAPS`, and `lypning route --spectrum` from
 either binary):
 
@@ -175,6 +184,7 @@ either binary):
 | `cap-re` | the `re` module and its matcher | `re.rs` |
 | `cap-statistics` | the `statistics` module — four functions of it | `statistics.rs` |
 | `cap-textwrap` | the `textwrap` module — five functions of it | `textwrap.rs` |
+| `cap-time` | the `time` module — the clocks, a bounded `sleep`, one UTC stamp | `time.rs` |
 
 `cap-re` serves a **slice** of the pattern language, and the rest of it is
 refusals rather than a best effort: non-ASCII group names, backreferences, lookaround,
@@ -198,7 +208,7 @@ CPython (`route.rs:ONLY_CPYTHON_KINDS`, `engines.ONLY_CPYTHON_REFUSALS`):
 
 `del` · `dict-view` · `dunder-missing` · `encoding` · `exception-chaining` ·
 `glob-order` · `identity` · `iterator-type-name` · `json` · `math` ·
-`nan-identity` · `nan-order` · `percent-format` · `random` · `repr-unicode` ·
+`name-hint` · `nan-identity` · `nan-order` · `percent-format` · `random` · `repr-unicode` ·
 `set-method` · `set-order`
 
 Three of them show what the list is for: `identity` fires on `is` between two

@@ -73,11 +73,15 @@ SPECTRUM = (LYPNING, LYPNING_L)
 #: ``cap-pathlib`` (``pathlib.Path``), ``cap-re`` (the ``re`` matcher),
 #: ``cap-statistics`` (``mean`` / ``median`` / ``median_low`` / ``median_high``;
 #: every other name refuses as ``module-attr`` from the WALK, out of
-#: ``route::MODULE_ATTRS``) and
+#: ``route::MODULE_ATTRS``),
 #: ``cap-textwrap`` (``dedent`` / ``indent`` / ``wrap`` / ``fill`` /
 #: ``shorten``; ``TextWrapper`` and every unserved keyword refuse from the
-#: WALK) are on the larger
-#: variant ONLY. The core is
+#: WALK) and
+#: ``cap-time`` (``time.time`` / ``monotonic`` / ``perf_counter`` and their
+#: ``_ns`` forms, a ``sleep`` the WALK bounds to one literal second outside any
+#: loop or function, and the one ``strftime(<literal>, gmtime())`` UTC stamp;
+#: everything local-time refuses as ``module-attr`` from the WALK) are on the
+#: larger variant ONLY. The core is
 #: frozen: it gains no capability feature, and a capability that appeared in both
 #: columns would buy the chain nothing — the whole point of the column is that
 #: the sets differ.
@@ -86,7 +90,7 @@ VARIANT_CAPS: dict = {
     LYPNING_L: (
         "cap-base64", "cap-bigint", "cap-collections", "cap-csv", "cap-difflib",
         "cap-glob", "cap-hashlib", "cap-itertools", "cap-pathlib", "cap-re",
-        "cap-statistics", "cap-textwrap",
+        "cap-statistics", "cap-textwrap", "cap-time",
     ),
 }
 
@@ -917,6 +921,7 @@ ONLY_CPYTHON_REFUSALS = frozenset({
     "del",                # the ValueError text of a failed list.remove/index
     "json",               # hooks, and control characters inside a string
     "math",               # a domain error, a TypeError, a wrong count — message text CPython owns
+    "name-hint",          # an uncaught NameError on a module name: CPython's import hint needs its suggestion search
     "random",             # mp's generator is not MT19937; a seeded stream there is a plausible wrong number
 })
 

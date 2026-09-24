@@ -324,6 +324,10 @@ fn finish(r: Result<(), LypningError>) -> Outcome {
             }
         }
         Err(e) => {
+            // `main.rs::finish` asks the same question; see `err::forgot_import`.
+            if let Some(r) = crate::err::forgot_import(&e).filter(|_| !io::is_committed()) {
+                return finish(Err(r));
+            }
             let committed = io::commit().is_ok();
             Outcome {
                 stderr: format!("Traceback (most recent call last):\n{e}\n").into_bytes(),

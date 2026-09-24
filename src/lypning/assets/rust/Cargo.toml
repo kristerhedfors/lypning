@@ -50,7 +50,7 @@ variant-m = []
 # The 4 MB point. Names the smaller variant so cargo's feature union makes it a
 # superset by construction — the monotonicity the router assumes. It grows one
 # `cap-*` per step; `variant-m` is FROZEN and gains none of them.
-variant-l = ["variant-m", "cap-base64", "cap-bigint", "cap-collections", "cap-csv", "cap-difflib", "cap-glob", "cap-hashlib", "cap-itertools", "cap-pathlib", "cap-re", "cap-statistics", "cap-textwrap"]
+variant-l = ["variant-m", "cap-base64", "cap-bigint", "cap-collections", "cap-csv", "cap-difflib", "cap-glob", "cap-hashlib", "cap-itertools", "cap-pathlib", "cap-re", "cap-statistics", "cap-textwrap", "cap-time"]
 
 # `collections.Counter` and `collections.defaultdict` — 83 of the corpus
 # programs measured on 2026-09-04 import `collections`, and between them they
@@ -149,6 +149,16 @@ cap-difflib = []
 # 2026-09-24) were blocked first on `import textwrap`. `src/textwrap.rs` is the
 # whole of it.
 cap-textwrap = []
+
+# `time.time` / `time_ns` / `monotonic` / `monotonic_ns` / `perf_counter` /
+# `perf_counter_ns` through `clock_gettime(2)` declared `extern "C"` (no crate),
+# `time.sleep` bounded by the walk to a literal of at most one second outside
+# any loop or function (a refusal re-runs the program on CPython, so a served
+# sleep may be paid twice), and the one fused `strftime(<literal>, gmtime())`
+# UTC stamp over `%Y %m %d %H %M %S %%`. Everything local-time is absent and
+# refused statically. 58 corpus programs (census 2026-09-24, 9,064 loaded) are
+# blocked first on `import time`. `src/time.rs` is the whole of it.
+cap-time = []
 
 capi = []
 

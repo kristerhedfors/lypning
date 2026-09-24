@@ -141,24 +141,30 @@ thread_local! {
     static DELETED: RefCell<crate::hash::Set<String>> =
         RefCell::new(crate::hash::Set::with_hasher(crate::hash::BuildFnv));
     /// See [`hold`].
-    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
     static HELD: RefCell<bool> = const { RefCell::new(false) };
 }
 
 /// This run may not commit early: past [`COMMIT_THRESHOLD`] it REFUSES
-/// instead of flushing.
+/// instead of flushing, and an `os.rmdir` of a directory it did not make
+/// refuses instead of committing.
 ///
-/// For a program that names `itertools` or `difflib`, set from the SOURCE
-/// before anything runs. Those programs were CPython's before these
-/// capabilities (main refused `import itertools` statically), and their served
-/// surface keeps runtime refusals — `repr` of a product, `set-order`, a
-/// dynamic `getattr`, an uncaught error whose last line carries a hint — that
-/// a flush would turn into an exit 1 with half the output on stdout, from the
-/// chain as well as from a pinned `-c`. Refusing at the threshold instead
-/// keeps every one of them routable: CPython answers the program from the
-/// start, and the cost is a spawn for a program that prints more than 8 MiB.
-/// The core's own programs keep the early flush; nothing there changed.
-#[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
+/// Set for a program lypning-l serves only because of `cap-itertools`,
+/// `cap-difflib` or `cap-time`: every one of them went to CPython before (the
+/// core refuses the import statically), and their served surface keeps runtime
+/// refusals — `repr` of a product, `set-order`, a dynamic `getattr`, and above
+/// all an uncaught error whose last line CPython ends with a `Did you mean`
+/// suggestion this engine does not compute (`err::forgot_import`). A refusal
+/// needs a run that can still be taken back; a flush would turn it into an exit
+/// 1 with half the output on stdout, from the chain as well as from a pinned
+/// `-c`. The cost is a spawn for a program that prints more than 8 MiB. The
+/// core's own programs keep the early flush; nothing there changed.
+///
+/// WHEN it is set differs by module. `itertools` / `difflib`: from the SOURCE
+/// before anything runs ([`hold_for`]), so an error raised before the import
+/// refuses too. `time`: when `import time` RUNS (`modules::import`), so a
+/// program that fails before its import answers exactly as the core does.
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
 pub fn hold() {
     HELD.with(|h| *h.borrow_mut() = true);
 }
@@ -173,22 +179,29 @@ pub fn hold_for(src: &str) {
     }
 }
 
-#[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
 pub fn held() -> bool {
     HELD.with(|h| *h.borrow())
 }
 
-#[cfg(not(any(feature = "cap-itertools", feature = "cap-difflib")))]
-fn held() -> bool {
+#[cfg(not(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time")))]
+pub fn held() -> bool {
     false
 }
 
-fn held_refusal() -> LypningError {
-    unsupported(
-        "output",
-        "more than 8 MiB written by a program that names itertools or difflib, \
-         whose run must stay routable",
-    )
+/// The refusal a held run raises where it would otherwise commit.
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+fn keep_reversible(what: &str) -> R<()> {
+    if held() {
+        return Err(unsupported(
+            "name-hint",
+            &format!(
+                "{what} in a program that imports itertools, difflib or time, \
+                 whose uncaught errors must stay refusable"
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// The bytes have left the process.
@@ -284,18 +297,16 @@ fn maybe_commit() -> R<()> {
             ));
         }
         if !is_committed() && staged_len() > COMMIT_THRESHOLD {
-            if held() {
-                return Err(held_refusal());
-            }
+            #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+            keep_reversible("more than 8 MiB of staged file writes")?;
             commit()?;
             mark_committed(WHY_FLUSHED);
         }
         return Ok(());
     }
     if !is_committed() && buffered_len() > COMMIT_THRESHOLD {
-        if held() {
-            return Err(held_refusal());
-        }
+        #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+        keep_reversible("more than 8 MiB of output")?;
         commit()?;
         mark_committed(WHY_FLUSHED);
     }
@@ -777,6 +788,10 @@ fn note_made(p: &std::path::Path) {
 /// gone. That one commits.
 pub fn remove_dir(path: &str) -> R<()> {
     let real = std::fs::canonicalize(path).ok();
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+    if held() && !real.as_ref().is_some_and(|r| MADE.with(|m| m.borrow().contains(r))) {
+        keep_reversible("os.rmdir of a directory this run did not make")?;
+    }
     std::fs::remove_dir(path).map_err(|e| os_error(path, &e))?;
     let ours = real
         .map(|r| {
@@ -1113,7 +1128,7 @@ pub fn reset() {
     MADE.with(|m| m.borrow_mut().clear());
     COMMITTED.with(|c| *c.borrow_mut() = false);
     COMMIT_WHY.with(|w| *w.borrow_mut() = "");
-    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
     HELD.with(|h| *h.borrow_mut() = false);
     STDIN.with(|s| *s.borrow_mut() = None);
     STDIN_POS.with(|p| *p.borrow_mut() = 0);

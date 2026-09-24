@@ -316,44 +316,30 @@ impl Interp {
         }
     }
 
+    /// Remove `name` from the scope `bind` would have written it to. Absent is
+    /// not an error here: the caller is an implicit `N = None; del N`.
+    fn unbind(&mut self, name: &Rc<str>) {
+        if self.declared_global(name.as_ref()) {
+            self.globals.borrow_mut().remove(name.as_ref());
+            return;
+        }
+        match self.chain.last() {
+            Some(s) => {
+                s.borrow_mut().remove(name.as_ref());
+            }
+            None => {
+                self.globals.borrow_mut().remove(name.as_ref());
+            }
+        }
+    }
+
     // ---- statements -------------------------------------------------------
 
     pub fn run(&mut self, body: &[Stmt]) -> R<()> {
         let flow = self.exec_block(body);
-        // An UNCAUGHT NameError ends CPython's traceback with a hint this
-        // engine does not compute — `Did you mean: 'product'?`, `Did you
-        // forget to import 'json'?` — out of every visible name and
-        // `sys.stdlib_module_names`. The core prints the bare line, as it did
-        // before; a program that names `itertools` or `difflib` never ran on
-        // the core at all (main sent it to CPython), so here it refuses
-        // instead of starting to answer with the wrong last line — decided
-        // from the SOURCE (`io::hold_for`), so an error raised before the
-        // import refuses too. `str(e)` carries no hint, so a CAUGHT
-        // NameError is unaffected.
-        //
-        // An uncaught AttributeError is the same case: `x.apend(2)` ends
-        // `Did you mean: 'append'?`, out of `dir(x)`. Both hints are 3.10's;
-        // 3.9 prints the bare line, which is what this engine prints
-        // (measured on 3.9.6, 3.11.15 and 3.14.5).
-        #[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
-        if let Err(e) = &flow {
-            if crate::io::held() && REF_PY_MINOR >= 10 {
-                if let ErrKind::Exc(x) = e.kind() {
-                    if x.kind == "NameError" {
-                        return Err(unsupported(
-                            "name-hint",
-                            "an uncaught NameError, whose last line CPython ends with a suggestion",
-                        ));
-                    }
-                    if x.kind == "AttributeError" {
-                        return Err(unsupported(
-                            "attr-hint",
-                            "an uncaught AttributeError, whose last line CPython ends with a suggestion",
-                        ));
-                    }
-                }
-            }
-        }
+        // An UNCAUGHT NameError or AttributeError in a program that names
+        // `itertools`, `difflib` or `time` refuses at the exit path
+        // (`err::forgot_import`, behind `io::hold`), not here.
         match flow? {
             Flow::Normal => Ok(()),
             _ => Err(LypningError::syntax(0, "'return'/'break' outside a block")),
@@ -431,7 +417,25 @@ impl Interp {
                     self.assign(target, cur)?;
                     return Ok(Flow::Normal);
                 }
-                let nv = self.binop(*op, &cur, &rhs)?;
+                // CPython names the IN-PLACE operator in this TypeError —
+                // `unsupported operand type(s) for +=: 'module' and 'int'` —
+                // and the binary operator printed `+` without the `=`.
+                let nv = match self.binop(*op, &cur, &rhs) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        const HEAD: &str = "unsupported operand type(s) for ";
+                        let m = err_msg(&e);
+                        match m.strip_prefix(HEAD).and_then(|t| t.split_once(": ")) {
+                            Some((_, rest)) if err_kind(&e) == "TypeError" => {
+                                return Err(type_err(format!(
+                                    "{HEAD}{}=: {rest}",
+                                    crate::ops::op_sym(*op)
+                                )))
+                            }
+                            _ => return Err(e),
+                        }
+                    }
+                };
                 self.assign(target, nv)?;
             }
             Stmt::If { arms, els } => {
@@ -667,6 +671,17 @@ impl Interp {
                                     self.handling.push((kind, msg));
                                     handled = Some(self.exec_block(&h.body));
                                     self.handling.pop();
+                                    // `except E as N` ends in CPython with an
+                                    // implicit `N = None; del N`, on every path
+                                    // out of the handler, so the name is UNBOUND
+                                    // afterwards — including a name the program
+                                    // had bound before the try. Leaving it bound
+                                    // printed `x` at exit 0 for
+                                    // `x = 1` / `except ValueError as x: pass` /
+                                    // `print(x)`, where CPython raises NameError.
+                                    if let Some(n) = &h.name {
+                                        self.unbind(n);
+                                    }
                                     break;
                                 }
                             }
@@ -1247,7 +1262,19 @@ impl Interp {
                     _ => f = self.eval(func)?,
                 }
                 let mut a = Args::with_capacity(args.len());
+                // `time.strftime(<fmt>, time.gmtime())`: the one place a
+                // `gmtime()` is served, and the runtime's own check of it —
+                // see `time::fused_gmtime`.
+                #[cfg(feature = "cap-time")]
+                let fused = crate::time::fused_gmtime(&f, args, star, kwargs, dstar);
                 for (i, x) in args.iter().enumerate() {
+                    #[cfg(feature = "cap-time")]
+                    let v = if fused && i == 1 {
+                        crate::time::eval_blessed(self, x)?
+                    } else {
+                        self.eval(x)?
+                    };
+                    #[cfg(not(feature = "cap-time"))]
                     let v = self.eval(x)?;
                     if star.contains(&i) {
                         a.extend(self.iter_collect(v)?);
