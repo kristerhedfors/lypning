@@ -39,6 +39,9 @@
 //! * any other `__future__` in the program: a misplaced import, `import
 //!   __future__`, an attribute. Counted, not walked — the pass removes one
 //!   `__future__` token per statement it consumed, and any left over refuses;
+//! * any non-ASCII identifier or f-string text once `__future__` appears:
+//!   CPython NFKC-folds identifiers (`ｄivision` is `division`) and this
+//!   lexer does not, so the name counts below would miss such a use;
 //! * the imported feature's own name, and `__annotations__`, anywhere else:
 //!   the import binds a `_Feature` object and the annotations it defers
 //!   become strings, and neither exists here. The corpus uses neither
@@ -82,6 +85,18 @@ pub fn pass(body: R<Vec<Stmt>>, toks: &[Token]) -> R<Vec<Stmt>> {
     let futures = mentions(toks, "__future__");
     if futures == 0 {
         return body;
+    }
+    // CPython NFKC-folds every identifier, so `ｄivision` IS `division` and
+    // `ｂarry_as_FLUFL` is the grammar change; this lexer does not fold, and
+    // counting only ASCII spellings would miss those uses. Under a head, any
+    // non-ASCII identifier (or f-string text, whose expressions are raw
+    // source) refuses rather than be compared unfolded.
+    if toks.iter().any(|t| match &t.tok {
+        Tok::Name(n) => !n.is_ascii(),
+        Tok::FStr { raw, .. } => !raw.is_ascii(),
+        _ => false,
+    }) {
+        return Err(refuse("a non-ASCII identifier, which CPython NFKC-normalizes"));
     }
     let mut body = body?;
     let start = match body.first() {
@@ -245,6 +260,9 @@ mod tests {
             "from __future__ import barry_as_FLUFL\nprint(1 <> 2)\n",
             "\"a\"\n\"b\"\nfrom __future__ import annotations\n",
             "import __future__\n",
+            "from __future__ import division\nprint(\u{ff44}ivision)\n",
+            "from __future__ import \u{ff42}arry_as_FLUFL\nprint(1 <> 2)\n",
+            "from __future__ import division\nprint(f'{\u{ff44}ivision}')\n",
         ] {
             assert_eq!(kind(src), "future", "{src:?}");
         }

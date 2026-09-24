@@ -328,6 +328,36 @@ def test_no_served_head_evaluates_an_annotation_on_314(program: str, stdout: str
     assert (ref.stdout, ref.returncode) == (stdout, 0)
 
 
+#: CPython NFKC-folds identifiers, so a fullwidth spelling of a feature name IS
+#: the feature name and uses the `_Feature` binding (verifier round 2:
+#: lypning-l answered `no` / NameError at exit 1). This lexer does not fold, so
+#: under a head any non-ASCII identifier refuses. CPython 3.14.5 bytes, pinned.
+NFKC = [
+    ("from __future__ import division\ntry:\n    \uff44ivision\nexcept NameError:\n"
+     "    print('no')\nelse:\n    print('yes')", "yes\n"),
+    ("from __future__ import division\nprint(\uff44ivision)",
+     "_Feature((2, 2, 0, 'alpha', 2), (3, 0, 0, 'alpha', 0), 131072)\n"),
+    ("from __future__ import annotations\nprint(\uff41nnotations)",
+     "_Feature((3, 7, 0, 'beta', 1), None, 16777216)\n"),
+    ("from __future__ import print_function\nprint(\uff50rint_function)",
+     "_Feature((2, 6, 0, 'alpha', 2), (3, 0, 0, 'alpha', 0), 1048576)\n"),
+    ("from __future__ import division\nprint(f'{\uff44ivision}')",
+     "_Feature((2, 2, 0, 'alpha', 2), (3, 0, 0, 'alpha', 0), 131072)\n"),
+]
+
+
+@needs_l
+@pytest.mark.parametrize("program,stdout", NFKC, ids=range(len(NFKC)))
+def test_a_non_ascii_identifier_under_a_head_refuses(program: str, stdout: str) -> None:
+    got = _run([str(BINARY)], program)
+    problem = _refusal_problem(got)
+    assert problem is None, "%s\n  program: %r\n  stdout: %r" % (problem, program, got.stdout)
+    assert engines.route(program, binary=BINARY).engine == engines.CPYTHON
+    if sys.version_info[:2] == (3, 14):
+        ref = _run([sys.executable], program)
+        assert (ref.stdout, ref.returncode) == (stdout, 0)
+
+
 @needs_core
 @pytest.mark.parametrize("program,stdout", PEP649[:1], ids=[0])
 def test_the_core_routes_a_pep649_row_to_lypning_l(program: str, stdout: str) -> None:
