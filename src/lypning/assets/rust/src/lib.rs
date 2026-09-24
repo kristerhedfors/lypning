@@ -53,6 +53,11 @@ pub mod embed;
 pub mod err;
 pub mod eval;
 pub mod fmt;
+/// `from __future__ import …` — the `cap-future` capability, a pass over the
+/// parse rather than a module. Absent from the smaller variant entirely, not
+/// merely unreachable in it.
+#[cfg(feature = "cap-future")]
+pub mod future;
 pub mod hash;
 /// `hashlib.md5` / `sha1` / `sha256` / `sha512` — the `cap-hashlib` capability.
 /// Absent from the smaller variant entirely, not merely unreachable in it.

@@ -63,17 +63,27 @@ pub fn parse(src: &str) -> R<Vec<Stmt>> {
         depth: 0,
         chain_ops: 0,
     };
-    let mut body = Vec::new();
-    while !p.at_eof() {
-        if p.eat_newline() {
-            continue;
-        }
-        body.extend(p.statement()?);
-    }
-    Ok(body)
+    let body = p.module();
+    // `from __future__ import …` is a compiler directive, decided over the
+    // whole parse before anything runs; `future.rs` is the whole of it. It is
+    // handed the RESULT, error and all, because `barry_as_FLUFL` changes the
+    // grammar and must refuse whether or not this parser read what follows.
+    #[cfg(feature = "cap-future")]
+    let body = crate::future::pass(body, &p.t);
+    body
 }
 
 impl Parser {
+    fn module(&mut self) -> R<Vec<Stmt>> {
+        let mut body = Vec::new();
+        while !self.at_eof() {
+            if self.eat_newline() {
+                continue;
+            }
+            body.extend(self.statement()?);
+        }
+        Ok(body)
+    }
     fn peek(&self) -> &Tok {
         &self.t[self.i.min(self.t.len() - 1)].tok
     }
@@ -512,10 +522,14 @@ impl Parser {
                 p.star = Some(p.names.len());
                 p.names.push(self.ident()?);
                 p.defaults.push(None);
+                #[cfg(feature = "cap-future")]
+                self.star_annotation(lambda)?;
             } else if self.eat_op("**") {
                 p.dstar = Some(p.names.len());
                 p.names.push(self.ident()?);
                 p.defaults.push(None);
+                #[cfg(feature = "cap-future")]
+                self.star_annotation(lambda)?;
             } else {
                 // A NAME AFTER `*args` IS KEYWORD-ONLY, exactly as one after a
                 // bare `*` is, and the bare form is refused four lines up. This
@@ -556,6 +570,19 @@ impl Parser {
             }
         }
         Ok(p)
+    }
+
+    /// `def f(*a: T)` / `def f(**k: T)` — valid Python this parser does not
+    /// read, and without this a `SyntaxError` at exit 1 on a program CPython
+    /// runs. Refused by name on the variant whose `__future__` pass is where
+    /// annotated code arrives from; the frozen core still reports `syntax`,
+    /// which routes it to CPython before it can reach either binary.
+    #[cfg(feature = "cap-future")]
+    fn star_annotation(&self, lambda: bool) -> R<()> {
+        if !lambda && self.is_op(":") {
+            return Err(unsupported("annotation", "an annotated *args or **kwargs parameter"));
+        }
+        Ok(())
     }
 
     fn simple(&mut self) -> R<Stmt> {

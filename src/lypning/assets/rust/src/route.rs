@@ -59,6 +59,7 @@ pub const SPECTRUM: &[Variant] = &[
             "cap-bigint",
             "cap-collections",
             "cap-csv",
+            "cap-future",
             "cap-glob",
             "cap-hashlib",
             "cap-pathlib",
@@ -145,11 +146,21 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// STATICALLY, before the program starts, and the kind is in
 /// [`ONLY_CPYTHON_KINDS`] because no reimplementation can reproduce
 /// `os.scandir` order, so no sibling could answer it either.
+///
+/// `cap-future` serves `__future__`, which is not a module at all but a
+/// compiler directive: `future.rs` is a pass over the parse that strips a
+/// served head of future imports, so lypning-l's walk never sees one. The row
+/// is the MODULE column, not a kind, because what the CORE stops on is
+/// `module: from __future__ import …` and [`answers`] asks `served_module` of
+/// `module_of` that detail, which is `__future__`. Its refusal kinds (`future`,
+/// `annotation`) are shapes CPython owns — a `SyntaxError`, a `_Feature` value,
+/// annotations as strings — so the kind column stays empty.
 pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-base64", &["base64"], &[]),
     ("cap-bigint", &[], &["bigint", "int-div-precision"]),
     ("cap-collections", &["collections"], &[]),
     ("cap-csv", &["csv"], &[]),
+    ("cap-future", &["__future__"], &[]),
     ("cap-glob", &["glob"], &[]),
     ("cap-hashlib", &["hashlib"], &[]),
     ("cap-pathlib", &["pathlib"], &[]),
@@ -194,7 +205,13 @@ pub const CAPS: &[(&str, &[&str], &[&str])] = &[
 /// it — with the KIND the runtime would have raised — several arms before
 /// [`capability_module`] is reached. A row here would be a second table saying
 /// the same thing, and the two would drift.
+///
+/// `__future__` is here so the CORE sends `from __future__ import braces`, a
+/// misspelled feature and `barry_as_FLUFL` to CPython rather than to a variant
+/// that would refuse them: the row IS [`FUTURE_SERVED`], held to `future.rs`
+/// by its own `the_route_table_names_exactly_what_is_served`.
 pub const MODULE_ATTRS: &[(&str, &[&str])] = &[
+    ("__future__", FUTURE_SERVED),
     ("base64", BASE64_SERVED),
     (
         "csv",
@@ -207,6 +224,24 @@ pub const MODULE_ATTRS: &[(&str, &[&str])] = &[
     // `sha3_*`, `sha224`, `sha384`, `pbkdf2_hmac`, `scrypt`, `file_digest` —
     // is blocked HERE, in the core's walk, and never reaches the variant.
     ("hashlib", &["md5", "sha1", "sha256", "sha512"]),
+];
+
+/// The `from __future__ import` names `cap-future` serves: every feature that
+/// is mandatory in Python 3, and so does nothing, plus `annotations`, whose
+/// effect the pass implements by never evaluating one. Not `barry_as_FLUFL`
+/// (a grammar), not `braces` (a `SyntaxError`), and nothing else, because
+/// CPython answers any other name with a `SyntaxError`. Sorted, as every
+/// [`MODULE_ATTRS`] row is.
+pub const FUTURE_SERVED: &[&str] = &[
+    "absolute_import",
+    "annotations",
+    "division",
+    "generator_stop",
+    "generators",
+    "nested_scopes",
+    "print_function",
+    "unicode_literals",
+    "with_statement",
 ];
 
 /// Does some variant on the spectrum answer `module.name`, as far as

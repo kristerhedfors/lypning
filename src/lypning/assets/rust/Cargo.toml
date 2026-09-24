@@ -50,7 +50,7 @@ variant-m = []
 # The 4 MB point. Names the smaller variant so cargo's feature union makes it a
 # superset by construction — the monotonicity the router assumes. It grows one
 # `cap-*` per step; `variant-m` is FROZEN and gains none of them.
-variant-l = ["variant-m", "cap-base64", "cap-bigint", "cap-collections", "cap-csv", "cap-glob", "cap-hashlib", "cap-pathlib", "cap-re"]
+variant-l = ["variant-m", "cap-base64", "cap-bigint", "cap-collections", "cap-csv", "cap-future", "cap-glob", "cap-hashlib", "cap-pathlib", "cap-re"]
 
 # `collections.Counter` and `collections.defaultdict` — 83 of the corpus
 # programs measured on 2026-09-04 import `collections`, and between them they
@@ -116,6 +116,16 @@ cap-base64 = []
 # (mined 2026-09-06) are blocked first on `import hashlib`; 10 of them need
 # nothing else this variant lacks. `src/hashlib.rs` is the whole of it.
 cap-hashlib = []
+
+# `from __future__ import …` — a pass over the parse, not a module: the head of
+# future imports is stripped when every name is one Python 3 makes mandatory
+# (and so a no-op) or `annotations`, whose effect — no annotation is ever
+# evaluated — the pass implements by clearing them. Every misuse CPython
+# answers with a `SyntaxError` refuses statically, as does the `_Feature` name
+# and `__annotations__`. 76 corpus programs (census 2026-09-24, 9,064 loaded)
+# stopped first on this import. `src/future.rs` is the whole of it, plus one
+# `#[cfg]` line at the end of `parse::parse()`.
+cap-future = []
 
 capi = []
 
