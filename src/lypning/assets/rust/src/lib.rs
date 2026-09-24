@@ -83,6 +83,10 @@ pub mod pow;
 #[cfg(feature = "cap-pathlib")]
 pub mod pathlib;
 pub mod random;
+/// `random.Random(int)`, `random.sample`, `random.shuffle` and the served
+/// spellings of `sys.version_info` — the `cap-random` capability.
+#[cfg(feature = "cap-random")]
+pub mod randobj;
 /// The `re` SURFACE — module, flags, `escape`, `purge`, the compiler back end
 /// and the matching machine — the `cap-re` capability. Absent from the smaller
 /// variant entirely, not merely unreachable in it. The pattern PARSER is not

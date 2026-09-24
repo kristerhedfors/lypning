@@ -827,6 +827,12 @@ impl Interp {
         if let Some(cell) = crate::hashlib::as_hasher(base) {
             return crate::hashlib::attr(base, &cell, name);
         }
+        // A `random.Random` instance: its eight methods, and a refusal for the
+        // rest of CPython's surface (`gauss`, `choices`, `getstate`, …).
+        #[cfg(feature = "cap-random")]
+        if crate::randobj::as_random(base).is_some() {
+            return crate::randobj::attr(base, name);
+        }
         // `Path.cwd` — a classmethod on the type object.
         #[cfg(feature = "cap-pathlib")]
         if matches!(base, Value::Builtin("Path")) {

@@ -50,7 +50,7 @@ variant-m = []
 # The 4 MB point. Names the smaller variant so cargo's feature union makes it a
 # superset by construction — the monotonicity the router assumes. It grows one
 # `cap-*` per step; `variant-m` is FROZEN and gains none of them.
-variant-l = ["variant-m", "cap-base64", "cap-bigint", "cap-collections", "cap-csv", "cap-glob", "cap-hashlib", "cap-pathlib", "cap-re"]
+variant-l = ["variant-m", "cap-base64", "cap-bigint", "cap-collections", "cap-csv", "cap-glob", "cap-hashlib", "cap-pathlib", "cap-random", "cap-re"]
 
 # `collections.Counter` and `collections.defaultdict` — 83 of the corpus
 # programs measured on 2026-09-04 import `collections`, and between them they
@@ -116,6 +116,14 @@ cap-base64 = []
 # (mined 2026-09-06) are blocked first on `import hashlib`; 10 of them need
 # nothing else this variant lacks. `src/hashlib.rs` is the whole of it.
 cap-hashlib = []
+
+# `random.Random(int)` instances, `random.sample`, `random.shuffle`, and
+# `sys.version_info` as `[0]`, `[:2]`, `.major`/`.minor` or compared with a
+# tuple of at most two items. It serves no MODULE — `random` and `sys` are the
+# core's — so its routing half is `route::CAP_ATTRS`, carried by every variant,
+# and the instance is `Value::IterObj` over `Iter::Rng`, never a new `Value`
+# variant. `src/randobj.rs` is the whole of it.
+cap-random = []
 
 capi = []
 

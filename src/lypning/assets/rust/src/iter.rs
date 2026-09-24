@@ -88,6 +88,12 @@ pub enum Iter {
     /// the same exit code with nothing on stdout.
     #[cfg(feature = "cap-hashlib")]
     Hash(Box<crate::hashlib::Hasher>),
+    /// A `random.Random(int)` instance: its OWN MT19937 state, `None` only for
+    /// the length of a method call that has swapped it into `Interp::rng`. Not
+    /// an iterator, and an `Iter` for the reason `Hash` above is one
+    /// (`randobj.rs`).
+    #[cfg(feature = "cap-random")]
+    Rng(Option<Box<crate::random::Mt>>),
 }
 
 /// Where a text stream's next line ends, given what `open(newline=…)` asked for.
@@ -430,6 +436,12 @@ impl Interp {
             // same thing at the same exit code.
             #[cfg(feature = "cap-hashlib")]
             Iter::Hash(_) => return Err(crate::hashlib::not_iterable()),
+            // `'Random' object is not iterable` in CPython; refused, which
+            // also covers `x in r`, whose wording moved in 3.14.
+            #[cfg(feature = "cap-random")]
+            Iter::Rng(_) => {
+                return Err(crate::err::unsupported("random", "iterating a Random instance"))
+            }
             Iter::Stdin => match mio::stdin_line()? {
                 Some(b) => Some(Value::Str(decode_text(
                     &b,

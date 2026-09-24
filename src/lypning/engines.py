@@ -66,7 +66,10 @@ SPECTRUM = (LYPNING, LYPNING_L)
 #: buys the LIST and nothing else), ``cap-hashlib`` (``hashlib.md5`` / ``sha1``
 #: / ``sha256`` / ``sha512``; every other name on the module refuses as
 #: ``module-attr`` from the WALK, out of ``route::MODULE_ATTRS``),
-#: ``cap-pathlib`` (``pathlib.Path``) and
+#: ``cap-pathlib`` (``pathlib.Path``), ``cap-random`` (``random.Random(int)``,
+#: ``random.sample`` / ``random.shuffle``, and ``sys.version_info`` as ``[0]``,
+#: ``[:2]``, ``.major`` / ``.minor`` or compared with a tuple of at most two
+#: items; it serves no module, so its routing half is ``route::CAP_ATTRS``) and
 #: ``cap-re`` (the ``re`` matcher) are on the larger
 #: variant ONLY. The core is
 #: frozen: it gains no capability feature, and a capability that appeared in both
@@ -76,7 +79,7 @@ VARIANT_CAPS: dict = {
     LYPNING: (),
     LYPNING_L: (
         "cap-base64", "cap-bigint", "cap-collections", "cap-csv", "cap-glob",
-        "cap-hashlib", "cap-pathlib", "cap-re",
+        "cap-hashlib", "cap-pathlib", "cap-random", "cap-re",
     ),
 }
 

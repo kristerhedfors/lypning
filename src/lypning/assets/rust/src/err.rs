@@ -154,6 +154,12 @@ pub const ENGINE: &str = env!("LYPNING_ENGINE");
 /// measurement that fixed it.
 pub const REF_PY_MINOR: u32 = parse_minor(env!("LYPNING_REF_PY"));
 
+/// Was [`REF_PY_MINOR`] measured on a real interpreter rather than taken from
+/// `build.rs`'s fallback? Everything above answers the same either way (the
+/// fallback is the newest calibrated behaviour), except a program that PRINTS
+/// the version: `sys.version_info` is served only when this is true.
+pub const REF_PY_MEASURED: bool = env!("LYPNING_REF_PY_MEASURED").as_bytes()[0] == b'1';
+
 /// Build-dependent facts measured against the selected CPython, not guessed
 /// from its minor version. See reference_probe.py and build.rs.
 pub const REF_NORMPATH_BUILTIN: bool = env!("LYPNING_REF_NORMPATH_BUILTIN").as_bytes()[0] == b'1';

@@ -198,6 +198,14 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
         ("random", "seed" | "random" | "randint" | "randrange" | "choice" | "getrandbits") => {
             Value::Bound(Rc::new(m.clone()), interned(name)?)
         }
+        // `sample` and `shuffle` on the hidden instance's stream. `Random` is
+        // NOT a value here: `eval.rs` resolves `random.Random(…)` at the call,
+        // so the class never reaches `isinstance`, `repr` or a subclass, and
+        // every other spelling of it refuses through the arm below.
+        #[cfg(feature = "cap-random")]
+        ("random", "sample") => Value::Bound(Rc::new(m.clone()), "sample"),
+        #[cfg(feature = "cap-random")]
+        ("random", "shuffle") => Value::Bound(Rc::new(m.clone()), "shuffle"),
         // The exactly-defined subset: five constants and thirteen functions,
         // every one of them IEEE-754 or integer arithmetic. Every other name —
         // `sin`, `log10`, `exp`, `fsum`, `comb` — refuses with the
@@ -369,6 +377,10 @@ pub fn call_module_method(
         ("base64", _) => return crate::base64::call(it, name, args, &kw),
         #[cfg(feature = "cap-hashlib")]
         ("hashlib", _) => return crate::hashlib::call(it, name, args, &kw),
+        #[cfg(feature = "cap-random")]
+        ("random", "sample" | "shuffle") => return crate::randobj::call(it, name, args, &kw),
+        #[cfg(feature = "cap-random")]
+        ("random", "Random") => return crate::randobj::construct(it, args, &kw),
         ("random", _) => return crate::random::call(it, name, args, &kw),
         ("math", _) => return crate::math::call(it, name, args, &kw),
         // `Path.cwd()`. A classmethod on the type object, reached through

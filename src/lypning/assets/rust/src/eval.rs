@@ -16,6 +16,15 @@ use std::cell::RefCell;
 use crate::hash::{Map, Names, Set as FastSet};
 use std::rc::Rc;
 
+/// Is `e` spelled `<x>.version_info`? A syntactic pre-check, so the four
+/// parent arms in `eval_inner` pay one comparison and hand the rest to
+/// `randobj::parent`, out of line — the hottest function in the interpreter
+/// carries one call per arm and none of the capability.
+#[cfg(feature = "cap-random")]
+fn is_vi(e: &Expr) -> bool {
+    matches!(e, Expr::Attr(_, n) if n.as_ref() == "version_info")
+}
+
 pub type Scope = Rc<RefCell<Map<Rc<str>, Value>>>;
 
 /// `#[inline]` because it is one allocation on the function-call path and
@@ -881,6 +890,10 @@ impl Interp {
                 }
             }
             Expr::Compare { first, rest } => {
+                #[cfg(feature = "cap-random")]
+                if is_vi(first) || rest.iter().any(|(_, x)| is_vi(x)) {
+                    return crate::randobj::parent(self, e);
+                }
                 // Each operand is evaluated at most once, and the chain
                 // short-circuits — both are guaranteed by Python.
                 let mut left = self.eval(first)?;
@@ -922,10 +935,18 @@ impl Interp {
                 }
             }
             Expr::Attr(b, n) => {
+                #[cfg(feature = "cap-random")]
+                if is_vi(b) {
+                    return crate::randobj::parent(self, e);
+                }
                 let bv = self.eval(b)?;
                 self.get_attr(&bv, n)?
             }
             Expr::Index(b, i) => {
+                #[cfg(feature = "cap-random")]
+                if is_vi(b) {
+                    return crate::randobj::parent(self, e);
+                }
                 let bv = self.eval(b)?;
                 let iv = self.eval(i)?;
                 self.index(&bv, &iv)?
@@ -936,6 +957,10 @@ impl Interp {
                 hi,
                 step,
             } => {
+                #[cfg(feature = "cap-random")]
+                if is_vi(base) {
+                    return crate::randobj::parent(self, e);
+                }
                 let bv = self.eval(base)?;
                 let lo = match lo {
                     Some(e) => Some(self.eval(e)?),
@@ -1040,6 +1065,13 @@ impl Interp {
                         match crate::methods::method_name(&bv, n) {
                             Some(m) if !matches!(bv, Value::Module(_)) => {
                                 method = Some((bv, m));
+                            }
+                            // `random.Random(…)`: the class exists only as the
+                            // callee of a call (`randobj.rs`), so it is built
+                            // here and never by `get_attr`.
+                            #[cfg(feature = "cap-random")]
+                            _ if n.as_ref() == "Random" && matches!(bv, Value::Module("random")) => {
+                                f = Value::Bound(Rc::new(bv), "Random");
                             }
                             _ => f = self.get_attr(&bv, n)?,
                         }

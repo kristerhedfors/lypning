@@ -610,6 +610,10 @@ pub fn call_method(
     if let Some(cell) = crate::hashlib::as_hasher(recv) {
         return crate::hashlib::method(&cell, name, args, &kw);
     }
+    #[cfg(feature = "cap-random")]
+    if let Some(cell) = crate::randobj::as_random(recv) {
+        return crate::randobj::method(it, cell, name, args, &kw);
+    }
     match recv {
         Value::Str(s) => str_method(it, s, name, args, kw),
         Value::List(l) => list_method(it, l, name, args, kw),
