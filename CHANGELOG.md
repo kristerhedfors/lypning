@@ -37,6 +37,12 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   load. Arm A seed 1111 is re-run under this rule; its saved adapters cannot be
   carried over, because `split_eval2` refuses a changed `code_sha256`.
 
+**2026-09-24** — A free readout of any pilot job's SFT selection ([#125](https://github.com/kristerhedfors/lypning/pull/125))
+
+- `pilot-readout.yml` prints a job's selected SFT step, selection rule, every
+  observation and the base-dev and selected headline metrics, by named
+  aggregate keys only and through `public_view`.
+
 **2026-09-24** — Keep verifier pool hosts alive across SFT's training gaps ([#124](https://github.com/kristerhedfors/lypning/pull/124))
 
 - Both seed-1111 arm-A attempts (HF jobs `6ab4a05a52d0dbd7f1d8909d` and
