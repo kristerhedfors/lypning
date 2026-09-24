@@ -56,6 +56,22 @@ RESPONSE_CAP = 24 * 1024 * 1024
 REQUEST_CAP = 8 * 1024 * 1024
 FLAVOR = "cpu-basic"
 IDLE_TIMEOUT = "10m"
+#: The HOST idle timeout, distinct from the per-sandbox one above. A pool host
+#: shuts itself down once it has run no sandbox for this long (the SDK default
+#: is 600 s), and huggingface_hub 1.31.0 never replaces a host it has already
+#: used this session: `SandboxPool._create_one` re-raises for a `verified` host
+#: instead of dropping it, so every later request gets the dead host's 503. SFT
+#: trains 25-40 minutes between evaluations with no scoring at all, so the
+#: default killed every host before each evaluation: HF jobs
+#: 6ab4a05a52d0dbd7f1d8909d and 6ab4d66d6b030d633f68d8d7 (2026-09-24) both died
+#: in an SFT evaluation, the second after 30 minutes of retries. Idle cpu-basic
+#: hosts cost cents; `train_verified.run` closes the runner (cancelling the
+#: hosts it owns) when its stage ends or fails, so the long timeout only
+#: bounds a process that died without reaching its `finally`. There is
+#: deliberately no pool rebuild: closing a pool under 48 in-flight scorers,
+#: re-adopting its cancelled hosts by name and re-checking the Space head
+#: mid-run are each a new way to lose a run (review of #124, 2026-09-24).
+HOST_IDLE_TIMEOUT = "3h"
 #: Under /usr/local on purpose: a pooled sandbox's Landlock ruleset lets it read
 #: the standard system trees, and a top-level /runner is not one of them.
 WORKER = "/usr/local/lib/lypning-verifier/container_worker.py"
@@ -129,8 +145,16 @@ def pool_limit(value, name):
 
 
 def http_status(exc):
-    """The HTTP status an SDK error carries, or None for a connection-level failure."""
+    """The HTTP status an SDK error carries, or None for a connection-level failure.
+
+    `HfHubHTTPError` carries it on `.response`; the sandbox server's
+    `SandboxError` on `.status_code`. Reading only the first made every
+    sandbox-server 4xx look like a dropped connection, retried for the whole
+    budget instead of refused at once.
+    """
     code = getattr(getattr(exc, "response", None), "status_code", None)
+    if not isinstance(code, int):
+        code = getattr(exc, "status_code", None)
     return code if isinstance(code, int) else None
 
 
@@ -152,7 +176,7 @@ class HfSandboxPoolRunner:
 
     def __init__(self, image, revision, identity, *, check=True, pool=None, flavor=FLAVOR,
                  sandboxes_per_host=None, max_hosts=None, hf_token=None, space_sha=None,
-                 sleep=time.sleep, stage=None):
+                 sleep=time.sleep, stage=None, pool_factory=None):
         if not isinstance(image, str) or not re.fullmatch(IMAGE_PATTERN, image):
             raise TrainingError("hf-sandbox-pool execution image must be an hf.co/spaces/<owner>/<name> image")
         if not isinstance(revision, str) or not re.fullmatch(REVISION_PATTERN, revision):
@@ -176,6 +200,8 @@ class HfSandboxPoolRunner:
         self._space_sha = space_sha
         self._stage = stage
         self._sleep = sleep
+        #: Builds a pool from `_pool_kwargs()`; tests inject one, the default is the SDK's.
+        self._pool_factory = pool_factory
         #: Scorings run concurrently (`gpu/verified_evaluation.py`); the pool is
         #: built once and the interpreter admitted once, whichever thread is first.
         self._lock = threading.RLock()
@@ -222,7 +248,6 @@ class HfSandboxPoolRunner:
             if head != self.revision:
                 raise TrainingError("verifier Space %s is at %s, not the pinned %s; a Space name is not an immutable image"
                                     % (self.image, head, self.revision))
-            from huggingface_hub import SandboxPool
             # Named by the Space revision: a pool attaches to any warm host with
             # the same image, flavor and NAME, and a host booted from an earlier
             # build of the same Space must never serve this bundle's requests.
@@ -230,14 +255,19 @@ class HfSandboxPoolRunner:
             # hosts cancels them on close, so two runs sharing a name would tear
             # each other's hosts down mid-stage (jobs 6aaa4b2c and 6aaa5c1e,
             # 2026-09-16).
-            kwargs = {"image": self.image, "flavor": self._flavor, "name": pool_name(self.revision, stage=self._stage)}
+            kwargs = {"image": self.image, "flavor": self._flavor, "name": pool_name(self.revision, stage=self._stage),
+                      "idle_timeout": HOST_IDLE_TIMEOUT}
             if self._sandboxes_per_host is not None:
                 kwargs["sandboxes_per_host"] = self._sandboxes_per_host
             if self._max_hosts is not None:
                 kwargs["max_hosts"] = self._max_hosts
             if self._hf_token:
                 kwargs["token"] = self._hf_token
-            self._pool = SandboxPool(**kwargs)
+            if self._pool_factory is not None:
+                self._pool = self._pool_factory(**kwargs)
+            else:
+                from huggingface_hub import SandboxPool
+                self._pool = SandboxPool(**kwargs)
         return self._pool
 
     def close(self):

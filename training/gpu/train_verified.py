@@ -33,7 +33,7 @@ from pipeline.training_metrics import BENCHMARK_MIN_FAMILY_CASES, CheckpointGate
 from pipeline.evaluation_reuse import fresh_lora_is_noop, reuse_evaluation, reuse_step_zero
 from pipeline.training import (ISOLATED_KINDS, TrainingError, Verifier,
     assistant_turn, chat_prompt_token_ids, execution_runner, load_bundle, messages,
-    program_from_completion)
+    program_from_completion, release_runner)
 
 from pipeline.training_types import case_ref
 from pipeline.training_contract import (BASE_MODEL, CONTRACT_VERSION, MIN_SUPERVISED_TOKENS,
@@ -584,6 +584,16 @@ def run(args, bundle, adapter_info):
     verifier = Verifier(args.engine, **bundle["limits"], identity=bundle["identity"],
                         runner=execution_runner(bundle["execution"], bundle["identity"],
                                                 stage="grpo"))
+    # The stage's verifier pool is closed on every exit, success or failure:
+    # its hosts idle out only after `hf_sandbox_runner.HOST_IDLE_TIMEOUT` (3 h),
+    # so a stage that never closed them would bill them that long after it ended.
+    try:
+        return _run(args, bundle, adapter_info, verifier)
+    finally:
+        release_runner(verifier.runner)
+
+
+def _run(args, bundle, adapter_info, verifier):
     versions = runtime_versions()
     effective = schedule(args)
     kernels = block_fused_kernels()
