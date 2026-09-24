@@ -1310,6 +1310,8 @@ fn bound_kind(recv: &Value, name: &str) -> Callable {
             ("glob", _) => Function,
             #[cfg(feature = "cap-base64")]
             ("base64", _) => Function,
+            #[cfg(feature = "cap-statistics")]
+            ("statistics", _) => Function,
             // `os` is `posix` re-exported, so its names are C — except the two
             // served here that `os.py` defines itself.
             ("os", "makedirs" | "getenv") => Function,

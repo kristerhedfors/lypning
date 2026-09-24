@@ -134,7 +134,7 @@ the user's own — is `unsupported: module: import <name>` on both engines, and
 
 ### 4.3 Modules served in part
 
-Four modules on `lypning-l` are served as a named list of attributes rather than
+Five modules on `lypning-l` are served as a named list of attributes rather than
 whole, so the walk in the *smaller* engine can decide statically whether the
 larger one would answer. Everything not listed is `unsupported: module-attr:
 <module>.<name>` — including under `from <module> import <name>`:
@@ -145,6 +145,7 @@ larger one would answer. Everything not listed is `unsupported: module-attr:
 | `csv` | `DictReader` `QUOTE_ALL` `QUOTE_MINIMAL` `QUOTE_NONE` `QUOTE_NONNUMERIC` `reader` | `route.rs:MODULE_ATTRS` — the writers are CPython's |
 | `glob` | `escape` `glob` `has_magic` `iglob` | `route.rs:GLOB_SERVED` |
 | `hashlib` | `md5` `sha1` `sha256` `sha512` | `hashlib.rs:SERVED` — `new`, the SHA-3 family and the KDFs are CPython's |
+| `statistics` | `mean` `median` `median_high` `median_low` | `statistics.rs:SERVED` — `mean` exact over ints, bools and floats; empty data, a float beside an int past 64 bits, a median over items `<` does not totally order (mixed kinds past the first pair, a nested NaN, a set, an int past 2**53 beside a float) and the spread functions are CPython's |
 
 `collections` serves `Counter` and `defaultdict`; `pathlib` serves `Path`. Both
 are whole-module claims in `route.rs:CAPS`, so an attribute neither serves —
@@ -153,7 +154,7 @@ rather than in the smaller engine's walk, which costs one spawn and no answer.
 
 ## 5. What `lypning-l` adds
 
-`lypning-l` is the same crate built with eight `cap-*` features
+`lypning-l` is the same crate built with nine `cap-*` features
 (`engines.VARIANT_CAPS`, `route.rs:CAPS`, and `lypning route --spectrum` from
 either binary):
 
@@ -167,13 +168,14 @@ either binary):
 | `cap-hashlib` | the `hashlib` module — four constructors | `hashlib.rs` |
 | `cap-pathlib` | the `pathlib` module — `Path` | `pathlib.rs` |
 | `cap-re` | the `re` module and its matcher | `re.rs` |
+| `cap-statistics` | the `statistics` module — four functions of it | `statistics.rs` |
 
 `cap-re` serves a **slice** of the pattern language, and the rest of it is
 refusals rather than a best effort: non-ASCII group names, backreferences, lookaround,
 bytes patterns, Unicode `\w`/`\d`/`\s`, Unicode case folding and a backtracking
 step budget all refuse (`docs/LYPNING.md` §3).
 
-The cost of the eight is the binary: `lypning` 1,147,088 B in 9 blocks and
+The cost of the first eight is the binary: `lypning` 1,147,088 B in 9 blocks and
 `lypning-l` 1,323,216 B in 11 blocks, both x86\_64-unknown-linux-musl, measured
 2026-09-14 by `lypning build --rust` on this tree. `lypning gate` holds each
 against its own budget (`gate.VARIANT_BLOCK_BUDGET`), and `docs/LYPNING.md` §11
