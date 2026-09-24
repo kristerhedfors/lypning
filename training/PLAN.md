@@ -547,6 +547,31 @@ and `--serial-scoring` is the comparison that would. These are projections
 from one smoke's aggregates and stated constants, re-run 2026-09-24. No launch
 decision is taken here.
 
+**An engine-mismatch draw is a counted draw (2026-09-24).** The seed-1111
+arm-A pilot (HF job `6ab52a686b030d633f68e503`, Actions `36008052722`)
+completed SFT: 1,050 steps, dev evaluations at 350, 700 and 1,050, adapters
+saved. It then aborted in its base test arm on one base-model draw that
+reached a `lypning-l` bug. The fix is held in draft PR #118 while the engine
+is frozen, so eval-2 would meet the same abort. The rule now, for every arm
+(`EVAL2.md` §4, amendment of 2026-09-24):
+
+- Such a draw scores status `engine-mismatch`, reward 0, neither correct nor
+  native. It counts against the arm, and its witness goes to the stage's
+  private `engine-mismatches.jsonl`. An evaluation fails only once such draws
+  exceed 1% of its planned draws. Every other block still aborts, and so does
+  a native timeout (ledger row T4).
+- **GRPO** (arm C) scores such a completion 0 and counts it too. The bound is
+  per run, on its registered draws (steps × prompts × generations). A per-step
+  bound would be 1% of 32 draws, so one mismatch would end the run as the abort
+  did. `loss.jsonl` carries the running `engine_mismatches` count.
+- The Step 2 grade, evaluation and GRPO read one module,
+  `pipeline/mismatch_policy.py`. `code_sha256` moves. `verifier_sha256` does
+  not: `pipeline/training.py` is untouched, and GRPO wraps its verifier
+  instead of editing `Reward`. So bundles prepared at the parent commit still
+  load, and the adapters trained on them still match their bundle digest.
+- Arm A seed 1111 is re-run, or resumed, under this rule. Its completed SFT dev
+  evaluations held no mismatch, so their rows are unchanged by it.
+
 ## Kill criteria (unchanged, `LADDER.md` §6)
 
 If Step 2 is flat **and** Step 3's supply is tiny, the model lever is capped

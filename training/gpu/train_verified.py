@@ -35,6 +35,7 @@ from pipeline.training import (ISOLATED_KINDS, TrainingError, Verifier,
     assistant_turn, chat_prompt_token_ids, execution_runner, load_bundle, messages,
     program_from_completion, release_runner)
 
+from pipeline.mismatch_policy import ENGINE_MISMATCH_FILE
 from pipeline.training_types import case_ref
 from pipeline.training_contract import (BASE_MODEL, CONTRACT_VERSION, MIN_SUPERVISED_TOKENS,
     MIN_TRAIN_CASES, PROTOCOL_EVAL_DRAWS, PROTOCOL_TRAIN_SEEDS,
@@ -726,6 +727,7 @@ def _run(args, bundle, adapter_info, verifier):
             args.output / "probe-rollouts.jsonl", 0, torch,
             seed=args.seed, draws=args.generations, return_records=True,
             witness_path=args.output / "eval-blocked-witnesses.jsonl",
+            mismatch_path=args.output / ENGINE_MISMATCH_FILE,
             sequences_per_call=args.eval_sequences, score_workers=args.score_workers,
             overlapped=not args.serial_scoring)
         contract = probe_contract(bundle, args.revision, adapter_info, policy,
@@ -738,6 +740,7 @@ def _run(args, bundle, adapter_info, verifier):
                         args.output / "evaluations.jsonl", step, torch,
                         seed=args.seed, draws=1 if args.greedy else args.eval_draws,
                         witness_path=args.output / "eval-blocked-witnesses.jsonl",
+                        mismatch_path=args.output / ENGINE_MISMATCH_FILE,
                         sequences_per_call=args.eval_sequences, score_workers=args.score_workers,
                         overlapped=not args.serial_scoring, **metric_policy(bundle))
     if args.reuse_evaluation is not None and reuse_evaluation(
@@ -756,6 +759,12 @@ def _run(args, bundle, adapter_info, verifier):
         baseline = measure(0)
     if args.stage == "eval":
         write_json(args.output / "metrics.json", baseline)
+        # Counts only (this log is public): which draws is in the stage's
+        # private engine-mismatches.jsonl. Over every draw, from the unfiltered
+        # population slices: the top level covers primary families only.
+        slices = baseline["by_population"].values()
+        core.log("eval draws=%d engine_mismatches=%d"
+                 % (sum(s["draws"] for s in slices), sum(s["engine_mismatches"] for s in slices)))
         return
 
     # Save every candidate separately; 'best.json' selects one without deleting

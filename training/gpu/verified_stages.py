@@ -10,6 +10,7 @@ from pathlib import Path
 import random
 
 from pipeline.jsonio import append_jsonl
+from pipeline.mismatch_policy import ENGINE_MISMATCH_FILE, MismatchScoring
 from pipeline.training import Reward, TrainingError, messages
 from pipeline.training_contract import learning_rate
 
@@ -164,6 +165,17 @@ def train_grpo(model, tok, args, bundle, train_cases, verifier, effective, polic
     from transformers import TrainerCallback
     from trl import GRPOConfig, GRPOTrainer
     loss_path = args.output / "loss.jsonl"
+    # An engine-mismatch completion scores 0 and is counted, never an abort
+    # (`pipeline.mismatch_policy`, 2026-09-24); its witness goes to the stage's
+    # PRIVATE engine-mismatches.jsonl. The 1% bound is per RUN, on the
+    # registered draws (steps x prompts x generations): per step it would be
+    # 1% of 32 draws, so a single mismatch would end the run exactly as the
+    # abort did. A mismatch rewards 0 although CPython accepted the program,
+    # which pushes the policy away from whatever reached the engine bug; the
+    # bound keeps that push to at most 1% of the run's draws, and the witness
+    # is how the bug gets fixed instead.
+    scoring = MismatchScoring(verifier, args.output / ENGINE_MISMATCH_FILE,
+                              planned=steps * args.grpo_prompts * args.generations)
 
     class CheckpointCallback(TrainerCallback):
         """Refuse a non-finite gradient, save on the cadence, log every step.
@@ -195,7 +207,9 @@ def train_grpo(model, tok, args, bundle, train_cases, verifier, effective, polic
             # train_runtime, ...) has no `loss`, and a reader that takes the
             # last row as the last step would read it as one.
             if "loss" in row:
-                append_jsonl(loss_path, dict(row, step=state.global_step))
+                # Cumulative over the run: a count, never which draws.
+                append_jsonl(loss_path, dict(row, step=state.global_step,
+                                             engine_mismatches=scoring.count))
             return control
     # One optimizer step = `grpo_prompts` prompt groups of `generations` draws,
     # one sequence per forward (per-example, as SFT: no padding-free packing).
@@ -224,7 +238,7 @@ def train_grpo(model, tok, args, bundle, train_cases, verifier, effective, polic
         gradient_checkpointing_kwargs={"use_reentrant": False},
         save_strategy="no", report_to="none", logging_steps=1,
         remove_unused_columns=False)
-    reward = Reward(bundle["cases"], verifier, args.output / "blocked-witnesses.jsonl",
+    reward = Reward(bundle["cases"], scoring, args.output / "blocked-witnesses.jsonl",
                     eos_token_id=tok.eos_token_id,
                     rollout_path=args.output / "rollouts.jsonl",
                     generations=args.generations,

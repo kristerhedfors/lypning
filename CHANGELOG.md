@@ -14,6 +14,25 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-24** — Count an engine-mismatch draw in GPU evaluation and GRPO instead of aborting the arm (#TBD)
+
+- The seed-1111 arm-A pilot (HF job `6ab52a686b030d633f68e503`, Actions
+  `36008052722`) completed SFT, then aborted in its base test arm on one
+  base-model draw that reached a `lypning-l` bug. That bug's fix is held while
+  the engine is frozen. Evaluation now scores such a draw as `engine-mismatch`,
+  reward 0, not correct and not native, and writes its witness to the stage's
+  private `engine-mismatches.jsonl` in (case, draw) order. The arm fails only
+  once such draws exceed 1% of its planned draws. The overlapped and serial
+  modes still write identical bytes.
+- GRPO scores such a completion 0 and counts it, with the same bound per run.
+  `summarize` reports `engine_mismatches` in every slice, zero included.
+- Every other block still aborts, and so does a native timeout after a correct
+  oracle (ledger row T4). The bound now lives in one module,
+  `pipeline/mismatch_policy.py`, which the Step 2 grade also reads. Recorded as
+  an amendment to `training/EVAL2.md` §4 and in `training/PLAN.md` Step 4.
+- `code_sha256` moves. `verifier_sha256` does not, so prepared bundles still
+  load. Arm A seed 1111 is re-run or resumed under this rule.
+
 **2026-09-24** — Keep verifier pool hosts alive across SFT's training gaps ([#124](https://github.com/kristerhedfors/lypning/pull/124))
 
 - Both seed-1111 arm-A attempts (HF jobs `6ab4a05a52d0dbd7f1d8909d` and

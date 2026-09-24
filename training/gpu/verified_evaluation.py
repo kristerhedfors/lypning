@@ -21,6 +21,15 @@ A chunk is scored while the next one generates (`ScoringStage`), so the pool's
 time hides behind the GPU's instead of adding to it; `overlapped=False`
 (`train_verified --serial-scoring`) is the old generate-then-score loop, kept
 for diagnosis. Both write the same bytes.
+
+A draw whose native run disagrees with a clean oracle is an engine bug, and
+since 2026-09-24 it is a counted draw, not an abort (`pipeline.mismatch_policy`):
+status ``engine-mismatch``, reward 0, neither correct nor native; its witness
+goes to the stage's private ``engine-mismatches.jsonl`` in (case, draw) order;
+and the evaluation fails with `EngineMismatchBound` once such draws exceed 1%
+of its planned draws. The seed-1111 arm-A pilot (HF job
+6ab52a686b030d633f68e503) aborted in its base test arm on one such draw.
+Every other block still aborts as before.
 """
 from __future__ import annotations
 
@@ -29,6 +38,8 @@ from dataclasses import asdict
 import threading
 
 from pipeline.jsonio import append_jsonl
+from pipeline.mismatch_policy import (check_mismatch_bound, counted_on_gpu, mismatch_score,
+                                      witness_row)
 from pipeline.training import messages, program_from_completion
 from pipeline.training_contract import complete, draw_seed
 from pipeline.training_metrics import summarize
@@ -43,6 +54,11 @@ SCORE_WORKERS = 16
 def blocked_witness(verifier, witness_path, step):
     """Score one draw, and preserve the program if verification blocks.
 
+    Returns ``(score, mismatch)``: `mismatch` is the engine-mismatch block a
+    counted draw was scored from (`mismatch_policy.counted_on_gpu`), else
+    None. Its witness is written at emission, in (case, draw) order, by
+    `ScoringStage` -- not here, where threads finish in any order.
+
     The reward stage has written a witness and re-raised since it was built
     (`pipeline.training.Reward.score_one`); the evaluation arm only re-raised,
     so when the round-02 base arm blocked on a native timeout after a correct
@@ -50,19 +66,22 @@ def blocked_witness(verifier, witness_path, step):
     program that caused it did not. A second occurrence would have been as
     unexplained as the first.
 
-    This changes nothing about what the arm DOES: the raise stands, the stage
-    still aborts, no score moves and no gate moves. Whether a native timeout
-    after a correct oracle should instead be scored — with what status, and
-    whether an arm should abort above some rate — is an open decision on
-    `ORCHESTRATION.md`'s ledger (row T4) and is deliberately not taken here.
-    Both rulings need the program, which is why the witness comes first.
+    For every block that is not a counted draw the raise stands: the stage
+    still aborts, no score moves and no gate moves. That includes a native
+    TIMEOUT after a correct oracle, which ledger row T4 (`ORCHESTRATION.md`,
+    closed 2026-09-17) kept a hard abort because scoring it would make the
+    endpoint depend on host load; the 2026-09-24 mismatch policy leaves that
+    ruling as it found it.
     """
 
     def score_one(pending):
         case, draw, _tail, _completion, _truncated, program = pending
         try:
-            return verifier.score(case, program)
+            return verifier.score(case, program), None
         except VerificationBlocked as exc:
+            if counted_on_gpu(exc):
+                # The draw's own outcome: scored, counted, witnessed on emission.
+                return mismatch_score(case, exc), exc
             # Every field is read with `.get`. A KeyError raised in here would
             # REPLACE the abort it is trying to document — the one exception
             # whose message is the whole point — with a KeyError naming a
@@ -142,8 +161,16 @@ class ScoringStage:
     threads included.)
     """
 
-    def __init__(self, verifier, witness_path, step, score_workers, *, overlapped=True):
+    def __init__(self, verifier, witness_path, step, score_workers, *, planned,
+                 mismatch_path=None, overlapped=True):
         self.overlapped = bool(overlapped)
+        self.step = step
+        # The bound is on the evaluation's PLANNED draws, so a count past it is
+        # final: no later chunk can bring it back under, and stopping saves the
+        # GPU the rest of an arm that has already failed.
+        self.planned = int(planned)
+        self.mismatch_path = mismatch_path
+        self.mismatches = 0
         self._score_one = blocked_witness(verifier, witness_path, step)
         self._pool = ThreadPoolExecutor(max_workers=max(1, int(score_workers)),
                                         thread_name_prefix="eval-score")
@@ -163,6 +190,11 @@ class ScoringStage:
         with the original exception -- the first in (case, draw) order, not
         the first to finish; successful siblings are durable evidence, not a
         completed arm.
+
+        An engine-mismatch draw is a success here: its row is emitted with the
+        rest, its witness appended to `mismatch_path` in the same order, and
+        only once the whole chunk is written is the bound checked, so the
+        rows, the witness file and the abort are the serial loop's in both modes.
         """
         futures = [self._pool.submit(self._score_one, item) for item in pending]
         failure = None
@@ -178,11 +210,21 @@ class ScoringStage:
             if self._abandoned:
                 # Torn down mid-chunk: `failure` may be our own cancellation.
                 return
-            for item, score in zip(pending, scores):
-                if score is not None:
-                    emit(item, score)
+            for item, scored in zip(pending, scores):
+                if scored is None:
+                    continue
+                score, mismatch = scored
+                emit(item, score)
+                if mismatch is not None:
+                    self.mismatches += 1
+                    if self.mismatch_path is not None:
+                        # PRIVATE: uploaded to the private work repository only.
+                        case, draw, _tail, _completion, _truncated, program = item
+                        append_jsonl(self.mismatch_path, witness_row(
+                            case, program, mismatch, source="evaluation", step=self.step, draw=draw))
         if failure is not None:
             raise failure
+        check_mismatch_bound(self.mismatches, self.planned)
 
     def submit(self, pending, emit):
         """Serial: score the chunk now. Overlapped: start scoring it and return."""
@@ -211,11 +253,13 @@ class ScoringStage:
 def evaluate(model, tokenizer, cases, verifier, policy, output, step, torch,
              *, seed=1111, draws=4, return_records=False, witness_path=None,
              sequences_per_call=SEQUENCES_PER_CALL, score_workers=SCORE_WORKERS,
-             min_family_cases=1, overlapped=True):
+             min_family_cases=1, overlapped=True, mismatch_path=None):
     """Generate and score every draw of `cases`; `overlapped=False` is the serial loop.
 
     The two modes write the same rows in the same order and the same witness,
     and raise the same exception (`ScoringStage`); only the wall clock differs.
+    `witness_path` keeps the program of a block that aborts the arm;
+    `mismatch_path` keeps each counted engine-mismatch draw's (both PRIVATE).
     """
     from transformers import GenerationConfig
 
@@ -248,7 +292,9 @@ def evaluate(model, tokenizer, cases, verifier, policy, output, step, torch,
             append_jsonl(output, row)
         return emit
 
-    stage = ScoringStage(verifier, witness_path, step, score_workers, overlapped=overlapped)
+    cases = list(cases)
+    stage = ScoringStage(verifier, witness_path, step, score_workers, overlapped=overlapped,
+                         planned=len(cases) * int(draws), mismatch_path=mismatch_path)
     try:
         model.generation_config = config
         if checkpointing:
@@ -260,7 +306,7 @@ def evaluate(model, tokenizer, cases, verifier, policy, output, step, torch,
         tokenizer.padding_side = "left"
         # Evaluation cadence must not change subsequent stochastic training.
         with torch.random.fork_rng():
-            for chunk in chunked(list(cases), draws, sequences_per_call):
+            for chunk in chunked(cases, draws, sequences_per_call):
                 try:
                     texts = [tokenizer.apply_chat_template(messages(case), tokenize=False,
                              add_generation_prompt=True, enable_thinking=False) for case in chunk]
