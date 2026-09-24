@@ -120,7 +120,8 @@ reprepare data; preserve historical runs; review any adapter migration explicitl
 | Correct CPython and correct native on every input | 1 | 1 |
 | Correct CPython and valid native refusal on one or more inputs | 0.25 | 1 |
 | Incorrect, exception, timeout, no code, missing EOS | 0 | 0 |
-| Unstable successful oracle, harness failure, malformed refusal, native mismatch | Abort | Abort |
+| Native mismatch after a correct oracle, up to 1% of a run's draws (`engine-mismatch`, witnessed privately; since 2026-09-24) | 0 | 0 |
+| Unstable successful oracle, harness failure, malformed refusal, native timeout after a correct oracle, native mismatches past 1% | Abort | Abort |
 
 No legality-only bonus, syntax credit, import penalty or reference-length reward.
 Refusal is exit 90, one correctly prefixed stderr line and empty stdout.

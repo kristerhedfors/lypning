@@ -187,6 +187,10 @@ def test_chunks_pair_across_arms_and_padding_is_not_generation(tmp_path, monkeyp
     assert ev.trim([1, 2], 99, 0) == [1, 2] and ev.trim([1, 0, 0], 99, 0) == [1] and ev.trim([99, 99], 99, 99) == [99]
 
 
+#: `Verifier._observed` of a native run that timed out after a correct oracle.
+NATIVE_TIMEOUT = [None, "", "", True, False, False, False]
+
+
 def test_a_blocked_evaluation_preserves_the_program_and_still_aborts(tmp_path, monkeypatch):
     """The uncontroversial half of ASSESSMENT.md §6 step 2.
 
@@ -196,6 +200,8 @@ def test_a_blocked_evaluation_preserves_the_program_and_still_aborts(tmp_path, m
     `not-native` with a witness — could be taken from the evidence. The witness
     closes that, and the abort is unchanged: this test pins BOTH halves, because
     a witness that swallowed the raise would be the gate change nobody approved.
+    T4 kept the timeout a hard abort (2026-09-17), and the 2026-09-24 policy
+    that COUNTS other engine mismatches leaves it one (`mismatch_policy`).
     """
     monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(GenerationConfig=SimpleNamespace))
     ev, torch = load_evaluation(), FakeTorch()
@@ -205,7 +211,7 @@ def test_a_blocked_evaluation_preserves_the_program_and_still_aborts(tmp_path, m
     raised = []
 
     def block(case, program):
-        exc = VerificationBlocked("engine mismatch", {"program": program})
+        exc = VerificationBlocked("engine mismatch", {"program": program, "observed": NATIVE_TIMEOUT})
         raised.append(exc)
         raise exc
 
@@ -226,7 +232,8 @@ def test_a_blocked_evaluation_preserves_the_program_and_still_aborts(tmp_path, m
     # kind and a digest, because it reaches the public GPU log (2026-09-23).
     assert rows[0]["program"] and rows[0]["program"] not in rows[0]["error"]
     assert rows[0]["kind"] == "engine mismatch"
-    assert rows[0]["witness"] == {"program": rows[0]["program"]}
+    assert rows[0]["witness"] == {"program": rows[0]["program"], "observed": NATIVE_TIMEOUT}
+    assert not (tmp_path / "eval.jsonl").exists(), "an abort, not a counted draw"
     # The arm still aborts and the trainer's state is still restored.
     assert model.training and model.is_gradient_checkpointing and torch.state == 123
 
@@ -266,10 +273,10 @@ def test_a_witnessless_evaluation_behaves_exactly_as_before(tmp_path, monkeypatc
     from pipeline.training_types import VerificationBlocked
 
     def block(case, program):
-        raise VerificationBlocked("engine mismatch")
+        raise VerificationBlocked("harness")
 
     cases = [dict(case_id="c", family="f", task="task", population="coverage")]
-    with pytest.raises(VerificationBlocked):
+    with pytest.raises(VerificationBlocked, match="^harness$"):
         ev.evaluate(model, Tokenizer(), cases, SimpleNamespace(score=block), decoding(10),
                     tmp_path / "eval.jsonl", 0, torch)
     assert list(tmp_path.glob("*witness*")) == []
@@ -326,6 +333,8 @@ def test_the_runner_asks_for_a_witness_at_every_evaluation_call_site():
     calls = source.count("evaluate(model, tok,")
     assert calls == 2, "call sites moved; re-check that each still asks for a witness"
     assert source.count('witness_path=args.output / "eval-blocked-witnesses.jsonl"') == calls
+    # And for the counted engine-mismatch draws' witnesses (2026-09-24).
+    assert source.count("mismatch_path=args.output / ENGINE_MISMATCH_FILE") == calls
 
 
 def test_concurrent_witness_rows_stay_parseable(tmp_path):
@@ -383,10 +392,15 @@ class SeededModel(Model):
 
 
 class Scorer:
-    """Deterministic scores, an uneven finishing order, an optional block."""
+    """Deterministic scores, an uneven finishing order, an optional block.
 
-    def __init__(self, block=None, enter=None):
-        self.block, self.enter = block, enter
+    `block` names draws that abort the arm (a harness failure); `mismatch`
+    names draws whose native run disagreed with the oracle, which since
+    2026-09-24 are counted draws (`pipeline.mismatch_policy`).
+    """
+
+    def __init__(self, block=None, enter=None, mismatch=None):
+        self.block, self.enter, self.mismatch = block, enter, mismatch
         self.lock = threading.Lock()
         self.seen = []
 
@@ -397,9 +411,13 @@ class Scorer:
             self.enter(case, program)
         n = sum(map(ord, program))
         time.sleep((n % 5) * 0.002)          # later draws often finish first
+        from pipeline.training_types import ENGINE_MISMATCH, VerificationBlocked
         if self.block and self.block(case, program):
-            from pipeline.training_types import VerificationBlocked
-            raise VerificationBlocked("engine mismatch", {"program": program})
+            raise VerificationBlocked("harness", {"program": program})
+        if self.mismatch and self.mismatch(case, program):
+            raise VerificationBlocked(ENGINE_MISMATCH, {
+                "case_id": case["case_id"], "test": 0, "expected_stdout": case["tests"][0]["stdout"],
+                "observed": [1, "", "SyntaxError\n", False, False, False, False]})
         if case["population"] == "fallback-control":
             return Score(1, "correct-control", 3, 3)
         return Score(1, "correct-native", 3, 3) if n % 3 else Score(0, "incorrect", 0, 1, (), 0)
@@ -409,6 +427,11 @@ class Scorer:
 OVERLAP_CASES = [dict(case_id="c%d" % i, family="f%d" % (i % 2), task="t%d" % i,
                       population="fallback-control" if i == 4 else "coverage",
                       split_group="g%d" % (i % 2), tests=[{"stdout": str(i)}]) for i in range(5)]
+#: Fifty cases at two draws: 100 planned draws, so ONE engine mismatch is at
+#: the 1% bound and not over it; 25 chunks of two cases.
+BOUNDED_CASES = [dict(case_id="c%d" % i, family="f%d" % (i % 3), task="t%d" % i,
+                      population="fallback-control" if i % 7 == 6 else "coverage",
+                      split_group="g%d" % (i % 3), tests=[{"stdout": str(i)}]) for i in range(50)]
 
 
 def chunk_of(case):
@@ -420,21 +443,22 @@ def scoring_threads():
 
 
 def run_evaluation(tmp_path, name, overlapped, *, block=None, fail_at=None, score_workers=3,
-                   hook=None, enter=None):
+                   hook=None, enter=None, mismatch=None, cases=OVERLAP_CASES, keep_mismatches=True):
     ev, torch = load_evaluation(), FakeTorch()
     model = SeededModel(torch, fail_at, hook)
-    verifier = Scorer(block, enter)
+    verifier = Scorer(block, enter, mismatch)
     out = tmp_path / name
     out.mkdir()
     got = {"raised": None, "metrics": None, "records": None}
     try:
         got["metrics"], got["records"] = ev.evaluate(
-            model, Tokenizer(), OVERLAP_CASES, verifier, decoding(10), out / "evaluations.jsonl", 3,
+            model, Tokenizer(), cases, verifier, decoding(10), out / "evaluations.jsonl", 3,
             torch, seed=11, draws=2, return_records=True, witness_path=out / "witness.jsonl",
+            mismatch_path=out / "engine-mismatches.jsonl" if keep_mismatches else None,
             sequences_per_call=4, score_workers=score_workers, overlapped=overlapped)
     except Exception as exc:                                     # noqa: BLE001 -- compared below
         got["raised"] = (type(exc).__name__, str(exc), getattr(exc, "witness", None))
-    for key in ("evaluations.jsonl", "witness.jsonl"):
+    for key in ("evaluations.jsonl", "witness.jsonl", "engine-mismatches.jsonl"):
         got[key] = (out / key).read_bytes() if (out / key).exists() else None
     got.update(seeds=model.seeds, scored=sorted(verifier.seen), threads=scoring_threads(),
                state=torch.state, training=model.training)
@@ -446,27 +470,43 @@ def c2_second_draw(case, program):
     return case["case_id"] == "c2" and program.endswith(",1)")
 
 
-@pytest.mark.parametrize("scenario, block, fail_at, raised", [
-    ("clean", None, None, None),
-    ("blocked", c2_second_draw, None, "VerificationBlocked"),
+def c20_first_draw(case, program):
+    """One engine-mismatch draw, mid-run: chunk 10 of the bounded fixture."""
+    return case["case_id"] == "c20" and program.endswith(",0)")
+
+
+@pytest.mark.parametrize("scenario, block, fail_at, raised, mismatch, cases", [
+    ("clean", None, None, None, None, OVERLAP_CASES),
+    ("blocked", c2_second_draw, None, "VerificationBlocked", None, OVERLAP_CASES),
     ("blocked-first-chunk", lambda c, p: c["case_id"] == "c0" and p.endswith(",0)"), None,
-     "VerificationBlocked"),
-    ("generation-fails", None, 2, "RuntimeError"),
-    ("blocked-then-generation-fails", c2_second_draw, 2, "VerificationBlocked"),
-    ("every-draw-of-a-case-blocks", lambda c, p: c["case_id"] == "c1", None, "VerificationBlocked"),
+     "VerificationBlocked", None, OVERLAP_CASES),
+    ("generation-fails", None, 2, "RuntimeError", None, OVERLAP_CASES),
+    ("blocked-then-generation-fails", c2_second_draw, 2, "VerificationBlocked", None, OVERLAP_CASES),
+    ("every-draw-of-a-case-blocks", lambda c, p: c["case_id"] == "c1", None, "VerificationBlocked",
+     None, OVERLAP_CASES),
+    # Engine mismatches (2026-09-24): one of 100 draws is counted and the arm
+    # completes; one of 10 is over the 1% bound and ends it after its chunk.
+    ("mismatch-counted", None, None, None, c20_first_draw, BOUNDED_CASES),
+    ("mismatch-over-bound", None, None, "EngineMismatchBound", c2_second_draw, OVERLAP_CASES),
+    ("mismatch-then-blocked", lambda c, p: c["case_id"] == "c30" and p.endswith(",1)"), None,
+     "VerificationBlocked", c20_first_draw, BOUNDED_CASES),
 ])
-def test_overlapped_scoring_writes_the_serial_bytes(tmp_path, monkeypatch, scenario, block, fail_at, raised):
-    """Rows, their order, metrics, witness and the exception: the serial loop's, exactly.
+def test_overlapped_scoring_writes_the_serial_bytes(tmp_path, monkeypatch, scenario, block, fail_at, raised,
+                                                     mismatch, cases):
+    """Rows, their order, metrics, witnesses and the exception: the serial loop's, exactly.
 
     The only thing overlap may change is that, on an abort, one more chunk was
     GENERATED while the failing one was being scored -- and it is never
     scored and never written.
     """
     monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(GenerationConfig=SimpleNamespace))
-    serial = run_evaluation(tmp_path, "serial", False, block=block, fail_at=fail_at)
-    overlapped = run_evaluation(tmp_path, "overlapped", True, block=block, fail_at=fail_at)
+    serial = run_evaluation(tmp_path, "serial", False, block=block, fail_at=fail_at,
+                            mismatch=mismatch, cases=cases)
+    overlapped = run_evaluation(tmp_path, "overlapped", True, block=block, fail_at=fail_at,
+                                mismatch=mismatch, cases=cases)
     assert (serial["raised"] or (None,))[0] == raised
-    compared = ["raised", "metrics", "records", "evaluations.jsonl", "scored", "state", "training"]
+    compared = ["raised", "metrics", "records", "evaluations.jsonl", "engine-mismatches.jsonl",
+                "scored", "state", "training"]
     if scenario != "every-draw-of-a-case-blocks":
         compared.append("witness.jsonl")          # two witness rows race in either mode
     for key in compared:
@@ -479,14 +519,55 @@ def test_overlapped_scoring_writes_the_serial_bytes(tmp_path, monkeypatch, scena
     # Generation's RNG sequence is the serial one, chunk for chunk.
     assert overlapped["seeds"][:len(serial["seeds"])] == serial["seeds"]
     if raised is None:
-        assert overlapped["seeds"] == serial["seeds"] and len(serial["seeds"]) == 3
+        assert overlapped["seeds"] == serial["seeds"] and len(serial["seeds"]) == (len(cases) + 1) // 2
         assert [(r["case_id"], r["draw"]) for r in serial["records"]] == \
-            [("c%d" % i, d) for i in range(5) for d in range(2)]
+            [("c%d" % i, d) for i in range(len(cases)) for d in range(2)]
     else:
         assert len(overlapped["seeds"]) - len(serial["seeds"]) <= 1, "at most one call later"
     if raised == "VerificationBlocked":
         assert serial["witness.jsonl"], "a blocked draw still leaves its witness"
+    if mismatch is None:
+        assert serial["engine-mismatches.jsonl"] is None, "no mismatch, no new file"
+    else:
+        # The mismatch is a row, not an abort: counted, scored zero, witnessed
+        # privately, and the aborting-block witness file never sees it.
+        hit = [r for r in read_rows(serial) if r["status"] == "engine-mismatch"]
+        assert len(hit) == 1 and hit[0]["reward"] == 0 and not hit[0]["correct"] and not hit[0]["native"]
+        kept = [json.loads(line) for line in serial["engine-mismatches.jsonl"].decode().splitlines()]
+        assert [(w["case_id"], w["draw"], w["step"]) for w in kept] == \
+            [(hit[0]["case_id"], hit[0]["draw"], 3)]
+        assert kept[0]["witness"]["expected_stdout"] and kept[0]["digest"] and kept[0]["program"]
+        assert kept[0]["source"] == "evaluation" and kept[0]["kind"] == "engine mismatch"
+        assert "engine mismatch" not in (serial["witness.jsonl"] or b"").decode()
+    if scenario == "mismatch-counted":
+        assert serial["metrics"]["engine_mismatches"] == 1
+        assert serial["metrics"]["statuses"]["engine-mismatch"] == 1
+    if scenario == "mismatch-over-bound":
+        # Counts only; the chunk that crossed the bound is written whole first.
+        assert serial["raised"] == ("EngineMismatchBound",
+                                    "engine-mismatch draws 1 of 10 exceed the 1% bound", None)
+        assert [r["case_id"] for r in read_rows(serial)] == ["c0", "c0", "c1", "c1", "c2", "c2", "c3", "c3"]
     assert serial["threads"] == overlapped["threads"] == [], "no scoring thread outlives evaluate"
+
+
+@pytest.mark.parametrize("overlapped", [False, True])
+def test_a_mismatch_with_nowhere_to_file_it_still_aborts(tmp_path, monkeypatch, overlapped):
+    """No private mismatch file, no counting: a counted draw whose witness is
+    dropped would be a hidden engine bug (root CLAUDE.md invariant 1), so an
+    evaluation without `mismatch_path` aborts on the mismatch exactly as it
+    did before 2026-09-24, its program kept in the abort witness."""
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(GenerationConfig=SimpleNamespace))
+    got = run_evaluation(tmp_path, "run", overlapped, mismatch=c20_first_draw, cases=BOUNDED_CASES,
+                         keep_mismatches=False)
+    assert got["raised"][0] == "VerificationBlocked" and got["raised"][1].startswith("engine mismatch (witness ")
+    assert got["engine-mismatches.jsonl"] is None
+    kept = [json.loads(line) for line in got["witness.jsonl"].decode().splitlines()]
+    assert [(w["case_id"], w["draw"], w["kind"]) for w in kept] == [("c20", 0, "engine mismatch")]
+    assert "engine-mismatch" not in got["evaluations.jsonl"].decode()
+
+
+def read_rows(got):
+    return [json.loads(line) for line in (got["evaluations.jsonl"] or b"").decode().splitlines()]
 
 
 def test_a_chunk_is_scored_while_the_next_generates_and_never_two_at_once(tmp_path, monkeypatch):

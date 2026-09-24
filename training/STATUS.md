@@ -334,8 +334,10 @@ Codex's review, not an approval.
    rewards); report the informative fraction, all-equal groups and truncation
    by family. Dr. GRPO, beta 0, four generations, reward exactly as the
    contract: correct-and-native 1, correct with valid refusal 0.25 on coverage
-   and 1 on controls, everything else 0, mismatch aborts. Never reshape reward
-   to pay for wrong code.
+   and 1 on controls, everything else 0. A native mismatch after a correct
+   oracle scores 0 and is counted, up to 1% of the run's draws (`EVAL2.md` §4,
+   2026-09-24); a native timeout still aborts. Never reshape reward to pay for
+   wrong code.
 6. **Decide on eval-2, not eval-1.** Lock settings on dev, run test once per
    arm, paired cluster bootstrap by family component. Promote only on
    correctness non-inferiority (gate A) plus a correct-and-native lower bound

@@ -85,14 +85,19 @@ def program_of(case_id, draw, arm):
 
 #: sha256 of every file `grade` wrote for `run_grade` with no mismatch, taken
 #: from origin/main at 73dea6c -- before engine-mismatch grading existed. A
-#: run with no engine mismatch must grade exactly as it did then.
+#: run with no engine mismatch must grade exactly as it did then, with one
+#: stated exception: since 2026-09-24 `summarize` reports `engine_mismatches`
+#: in every slice, zero included, so report.json carries that count and
+#: nothing else new (`test_report_json_differs_only_by_the_mismatch_count`).
 GOLDEN = {
     'public-report.json': '6cadb35137af77a9c42d0eb00006d60f9c98a0426ccf1816d73fd18160cd0168',
-    'report.json': 'c4ea60a59d986f328b6b8aa93645eb17c267a85f75499fc09e3159ada54a3b34',
+    'report.json': 'f0b27baa922e4d7b78a2c2d9ce143a3e86bb3fb0432bb3905fcba3d955edfcfd',
     'rows.jsonl': '1519f6f4ea8792641729f902e58d909d1df81d28c668187a4bac0ba26a0bf93c',
     'sft-report.json': '30ca2fcd72f8c8b5aaa2fab613c7c90d41900ad070ce7c6025e63a111c745133',
     'sft.jsonl': '1949e41e44480d366b9dd97d76178aa2d57358d8db56cd7c94194d57d5e3463e',
 }
+#: report.json at 73dea6c, before `summarize` reported the count.
+REPORT_BEFORE_THE_COUNT = 'c4ea60a59d986f328b6b8aa93645eb17c267a85f75499fc09e3159ada54a3b34'
 
 
 def test_a_grade_without_mismatch_is_byte_identical_to_before(tmp_path):
@@ -100,6 +105,28 @@ def test_a_grade_without_mismatch_is_byte_identical_to_before(tmp_path):
     run_grade(out)
     written = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in out.iterdir()}
     assert written == GOLDEN
+
+
+def test_report_json_differs_only_by_the_mismatch_count(tmp_path):
+    """Strip every `engine_mismatches: 0` from the metrics: the old bytes return."""
+    from pipeline.jsonio import write_json
+    out = tmp_path / "g"
+    run_grade(out)
+    report = json.loads((out / "report.json").read_text())
+    stripped = []
+
+    def strip(node):
+        if isinstance(node, dict):
+            if "statuses" in node:
+                assert node.pop("engine_mismatches") == 0
+                stripped.append(node)
+            for value in node.values():
+                strip(value)
+
+    strip(report["metrics"])
+    assert stripped and "engine_mismatches" not in json.dumps(report)
+    write_json(tmp_path / "before.json", report)
+    assert hashlib.sha256((tmp_path / "before.json").read_bytes()).hexdigest() == REPORT_BEFORE_THE_COUNT
 
 
 def load(name):

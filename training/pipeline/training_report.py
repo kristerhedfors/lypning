@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 
 from .training_types import TrainingError
+from .mismatch_policy import engine_mismatches
 from .training_metrics import paired_comparison, summarize
 
 
@@ -32,6 +33,11 @@ def compare(base, candidate):
         raise TrainingError("unknown evaluation metric policy")
     return {"base": summarize(rows[0], **policy), "candidate": summarize(rows[1], **policy),
             "paired": paired_comparison(*rows, **policy),
+            # Over EVERY draw of each arm, not the primary families only: a
+            # mismatch counts against the arm that drew it, so the paired
+            # delta is read beside both counts (EVAL2.md §4, 2026-09-24).
+            "engine_mismatches": {"base": engine_mismatches(rows[0]),
+                                  "candidate": engine_mismatches(rows[1])},
             "quality_evidence": not a["smoke"],
             "note": "Correctness non-inferiority margins and release decisions must be preregistered."}
 

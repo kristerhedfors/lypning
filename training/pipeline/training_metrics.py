@@ -9,6 +9,7 @@ import json
 import math
 import random
 
+from .mismatch_policy import engine_mismatches
 from .training_types import TrainingError
 
 
@@ -42,7 +43,11 @@ def summarize(records, *, min_family_cases=1):
                 "draws": len(rows), "families": len(families),
                 "truncation_rate": sum(r.get("truncated", False) for r in rows) / len(rows),
                 "mean_completion_tokens": sum(r.get("completion_tokens", 0) for r in rows) / len(rows),
-                "statuses": dict(Counter(r.get("status", "unreported") for r in rows))}
+                "statuses": dict(Counter(r.get("status", "unreported") for r in rows)),
+                # Always present, zero included: an engine-mismatch draw is an
+                # engine bug, and its count is reported even when it is none
+                # (`mismatch_policy`). Such a draw is neither correct nor native.
+                "engine_mismatches": engine_mismatches(rows)}
     if all("case_id" in r for r in records):
         draws = Counter(r["case_id"] for r in records)
         if len(set(draws.values())) != 1:

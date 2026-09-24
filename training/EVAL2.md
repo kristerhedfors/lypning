@@ -138,6 +138,48 @@ Real source-group dependence can be stronger: the production comparison keeps
 the full source/family-component bootstrap rather than adopting this simulation's
 independent-case assumption. No candidate outcomes chose the floor.
 
+### Amendment, 2026-09-24 — an engine-mismatch draw is a counted draw
+
+The seed-1111 arm-A pilot (HF job `6ab52a686b030d633f68e503`, Actions
+`36008052722`) finished SFT, then aborted in its base test arm on one
+base-model draw whose native run disagreed with a clean CPython oracle. That
+is a `lypning-l` bug; its fix waits in draft PR #118 because the engine is
+frozen for arm A. Such draws will recur, and every arm of an eval-2 run would
+meet the same abort. From this date the rule below applies to every arm alike,
+base and candidate, in every evaluation that scores draws: dev, test and eval-2.
+
+- **Counted.** Such a draw has status `engine-mismatch` and reward 0. It is
+  neither correct nor native and stays in the denominator. It counts against
+  the arm that drew it, in the primary metric and in gates A–C. This is the
+  conservative choice: a mismatch never helps an arm.
+- **Witnessed privately.** The program, the case, its tests and the verifier's
+  detail go to the stage's `engine-mismatches.jsonl`. That file is uploaded to
+  the private work repository only, and the bug is filed from it (root
+  `CLAUDE.md` invariant 1). Counting the draw does not excuse the bug.
+- **Always reported.** `summarize` reports `engine_mismatches` in every slice,
+  zero included, and the status appears in `statuses`.
+- **Bounded.** An evaluation fails once such draws exceed 1% of its planned
+  draws. It fails with `EngineMismatchBound`, a `VerificationBlocked` whose
+  message is two counts. Past that point the rows describe the engine, not the
+  model. The Step 2 grade has used the same bound since 2026-09-23 (#117), and
+  both read it from `pipeline/mismatch_policy.py`.
+- **Not changed.** Every other block still aborts: harness, runner, refusal
+  protocol, transport and identity drift. So does a native timeout after a
+  correct oracle. Ledger row T4 (`ORCHESTRATION.md`, 2026-09-17) kept that a
+  hard abort, because scoring it would make the endpoint depend on host load.
+
+Two arms with different counts carry that difference as a correctness
+difference. The bound limits it to 1% of each arm's draws, so both arms'
+counts stand beside every paired delta: `training_report` writes them over
+every draw, and the round scripts print them on each `== report` line. The
+change moves `code_sha256`, so an evaluation from an earlier commit is not
+reusable. It does not move `verifier_sha256`: no verifier module changed, so
+bundles prepared at the parent commit still load. Arm A seed 1111 is re-run
+under this rule. Its saved SFT adapters cannot be carried over: nothing in the
+tree resumes a pilot from them, and `split_eval2` refuses an adapter whose
+`code_sha256` differs. An evaluation that completed under the old rule held no
+mismatch, so its rows are the same under either rule.
+
 ## 5. Decoding contract
 
 Every eval-2 draw uses `pipeline.training_contract.decoding` verbatim:

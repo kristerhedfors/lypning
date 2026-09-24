@@ -12,39 +12,12 @@ from .positive_control_targets import DEFAULT_ARMS, build_targets, normalise_arm
 from .public_view import public_view
 from .training import Verifier, program_from_completion
 from .training_metrics import paired_comparison, split_components, summarize
-from .training_types import ENGINE_MISMATCH, Score, TrainingError, VerificationBlocked
-
-#: The status of a draw whose native run disagreed with a clean CPython oracle.
-#: Neither correct-native nor correct-fallback: `Score.correct` is False for
-#: it, so it counts against both rates, and the target builder admits only
-#: correct-native / correct-control, so it is never an SFT target.
-ENGINE_MISMATCH_STATUS = 'engine-mismatch'
-#: The PRIVATE file beside rows.jsonl that holds each such draw's witness;
-#: written only when there is one, so a clean grade's files are unchanged.
-ENGINE_MISMATCH_FILE = 'engine-mismatches.jsonl'
-#: A grade fails once engine-mismatch draws exceed this percentage of the
-#: graded draws: past it the rows describe the engine, not the model.
-ENGINE_MISMATCH_BOUND_PERCENT = 1
-
-
-class EngineMismatchBound(TrainingError):
-    """More engine mismatches than a grade may absorb. Its message is counts only."""
-
-
-def engine_mismatches(rows):
-    """How many graded rows are engine mismatches: the only public fact about them."""
-    return sum(r.get('status') == ENGINE_MISMATCH_STATUS for r in rows)
-
-
-def over_mismatch_bound(count, total):
-    """True when `count` of `total` draws exceeds the bound; integers, no float edge."""
-    return count * 100 > total * ENGINE_MISMATCH_BOUND_PERCENT
-
-
-def check_mismatch_bound(count, total):
-    if over_mismatch_bound(count, total):
-        raise EngineMismatchBound('engine-mismatch draws %d of %d exceed the %d%% bound'
-                                  % (count, total, ENGINE_MISMATCH_BOUND_PERCENT))
+from .training_types import ENGINE_MISMATCH, TrainingError, VerificationBlocked
+# The engine-mismatch policy is shared with GPU evaluation and GRPO; its names
+# stay importable from here, where the Step 2 scripts and tests read them.
+from .mismatch_policy import (ENGINE_MISMATCH_BOUND_PERCENT, ENGINE_MISMATCH_FILE,  # noqa: F401
+                              ENGINE_MISMATCH_STATUS, EngineMismatchBound, check_mismatch_bound,
+                              engine_mismatches, mismatch_score, over_mismatch_bound)
 
 
 def _expected(cases, samples):
@@ -107,9 +80,7 @@ def grade(cases, completions, verifier, output, *, samples, workers=8, run_id=''
             # ours and still aborts the grade.
             if exc.kind != ENGINE_MISMATCH:
                 raise
-            detail = exc.witness if isinstance(exc.witness, dict) else {}
-            score = Score(0.0, ENGINE_MISMATCH_STATUS, total_tests=len(case.get('tests') or ()),
-                          failed_test=detail.get('test'))
+            score = mismatch_score(case, exc)
             witness = {'case_id': case['case_id'], 'draw': row['draw'], 'arm': row['arm'],
                        'seed': row['seed'], 'family': case['family'],
                        'population': case['population'], 'program': program,
