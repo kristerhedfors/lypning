@@ -106,7 +106,11 @@ capability would be indistinguishable to the dispatcher. One exception: an
 UNCAUGHT `NameError` on the name of a module some variant serves (`os`, `time`,
 …) is `unsupported: name-hint`, because CPython 3.14 ends that traceback with
 an import hint that rests on a suggestion search the engine does not run
-(`err.rs:forgot_import`). No other `Did you mean` hint is written.
+(`err.rs:forgot_import`). In a program that has run `import time`, every
+uncaught `NameError`, `AttributeError` and unexpected-keyword `TypeError` is
+`name-hint` too, and the run refuses rather than commit past 8 MiB of output
+or `os.rmdir` a directory it did not make, so that refusal stays possible
+(`io.rs:hold`). No other `Did you mean` hint is written.
 
 The methods on the types that do exist are a larger surface with the same rule:
 a method CPython has and the engine lacks refuses as `<type>-method` or

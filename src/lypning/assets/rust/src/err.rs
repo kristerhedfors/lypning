@@ -321,6 +321,22 @@ pub const SERVED_MODULE_NAMES: &[&str] = &[
 /// would be a table in every binary for a message the battery does not grade.
 pub fn forgot_import(e: &LypningError) -> Option<LypningError> {
     let ErrKind::Exc(x) = e.kind() else { return None };
+    // A program lypning-l serves because of `cap-time` — before it, every one
+    // of them went to CPython and got the hint. Any uncaught error CPython may
+    // end with a `Did you mean` refuses here, and `io::hold` keeps the run
+    // reversible so this can. Not the other programs: they are the core's
+    // answer, and what the core answers lypning-l answers.
+    #[cfg(feature = "cap-time")]
+    if crate::io::held()
+        && (x.kind == "NameError"
+            || x.kind == "AttributeError"
+            || (x.kind == "TypeError" && x.msg.contains("unexpected keyword argument")))
+    {
+        return Some(unsupported(
+            "name-hint",
+            &format!("uncaught {} in a program that imports time, which CPython may end with a suggestion", x.kind),
+        ));
+    }
     if x.kind != "NameError" {
         return None;
     }

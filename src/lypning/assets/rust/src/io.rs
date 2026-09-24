@@ -181,6 +181,44 @@ pub fn is_committed() -> bool {
     COMMITTED.with(|c| *c.borrow())
 }
 
+#[cfg(feature = "cap-time")]
+thread_local! {
+    static HOLD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Keep this run reversible to its end: the program imported `time`.
+///
+/// CPython ends an uncaught `NameError` or `AttributeError` (and an unexpected
+/// keyword `TypeError`) with a `Did you mean` search this engine does not run,
+/// so in a program lypning-l serves only because it carries `cap-time`, the
+/// exit path refuses those (`err::forgot_import`). A refusal needs a run that
+/// can still be taken back, so while this is held the two things that would
+/// commit one early refuse instead: output past [`COMMIT_THRESHOLD`], and an
+/// `os.rmdir` of a directory the run did not make. Set when `import time`
+/// RUNS, not when the source says it, so a program that fails before its
+/// import answers exactly as the core does (invariant 10).
+#[cfg(feature = "cap-time")]
+pub fn hold() {
+    HOLD.with(|h| h.set(true));
+}
+
+#[cfg(feature = "cap-time")]
+pub fn held() -> bool {
+    HOLD.with(|h| h.get())
+}
+
+/// The refusal a held run raises where it would otherwise commit.
+#[cfg(feature = "cap-time")]
+fn keep_reversible(what: &str) -> R<()> {
+    if held() {
+        return Err(unsupported(
+            "name-hint",
+            &format!("{what} in a program that imports time, whose uncaught name errors must stay refusable"),
+        ));
+    }
+    Ok(())
+}
+
 /// What made this run irreversible, or `""` while it can still be taken back.
 ///
 /// The ONE source of the refusal line's `reached after …` clause, read by
@@ -235,12 +273,16 @@ fn maybe_commit() -> R<()> {
             ));
         }
         if !is_committed() && staged_len() > COMMIT_THRESHOLD {
+            #[cfg(feature = "cap-time")]
+            keep_reversible("more than 8 MiB of staged file writes")?;
             commit()?;
             mark_committed(WHY_FLUSHED);
         }
         return Ok(());
     }
     if !is_committed() && buffered_len() > COMMIT_THRESHOLD {
+        #[cfg(feature = "cap-time")]
+        keep_reversible("more than 8 MiB of output")?;
         commit()?;
         mark_committed(WHY_FLUSHED);
     }
@@ -722,6 +764,10 @@ fn note_made(p: &std::path::Path) {
 /// gone. That one commits.
 pub fn remove_dir(path: &str) -> R<()> {
     let real = std::fs::canonicalize(path).ok();
+    #[cfg(feature = "cap-time")]
+    if held() && !real.as_ref().is_some_and(|r| MADE.with(|m| m.borrow().contains(r))) {
+        keep_reversible("os.rmdir of a directory this run did not make")?;
+    }
     std::fs::remove_dir(path).map_err(|e| os_error(path, &e))?;
     let ours = real
         .map(|r| {
@@ -1058,6 +1104,8 @@ pub fn reset() {
     MADE.with(|m| m.borrow_mut().clear());
     COMMITTED.with(|c| *c.borrow_mut() = false);
     COMMIT_WHY.with(|w| *w.borrow_mut() = "");
+    #[cfg(feature = "cap-time")]
+    HOLD.with(|h| h.set(false));
     STDIN.with(|s| *s.borrow_mut() = None);
     STDIN_POS.with(|p| *p.borrow_mut() = 0);
     #[cfg(feature = "cap-csv")]

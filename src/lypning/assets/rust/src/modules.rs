@@ -70,7 +70,14 @@ pub const MODULES: &[&str] = &[
 
 pub fn import(path: &str) -> R<Value> {
     match MODULES.iter().find(|m| **m == path) {
-        Some(m) => Ok(Value::Module(m)),
+        Some(m) => {
+            // See `io::hold`: from here the run must stay reversible.
+            #[cfg(feature = "cap-time")]
+            if *m == "time" {
+                crate::io::hold();
+            }
+            Ok(Value::Module(m))
+        }
         None => Err(unsupported("module", &format!("import {path}"))),
     }
 }

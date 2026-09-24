@@ -493,3 +493,98 @@ def test_an_augmented_assignment_to_the_module_names_the_in_place_operator(op: s
     got = _run([str(BINARY)], T + "time %s 1" % op)
     assert got.returncode == 1 and got.stdout == "", got.stderr
     assert got.stderr.strip().splitlines()[-1] == line
+
+
+#: An uncaught error CPython 3.14 may end with a `Did you mean` suggestion, in a
+#: program that imports `time`, and the exact last stderr line CPython 3.14.5
+#: writes (exit 1, empty stdout on both). The engine does not run the suggestion
+#: search, and every one of these went to CPython before `cap-time`, so lypning-l
+#: refuses them at the exit path (`err::forgot_import`, kind `name-hint`). It
+#: printed the bare `name 'xx' is not defined` at exit 1.
+HINTED = [
+    (T + "x = 1\nprint(xx)", "NameError: name 'xx' is not defined. Did you mean: 'x'?"),
+    (T + "count = 0\nprint(coutn)", "NameError: name 'coutn' is not defined. Did you mean: 'count'?"),
+    (T + "print(prnt)", "NameError: name 'prnt' is not defined. Did you mean: 'print'?"),
+    (T + "prnt(1)", "NameError: name 'prnt' is not defined. Did you mean: 'print'?"),
+    (T + "def f():\n    total = 1\n    return totl\nf()",
+     "NameError: name 'totl' is not defined. Did you mean: 'total'?"),
+    (T + "print(lenn([]))", "NameError: name 'lenn' is not defined. Did you mean: 'len'?"),
+    (T + "print(tme)", "NameError: name 'tme' is not defined. Did you mean: 'time'?"),
+    (T + "print(Time)", "NameError: name 'Time' is not defined. Did you mean: 'time'?"),
+    (T + "time.sleep(0)\nprint(tim)", "NameError: name 'tim' is not defined. Did you mean: 'time'?"),
+    (T + "x = tim", "NameError: name 'tim' is not defined. Did you mean: 'time'?"),
+    ("import time as t\nprint(tt)", "NameError: name 'tt' is not defined. Did you mean: 't'?"),
+    ("from time import sleep\nprint(slep)",
+     "NameError: name 'slep' is not defined. Did you mean: 'sleep'?"),
+    ("from time import time_ns\nprint(time_n)",
+     "NameError: name 'time_n' is not defined. Did you mean: 'time_ns'?"),
+    (T + "import os\nprint(od)", "NameError: name 'od' is not defined. Did you mean: 'os'?"),
+    (T + "print(tim.time())", "NameError: name 'tim' is not defined. Did you mean: 'time'?"),
+    (T + "d = {}\nprint(d.itmes())",
+     "AttributeError: 'dict' object has no attribute 'itmes'. Did you mean: 'items'?"),
+    (T + "x = 'a'\nprint(x.uper())",
+     "AttributeError: 'str' object has no attribute 'uper'. Did you mean: 'upper'?"),
+    (T + "print([].apend)",
+     "AttributeError: 'list' object has no attribute 'apend'. Did you mean: 'append'?"),
+    (T + "def f(name):\n    pass\nf(nme=1)",
+     "TypeError: f() got an unexpected keyword argument 'nme'. Did you mean 'name'?"),
+]
+
+
+@needs_l
+@pytest.mark.parametrize("program,line", HINTED, ids=range(len(HINTED)))
+def test_an_error_cpython_may_hint_refuses_in_a_time_program(program: str, line: str) -> None:
+    got = _run([str(BINARY)], program)
+    assert _refusal_problem(got) is None, (got.returncode, got.stdout, got.stderr)
+    assert got.stderr.startswith("%s: unsupported: name-hint: " % engines.LYPNING_L), got.stderr
+    if sys.version_info[:3] == (3, 14, 5):
+        ref = _run([sys.executable], program)
+        assert (ref.returncode, ref.stdout) == (1, "")
+        assert ref.stderr.strip().splitlines()[-1] == line
+
+
+#: Past 8 MiB of output (`io::COMMIT_THRESHOLD`) a run commits and can no longer
+#: refuse, so the NameError below printed the bare message after CPython's
+#: 9,000,001 bytes where CPython 3.14.5 ends with "Did you forget to import
+#: 'time'?". A program that has imported `time` refuses at the threshold instead
+#: (`io::hold`), and so does an `os.rmdir` of a directory it did not make.
+@needs_l
+@pytest.mark.parametrize("program", [
+    T + "print('x' * 9000000)\ndel time\nprint(time.time())",
+    T + "print('x' * 9000000)",
+    T + "import os\nos.mkdir('keep')\nos.rmdir('keep')\nos.mkdir('d')\n" + "print(1)",
+], ids=["hint-after-flush", "flush", "rmdir-own"])
+def test_a_time_program_stays_reversible(program: str) -> None:
+    got = _run([str(BINARY)], program)
+    if program.endswith("print(1)"):
+        # A directory the run made is still the run's to take back: served.
+        assert (got.returncode, got.stdout) == (0, "1\n"), got.stderr
+        return
+    assert _refusal_problem(got) is None, (got.returncode, len(got.stdout), got.stderr)
+    assert got.stderr.startswith("%s: unsupported: name-hint: " % engines.LYPNING_L), got.stderr
+
+
+@needs_l
+def test_a_time_program_refuses_to_rmdir_what_it_did_not_make() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        os.mkdir(os.path.join(d, "theirs"))
+        got = subprocess.run([str(BINARY), "-c", T + "import os\nos.rmdir('theirs')\nprint(1)"],
+                             capture_output=True, text=True, cwd=d, timeout=60)
+        assert _refusal_problem(got) is None, (got.returncode, got.stdout, got.stderr)
+        assert os.path.isdir(os.path.join(d, "theirs")), "the refusal came before the effect"
+
+
+@needs_core
+@pytest.mark.parametrize("program", [
+    # Fails before the import runs: both rungs answer, with the same bytes.
+    "print(xx)\nimport time",
+    # Caught: the program's own business, and no hint is printed.
+    T + "try:\n    print(xx)\nexcept NameError as e:\n    print(e)",
+])
+def test_a_name_error_the_core_would_answer_is_still_answered(program: str) -> None:
+    got = _run([str(BINARY)], program)
+    ref = _run([sys.executable], program)
+    assert (got.returncode, got.stdout) == (ref.returncode, ref.stdout), got.stderr
+    core = _run([str(CORE)], program)
+    if core.returncode != engines.UNSUPPORTED_EXIT:
+        assert (core.returncode, core.stdout, core.stderr) == (got.returncode, got.stdout, got.stderr)
