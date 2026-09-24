@@ -61,6 +61,8 @@ pub const MODULES: &[&str] = &[
     "base64",
     #[cfg(feature = "cap-hashlib")]
     "hashlib",
+    #[cfg(feature = "cap-binascii")]
+    "binascii",
 ];
 // A `cap-*` is never built except as part of `variant-l`: `build.rs` refuses
 // any `CARGO_FEATURE_CAP_*` without `variant-l`, one rule that needs no list,
@@ -266,6 +268,11 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
         // statically out of `route::MODULE_ATTRS`, in the CORE's walk.
         #[cfg(feature = "cap-hashlib")]
         ("hashlib", _) => return crate::hashlib::module_attr(name),
+        // The six served `binascii` functions. `Error`, `crc32` and the rest
+        // refuse as `module-attr`, which `route::MODULE_ATTRS` makes a STATIC
+        // block in the core's walk.
+        #[cfg(feature = "cap-binascii")]
+        ("binascii", _) => return crate::binascii::module_attr(name),
         _ => {
             return Err(unsupported(
                 "module-attr",
@@ -369,6 +376,8 @@ pub fn call_module_method(
         ("base64", _) => return crate::base64::call(it, name, args, &kw),
         #[cfg(feature = "cap-hashlib")]
         ("hashlib", _) => return crate::hashlib::call(it, name, args, &kw),
+        #[cfg(feature = "cap-binascii")]
+        ("binascii", _) => return crate::binascii::call(it, name, args, &kw),
         ("random", _) => return crate::random::call(it, name, args, &kw),
         ("math", _) => return crate::math::call(it, name, args, &kw),
         // `Path.cwd()`. A classmethod on the type object, reached through

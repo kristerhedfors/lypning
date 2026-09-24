@@ -59,7 +59,9 @@ SPECTRUM = (LYPNING, LYPNING_L)
 #:
 #: ``cap-base64`` (``b64encode`` / ``b64decode`` / ``urlsafe_b64encode`` /
 #: ``urlsafe_b64decode``; the rest of the module refuses as ``module-attr`` from
-#: the WALK), ``cap-collections`` (``collections.Counter`` / ``defaultdict``),
+#: the WALK), ``cap-binascii`` (``hexlify`` / ``b2a_hex`` / ``unhexlify`` /
+#: ``a2b_hex`` / ``a2b_base64`` / ``b2a_base64``; ``Error``, ``crc32`` and the
+#: rest refuse as ``module-attr`` from the WALK), ``cap-collections`` (``collections.Counter`` / ``defaultdict``),
 #: ``cap-csv`` (``csv.reader`` / ``csv.DictReader``; the writers are absent, so
 #: they refuse as ``module-attr`` from the WALK), ``cap-glob`` (``glob.glob``,
 #: whose every refusal is decided in the WALK by every variant, so the feature
@@ -75,8 +77,8 @@ SPECTRUM = (LYPNING, LYPNING_L)
 VARIANT_CAPS: dict = {
     LYPNING: (),
     LYPNING_L: (
-        "cap-base64", "cap-bigint", "cap-collections", "cap-csv", "cap-glob",
-        "cap-hashlib", "cap-pathlib", "cap-re",
+        "cap-base64", "cap-bigint", "cap-binascii", "cap-collections", "cap-csv",
+        "cap-glob", "cap-hashlib", "cap-pathlib", "cap-re",
     ),
 }
 

@@ -41,6 +41,11 @@ pub mod builtins;
 /// entirely rather than merely unreachable in it.
 #[cfg(feature = "cap-bigint")]
 pub mod bigint;
+/// `binascii.hexlify` / `unhexlify` and their aliases, `a2b_base64` and
+/// `b2a_base64` — the `cap-binascii` capability. Absent from the smaller
+/// variant entirely, not merely unreachable in it.
+#[cfg(feature = "cap-binascii")]
+pub mod binascii;
 /// `collections.Counter` / `defaultdict` — the `cap-collections` capability.
 /// Absent from the smaller variant entirely, not merely unreachable in it.
 #[cfg(feature = "cap-collections")]

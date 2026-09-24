@@ -97,10 +97,11 @@
 //! lists every shape that reaches it.
 //!
 //! `b16*`, `b32*`, `b32hex*`, `b85*`, `a85*`, `encodebytes`, `decodebytes`,
-//! `standard_b64encode`/`standard_b64decode` and `binascii` are not served at
-//! all: they refuse through `module-attr`, which `route::MODULE_ATTRS` makes a
-//! static block in the CORE's walk — the binary that routes, and the one with
-//! none of this file compiled into it.
+//! `standard_b64encode`/`standard_b64decode` are not served at all: they refuse
+//! through `module-attr`, which `route::MODULE_ATTRS` makes a static block in
+//! the CORE's walk — the binary that routes, and the one with none of this
+//! file compiled into it. `binascii.a2b_base64` / `b2a_base64` are
+//! `cap-binascii`'s, and call [`scan`] and [`encode`] rather than copying them.
 
 use crate::args::Args;
 use crate::err::{unsupported, LypningError, R};
@@ -363,7 +364,7 @@ pub fn data_block(data: &[u8], urlsafe: bool) -> Option<&'static str> {
 /// `binascii.b2a_base64(data, newline=False)` — always padded to a multiple of
 /// four, and never line-wrapped, which is the difference between this and
 /// `base64.encodebytes` (not served).
-fn encode(data: &[u8], urlsafe: bool) -> Vec<u8> {
+pub fn encode(data: &[u8], urlsafe: bool) -> Vec<u8> {
     let a = if urlsafe { URL } else { STD };
     let mut out = Vec::with_capacity((data.len() + 2) / 3 * 4);
     for chunk in data.chunks(3) {
