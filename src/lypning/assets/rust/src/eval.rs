@@ -149,10 +149,7 @@ impl Interp {
         if let Some(f) = self.assigned.last() {
             // Assigned somewhere in this function but not bound yet.
             if f.contains(name) && !self.declared_global(name) {
-                return Err(LypningError::exc(
-                    "UnboundLocalError",
-                    format!("cannot access local variable '{name}' where it is not associated with a value"),
-                ));
+                return Err(unbound_local(name));
             }
         }
         if let Some(v) = self.globals.borrow().get(name) {
@@ -392,12 +389,19 @@ impl Interp {
                 for t in targets {
                     match t {
                         Target::Name(n) => {
-                            let removed = match self.chain.last() {
+                            // Inside a function `del x` makes `x` local, so an
+                            // unbound one is UnboundLocalError — unless it was
+                            // declared `global`, which deletes the global.
+                            let local = self.chain.last().filter(|_| !self.declared_global(n));
+                            let removed = match local {
                                 Some(s) => s.borrow_mut().remove(n.as_ref()).is_some(),
                                 None => self.globals.borrow_mut().remove(n.as_ref()).is_some(),
                             };
                             if !removed {
-                                return Err(name_err(n));
+                                return Err(match local {
+                                    Some(_) => unbound_local(n),
+                                    None => name_err(n),
+                                });
                             }
                         }
                         Target::Index(base, idx) => {
@@ -1585,6 +1589,13 @@ fn assigned_names(body: &[Stmt], params: &Params) -> Names {
     out
 }
 
+fn unbound_local(name: &str) -> LypningError {
+    LypningError::exc(
+        "UnboundLocalError",
+        format!("cannot access local variable '{name}' where it is not associated with a value"),
+    )
+}
+
 fn collect_assigned(body: &[Stmt], out: &mut Names) {
     fn tgt(t: &Target, out: &mut Names) {
         match t {
@@ -1600,6 +1611,8 @@ fn collect_assigned(body: &[Stmt], out: &mut Names) {
         match s {
             Stmt::Assign { targets, .. } => targets.iter().for_each(|t| tgt(t, out)),
             Stmt::AugAssign { target, .. } => tgt(target, out),
+            // `del x` makes `x` local too, so an earlier read is unbound.
+            Stmt::Del(targets) => targets.iter().for_each(|t| tgt(t, out)),
             Stmt::For {
                 target, body, els, ..
             } => {

@@ -19,6 +19,24 @@ pub struct Parser {
     /// the whole parse rather than per chain: chains compose, and it is the
     /// longest PATH through the tree that the evaluator and the drop both walk.
     chain_ops: u32,
+    /// What CPython's symbol table would know about annotations in the scope
+    /// being parsed. See [`AnnScope`]; a def swaps its own in and back out.
+    scope: AnnScope,
+}
+
+/// The two facts about a scope an annotated assignment needs, gathered while
+/// it parses because the tree forgets them: `x: int` without a value binds
+/// nothing and yet makes `x` LOCAL to its function, and a name annotated
+/// there cannot also be `global` — a SyntaxError decided before anything runs.
+#[derive(Default)]
+struct AnnScope {
+    globals: Vec<Rc<str>>,
+    annotated: Vec<Rc<str>>,
+    /// This scope is a function body, not the module.
+    fun: bool,
+    /// A function body holds a bare `x: int`: the local it declares is never
+    /// bound, and a nested scope reading it must fail rather than find a global.
+    bare: bool,
 }
 
 /// The nesting a program is allowed, and it is a measurement rather than a
@@ -62,6 +80,7 @@ pub fn parse(src: &str) -> R<Vec<Stmt>> {
         i: 0,
         depth: 0,
         chain_ops: 0,
+        scope: AnnScope::default(),
     };
     let body = p.module();
     // `from __future__ import …` is a compiler directive, decided over the
@@ -292,7 +311,7 @@ impl Parser {
         if self.eat_kw("for") {
             let target = self.target_list("in")?;
             self.expect_kw("in")?;
-            let iter = self.expr_list()?;
+            let iter = self.value_list()?;
             let body = self.block()?;
             let els = if self.eat_kw("else") {
                 self.block()?
@@ -315,7 +334,31 @@ impl Parser {
                 let ret = self.expr()?;
                 params.anns.push(ret);
             }
+            let start = self.i;
+            let outer = std::mem::replace(
+                &mut self.scope,
+                AnnScope {
+                    fun: true,
+                    ..AnnScope::default()
+                },
+            );
             let body = self.block()?;
+            let inner = std::mem::replace(&mut self.scope, outer);
+            // A bare `x: int` makes `x` local and leaves it unbound, so a
+            // lambda or nested def reading it raises NameError in CPython —
+            // but this evaluator resolves a free name through the global it
+            // finds, at any point in the function. Rare, so refused wholesale
+            // rather than resolved: the tokens are the one place a lambda
+            // inside an f-string field is still visible.
+            if inner.bare
+                && self.t[start..self.i].iter().any(|t| match &t.tok {
+                    Tok::Name(n) => n == "lambda" || n == "def",
+                    Tok::FStr { raw, .. } => raw.contains("lambda"),
+                    _ => false,
+                })
+            {
+                return Err(unsupported("annotation", "a nested scope beside a bare annotated local"));
+            }
             if contains_yield(&body) {
                 return Err(unsupported("generator", "yield in a function body"));
             }
@@ -603,13 +646,17 @@ impl Parser {
             while self.eat_op(",") {
                 names.push(self.ident()?);
             }
+            if names.iter().any(|n| self.scope.annotated.contains(n)) {
+                return Err(annotated_global());
+            }
+            self.scope.globals.extend(names.iter().cloned());
             return Ok(Stmt::Global(names));
         }
         if self.eat_kw("return") {
             if matches!(self.peek(), Tok::Newline | Tok::Eof) || self.is_op(";") {
                 return Ok(Stmt::Return(None));
             }
-            return Ok(Stmt::Return(Some(self.expr_list()?)));
+            return Ok(Stmt::Return(Some(self.value_list()?)));
         }
         if self.eat_kw("raise") {
             if matches!(self.peek(), Tok::Newline | Tok::Eof) || self.is_op(";") {
@@ -688,6 +735,7 @@ impl Parser {
         }
 
         // Expression, assignment or augmented assignment.
+        let paren = self.is_op("(");
         let first = self.expr_list()?;
         const AUG: &[(&str, BinOp)] = &[
             ("+=", BinOp::Add),
@@ -707,7 +755,7 @@ impl Parser {
         for (op, b) in AUG {
             if self.is_op(op) {
                 self.bump();
-                let value = self.expr_list()?;
+                let value = self.value_list()?;
                 return Ok(Stmt::AugAssign {
                     target: self.target_from_expr(first)?,
                     op: *b,
@@ -716,17 +764,70 @@ impl Parser {
             }
         }
         if self.is_op(":") {
-            // Annotated assignment: `x: int = 1`
+            // Annotated assignment: `x: int = 1`. The annotation itself is
+            // parsed and dropped: a 3.14 reference evaluates none of them here.
             self.bump();
             self.expr()?;
-            if self.eat_op("=") {
-                let value = self.expr_list()?;
-                return Ok(Stmt::Assign {
-                    targets: vec![self.target_from_expr(first)?],
-                    value,
-                });
-            }
-            return Ok(Stmt::Pass);
+            let value = if self.eat_op("=") { Some(self.value_list()?) } else { None };
+            let msg = match &first {
+                // A bare NAME is "simple"; `(x)` is not, and neither binds nor
+                // declares anything without a value.
+                Expr::Name(n) if !paren => {
+                    let n = n.clone();
+                    let sc = &mut self.scope;
+                    let fun = sc.fun;
+                    if fun && sc.globals.contains(&n) {
+                        return Err(annotated_global());
+                    }
+                    sc.annotated.push(n.clone());
+                    sc.bare |= fun && value.is_none();
+                    return Ok(match value {
+                        Some(value) => Stmt::Assign {
+                            targets: vec![Target::Name(n)],
+                            value,
+                        },
+                        // Binds nothing, but `x` is now local to the function:
+                        // an assignment that never runs is how the evaluator's
+                        // `collect_assigned` and the router both learn that.
+                        // `x = x` rather than a literal, so the router records
+                        // no value for `x` that it never held.
+                        None if fun => Stmt::If {
+                            arms: vec![(
+                                Expr::False,
+                                vec![Stmt::Assign {
+                                    targets: vec![Target::Name(n.clone())],
+                                    value: Expr::Name(n),
+                                }],
+                            )],
+                            els: Vec::new(),
+                        },
+                        None => Stmt::Pass,
+                    });
+                }
+                Expr::Name(_) | Expr::Attr(..) | Expr::Index(..) | Expr::Slice { .. } => {
+                    return Ok(match value {
+                        Some(value) => Stmt::Assign {
+                            targets: vec![self.target_from_expr(first)?],
+                            value,
+                        },
+                        // No value still evaluates the object and the
+                        // subscript, left to right, and stores nothing. A
+                        // slice would evaluate its bounds too — rare enough
+                        // to refuse rather than pay for.
+                        None => Stmt::Expr(match first {
+                            Expr::Attr(b, _) => *b,
+                            Expr::Index(b, i) => Expr::Tuple(vec![*b, *i]),
+                            Expr::Name(_) => Expr::None,
+                            _ => return Err(unsupported("annotation", "an annotated slice with no value")),
+                        }),
+                    });
+                }
+                Expr::Tuple(v) if !paren && matches!(v[..], [Expr::Starred(_)]) => "invalid syntax",
+                Expr::Tuple(_) => "only single target (not tuple) can be annotated",
+                Expr::List(_) => "only single target (not list) can be annotated",
+                _ => "illegal target for annotation",
+            };
+            return Err(LypningError::syntax(self.line(), msg));
         }
         if self.is_op("=") {
             let mut targets = vec![self.target_from_expr(first)?];
@@ -736,7 +837,7 @@ impl Parser {
                 if self.is_op("=") {
                     targets.push(self.target_from_expr(e)?);
                 } else {
-                    value = Some(e);
+                    value = Some(no_star(e)?);
                 }
             }
             return Ok(Stmt::Assign {
@@ -744,7 +845,12 @@ impl Parser {
                 value: value.unwrap(),
             });
         }
-        Ok(Stmt::Expr(first))
+        Ok(Stmt::Expr(no_star(first)?))
+    }
+
+    /// An expression list in a VALUE position, where `*a, 2` is legal Python.
+    fn value_list(&mut self) -> R<Expr> {
+        no_star(self.expr_list()?)
     }
 
     fn clone_expr(&mut self) -> R<Expr> {
@@ -1580,6 +1686,7 @@ fn parse_fstring(raw: &str, raw_prefix: bool) -> R<Vec<FPart>> {
                     i: 0,
                     depth: 0,
                     chain_ops: 0,
+                    scope: AnnScope::default(),
                 };
                 let e = p.expr_list()?;
                 if !matches!(p.peek(), Tok::Newline | Tok::Eof) {
@@ -1690,6 +1797,24 @@ fn split_field(raw: &str, start: usize) -> R<(String, Option<char>, Option<Strin
         i += 1;
     }
     Err(LypningError::syntax(0, "f-string: expecting '}'"))
+}
+
+/// `*a, 2` as a value builds a tuple of `a`'s items. The evaluator has no
+/// splice for a tuple display — the parenthesized spelling already refuses —
+/// and reached `can't use starred expression here` at exit 1 instead. A
+/// target list keeps its star: this runs only on what is left as a value.
+fn no_star(e: Expr) -> R<Expr> {
+    if matches!(&e, Expr::Tuple(v) if v.iter().any(|x| matches!(x, Expr::Starred(_)))) {
+        return Err(unsupported("unpack", "* in a tuple display"));
+    }
+    Ok(e)
+}
+
+fn annotated_global() -> LypningError {
+    // CPython's message depends on what else the scope did with the name
+    // (`used prior to`, `is parameter and`), which this parser does not track;
+    // it is a SyntaxError every time, so the reference is asked for its words.
+    unsupported("annotation", "an annotated name declared global")
 }
 
 fn contains_yield(body: &[Stmt]) -> bool {
