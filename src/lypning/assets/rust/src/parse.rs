@@ -512,10 +512,12 @@ impl Parser {
                 p.star = Some(p.names.len());
                 p.names.push(self.ident()?);
                 p.defaults.push(None);
+                self.star_annotation(lambda, &mut p)?;
             } else if self.eat_op("**") {
                 p.dstar = Some(p.names.len());
                 p.names.push(self.ident()?);
                 p.defaults.push(None);
+                self.star_annotation(lambda, &mut p)?;
             } else {
                 // A NAME AFTER `*args` IS KEYWORD-ONLY, exactly as one after a
                 // bare `*` is, and the bare form is refused four lines up. This
@@ -556,6 +558,20 @@ impl Parser {
             }
         }
         Ok(p)
+    }
+
+    /// `def f(*a: int, **k: str)` — the annotation on a star parameter, which
+    /// is recorded with the others in source order. It was `expected ')',
+    /// found ':'`, a SyntaxError at exit 1 on valid Python. `*a: *Ts` (a
+    /// starred annotation) stays refused.
+    fn star_annotation(&mut self, lambda: bool, p: &mut Params) -> R<()> {
+        if !lambda && self.eat_op(":") {
+            if self.is_op("*") {
+                return Err(unsupported("unpack", "starred annotation on *args"));
+            }
+            p.anns.push(self.expr()?);
+        }
+        Ok(())
     }
 
     fn simple(&mut self) -> R<Stmt> {
@@ -839,6 +855,17 @@ impl Parser {
             items.push(self.star_element()?);
         }
         Ok(Expr::Tuple(items))
+    }
+
+    /// An element after the first in a `(…)`, `[…]` or `{…}` display. The
+    /// FIRST element's `*` is refused in `atom_inner`; a later one — `[0, *a]`,
+    /// `'%s %s' % (0, *a)` — fell through to `expr()` and died as `invalid
+    /// syntax: unexpected '*'` at exit 1 on valid Python.
+    fn display_elem(&mut self) -> R<Expr> {
+        if self.is_op("*") {
+            return Err(unsupported("unpack", "* in a display"));
+        }
+        self.expr()
     }
 
     fn star_element(&mut self) -> R<Expr> {
@@ -1311,7 +1338,7 @@ impl Parser {
                 if self.eat_op(",") {
                     let mut items = vec![first];
                     while !self.is_op(")") {
-                        items.push(self.expr()?);
+                        items.push(self.display_elem()?);
                         if !self.eat_op(",") {
                             break;
                         }
@@ -1348,7 +1375,7 @@ impl Parser {
                     if self.is_op("]") {
                         break;
                     }
-                    items.push(self.expr()?);
+                    items.push(self.display_elem()?);
                 }
                 self.expect_op("]")?;
                 Ok(Expr::List(items))
@@ -1425,7 +1452,7 @@ impl Parser {
                     if self.is_op("}") {
                         break;
                     }
-                    items.push(self.expr()?);
+                    items.push(self.display_elem()?);
                 }
                 self.expect_op("}")?;
                 Ok(Expr::Set(items))

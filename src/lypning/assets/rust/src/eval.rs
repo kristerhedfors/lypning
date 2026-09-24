@@ -92,6 +92,11 @@ pub struct Interp {
     /// try/except and the inner one must not lose the outer's exception when it
     /// finishes.
     handling: Vec<(&'static str, Rc<str>)>,
+    /// How many `try` bodies WITH an `except` clause are executing right now,
+    /// dynamically, across calls. Zero means an exception raised here cannot
+    /// be caught — only its traceback will show it, which reads `str()` — so
+    /// `assert` may answer with a message whose `args` it cannot carry.
+    trying: u32,
     /// Spent scope-chain vectors, kept to be filled again. See
     /// `call_func_inner`; capped at [`CHAIN_POOL_MAX`] so a deep recursion
     /// cannot leave the pool holding its whole depth for the rest of the run.
@@ -111,6 +116,10 @@ pub struct Interp {
 /// runtime allows to finish, and small enough to be nothing.
 const CHAIN_POOL_MAX: usize = 64;
 
+/// What [`Interp::gen_frame`] captures: the creating frame's assigned names and
+/// its `global` table.
+pub(crate) type GenFrame = (Rc<Names>, Option<Box<FastSet<Rc<str>>>>);
+
 /// The same bound for [`Interp::scope_pool`], and for the same reason: a deep
 /// recursion must not leave the pool holding its whole depth for the rest of
 /// the run.
@@ -129,6 +138,7 @@ impl Interp {
             steps: 0,
             expr_depth: 0,
             handling: Vec::new(),
+            trying: 0,
             chain_pool: Vec::new(),
             scope_pool: Vec::new(),
             // Read once, here, rather than per statement. Zero — the CLI's
@@ -173,6 +183,53 @@ impl Interp {
         self.global_decls
             .last()
             .is_some_and(|g| g.as_ref().is_some_and(|g| g.contains(name)))
+    }
+
+    /// Bind a comprehension's or generator expression's loop TARGET.
+    ///
+    /// A comprehension is its own scope, so its target is always local to it —
+    /// even when the enclosing function declared the same name `global`. [`bind`]
+    /// consults the frame's `global` table first, so `global v; [v for v in
+    /// [1]]` wrote `1` into the module's `v` where CPython leaves it alone. The
+    /// table is set aside for the one assignment and put back, so a name the
+    /// target does not bind still resolves exactly as it did.
+    ///
+    /// [`bind`]: Interp::bind
+    pub(crate) fn comp_assign(&mut self, t: &Target, v: Value) -> R<()> {
+        let decls = match self.global_decls.last_mut() {
+            Some(g) if g.is_some() => g.take(),
+            _ => return self.assign(t, v),
+        };
+        let r = self.assign(t, v);
+        if let Some(g) = self.global_decls.last_mut() {
+            *g = decls;
+        }
+        r
+    }
+
+    /// The frame a generator expression is created in, as far as name
+    /// RESOLUTION needs it: the names that frame assigns and the names it
+    /// declared `global`. A generator runs its body wherever it is advanced,
+    /// and the consumer's frame is the wrong one to ask — `x = 5; g = (x for _
+    /// in [1])` consumed inside a `def` that assigns its own `x` raised
+    /// UnboundLocalError where CPython answers `[5]`.
+    pub(crate) fn gen_frame(&self) -> GenFrame {
+        (
+            self.assigned.last().cloned().unwrap_or_else(|| Rc::new(Names::new())),
+            self.global_decls.last().cloned().flatten(),
+        )
+    }
+
+    /// Enter and leave a generator's creation frame (see [`Interp::gen_frame`]).
+    /// The `global` table is moved in and back out, not cloned per element.
+    pub(crate) fn push_gen_frame(&mut self, f: &mut GenFrame) {
+        self.assigned.push(f.0.clone());
+        self.global_decls.push(f.1.take());
+    }
+
+    pub(crate) fn pop_gen_frame(&mut self, f: &mut GenFrame) {
+        self.assigned.pop();
+        f.1 = self.global_decls.pop().flatten();
     }
 
     pub fn bind(&mut self, name: &Rc<str>, v: Value) {
@@ -322,8 +379,26 @@ impl Interp {
             Stmt::Assert { test, msg } => {
                 let t = self.eval(test)?;
                 if !truthy(&t)? {
+                    // The message IS `args[0]`, and `Value::Exc` keeps one
+                    // string whose emptiness means "no arguments" (see
+                    // `call_builtin`). So a message that is not a non-empty
+                    // str — `assert x, 5`, `assert x, ''` — would read back as
+                    // `('5',)` or `()` where CPython says `(5,)` or `('',)`.
+                    // That is only observable by a handler: uncaught, the
+                    // traceback prints `str()` of it, which is exact. So
+                    // `assert len(b) == 15, len(b)` outside any `try` still
+                    // answers, and refuses only where it could be caught.
                     let m = match msg {
-                        Some(m) => fmt::to_str(&self.eval(m)?)?,
+                        Some(m) => match self.eval(m)? {
+                            Value::Str(s) if !s.is_empty() => s.to_string(),
+                            v if self.trying == 0 => fmt::to_str(&v)?,
+                            _ => {
+                                return Err(unsupported(
+                                    "exception",
+                                    "assert whose message is not a non-empty str, which AssertionError.args cannot carry",
+                                ))
+                            }
+                        },
                         None => String::new(),
                     };
                     return Err(LypningError::exc("AssertionError", m));
@@ -415,7 +490,10 @@ impl Interp {
                 els,
                 finally,
             } => {
+                let catches = !handlers.is_empty() as u32;
+                self.trying += catches;
                 let r = self.exec_block(body);
+                self.trying -= catches;
                 let out = match r {
                     // The `else` clause runs only when the body finished by
                     // FALLING OFF THE END. `break`, `continue` and `return` all
@@ -782,14 +860,12 @@ impl Interp {
             Expr::Str(s) => Value::Str(s.clone()),
             Expr::Bytes(b) => Value::Bytes(b.clone()),
             Expr::Name(n) => self.lookup(n)?,
-            // A bare `*x` in an expression position has no value; the parser
-            // only produces it where a target list is possible.
-            Expr::Starred(_) => {
-                return Err(LypningError::syntax(
-                    0,
-                    "can't use starred expression here",
-                ))
-            }
+            // `*x` reaches here only as an element of a bare tuple the parser
+            // built — `return 0, *a`, `b = 0, *a`, `for x in 0, *a:` — which is
+            // VALID Python that this engine does not unpack. It was a
+            // SyntaxError at exit 1, the program's own exit; `route` blocks the
+            // same shape statically, and this is the backstop for a `-c` run.
+            Expr::Starred(_) => return Err(unsupported("unpack", "* in a tuple display")),
             Expr::Tuple(items) => {
                 let mut v = Vec::with_capacity(items.len());
                 for x in items {
@@ -1197,7 +1273,7 @@ impl Interp {
                 continue;
             };
             stack.push(st);
-            self.assign(&clauses[level].target, v)?;
+            self.comp_assign(&clauses[level].target, v)?;
             let mut ok = true;
             for cond in &clauses[level].ifs {
                 let c = self.eval(cond)?;
@@ -1454,6 +1530,7 @@ impl Interp {
             Rc::new(clauses.to_vec()),
             Rc::new(elt.clone()),
             self.chain.clone(),
+            self.gen_frame(),
         ))))
     }
 

@@ -759,6 +759,17 @@ pub fn call_builtin(
             // string, so the two disagreed and `repr()` then quoted the lookup
             // form a second time (`KeyError("'k'")`).
             Some(v) if name == "KeyError" => fmt::repr(v)?,
+            // The empty MESSAGE is taken: it is how `raise ValueError`, `next()`'s
+            // StopIteration and a bare `assert` — all argument-less, `args ==
+            // ()` — are spelled. `ValueError('')` has `args == ('',)` and
+            // `repr` `ValueError('')`, so it is the one string this value
+            // cannot carry, and it refuses for the reason `ValueError()` does.
+            Some(Value::Str(s)) if s.is_empty() => {
+                return Err(unsupported(
+                    "exception",
+                    &format!("{name}(''), which this value cannot tell from {name}()"),
+                ))
+            }
             Some(Value::Str(s)) => s.to_string(),
             Some(other) => {
                 return Err(unsupported(
@@ -1112,7 +1123,10 @@ pub fn call_builtin(
                 match lower.as_str() {
                     "inf" | "+inf" | "infinity" | "+infinity" => Value::Float(f64::INFINITY),
                     "-inf" | "-infinity" => Value::Float(f64::NEG_INFINITY),
-                    "nan" | "+nan" | "-nan" => Value::Float(f64::NAN),
+                    "nan" | "+nan" => Value::Float(f64::NAN),
+                    // The sign bit survives: `math.copysign(1.0, float('-nan'))`
+                    // is -1.0 in CPython, and was 1.0 here.
+                    "-nan" => Value::Float(-f64::NAN),
                     // Same underscore rule as `int()`: between digits only, so
                     // `float('1_')` is a ValueError and not 1.0. Checked on the
                     // sign-stripped body, since `float('-1_0')` is fine.

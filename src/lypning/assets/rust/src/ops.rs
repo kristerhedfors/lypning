@@ -934,7 +934,17 @@ impl Interp {
                         "KeyError.args, whose key this value keeps only as its repr",
                     ))
                 }
+                // An EMPTY message is an exception raised with no arguments —
+                // `raise ValueError`, `next()`'s StopIteration, a bare
+                // `assert` — whose `args` is `()`. It answered `('',)`. The
+                // constructor refuses `ValueError('')`, the one spelling that
+                // would also store an empty message, so this is exact.
+                "args" if msg.is_empty() => return Ok(Value::Tuple(Rc::new(Vec::new()))),
                 "args" => return Ok(Value::Tuple(Rc::new(vec![Value::Str(msg.clone())]))),
+                // `StopIteration.value` is `args[0]`, or None with no args.
+                "value" if *kind == "StopIteration" => {
+                    return Ok(if msg.is_empty() { Value::None } else { Value::Str(msg.clone()) })
+                }
                 // OSError-family exceptions carry `.errno`/`.strerror`/
                 // `.filename`, and the message we build always has the shape
                 // `[Errno N] text: 'path'`, so read them back from it.
@@ -958,6 +968,15 @@ impl Interp {
                 }
                 _ => {}
             }
+        }
+        // A generator object HAS `close`, `send`, `throw`, `gi_running`,
+        // `gi_frame`, … and none of them is implemented over a genexp that is
+        // an iterator and nothing more. `g.close()` answered AttributeError at
+        // exit 1 — the program's own exit — where CPython returns None. Every
+        // attribute refuses, including the ones CPython would also reject:
+        // over-broad costs a spawn, a miss costs a wrong exit.
+        if matches!(base, Value::Gen(_)) {
+            return Err(unsupported("generator", &format!("generator.{name}")));
         }
         if crate::methods::missing_method(base, name) {
             return Err(missing_method_err(base, name));
