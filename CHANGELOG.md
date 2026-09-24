@@ -14,6 +14,20 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-24** — Keep verifier pool hosts alive across SFT's training gaps ([#124](https://github.com/kristerhedfors/lypning/pull/124))
+
+- Both seed-1111 arm-A attempts (HF jobs `6ab4a05a52d0dbd7f1d8909d` and
+  `6ab4d66d6b030d633f68d8d7`) died in an SFT evaluation on sandbox 503s, the
+  second after 30 minutes of retries. The cause was not an outage: pool hosts
+  shut down after 600 s without a sandbox, SFT trains 25–40 minutes between
+  evaluations, and huggingface_hub 1.31.0 re-raises for a host it has already
+  used instead of replacing it. Hosts now idle out after 3 h, and
+  `train_verified.run` closes its verifier pool on every exit so they do not
+  bill that long after a stage. A pool rebuild was tried and withdrawn in review:
+  closing a pool under in-flight scorers is itself a way to lose a run.
+- A sandbox-server 4xx (`SandboxError.status_code`) is refused at once instead
+  of being retried for the whole budget.
+
 **2026-09-24** — Ride out a sandbox API outage; keep case ids out of `training-prepare`'s output ([#123](https://github.com/kristerhedfors/lypning/pull/123))
 
 - The seed-1111 arm-A pilot (HF job `6ab4a05a52d0dbd7f1d8909d`, Actions

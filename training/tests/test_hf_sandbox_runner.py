@@ -6,6 +6,8 @@ import json
 import os
 from types import SimpleNamespace
 
+from pathlib import Path
+
 import pytest
 
 from pipeline import hf_sandbox_runner
@@ -321,3 +323,46 @@ def test_the_runner_carries_its_stage_into_the_pool_it_builds():
     assert "stage" in inspect.signature(execution_runner).parameters
     source = inspect.getsource(r.HfSandboxPoolRunner._pool_locked)
     assert "stage=self._stage" in source, "the pool must be named with the stage, not without"
+
+
+def test_pool_hosts_outlive_the_training_gap_between_evaluations():
+    """The HOST idle timeout, not the per-sandbox one (2026-09-24, two dead jobs).
+
+    SFT trains 25-40 minutes between evaluations with no scoring. At the SDK's
+    600 s host default every host was gone by the next evaluation, and
+    huggingface_hub 1.31.0 re-raises for a host it has already used instead of
+    replacing it, so each request got a dead host's 503 until the budget ran out.
+    """
+    built = []
+    def factory(**kw):
+        built.append(kw)
+        return FakePool([], [OK])
+    r = HfSandboxPoolRunner(IMAGE, REVISION, BUNDLE, check=False, space_sha=lambda: REVISION,
+                            pool_factory=factory, sleep=lambda s: None)
+    assert r("pass").stdout == "answer"
+    assert built[0]["idle_timeout"] == hf_sandbox_runner.HOST_IDLE_TIMEOUT == "3h"
+
+
+def test_a_sandbox_server_4xx_is_refused_at_once():
+    """`SandboxError` carries its status on `.status_code`, not `.response`."""
+    class SandboxError(Exception):
+        def __init__(self, status):
+            super().__init__("Sandbox API error (%d)" % status)
+            self.status_code = status
+    assert hf_sandbox_runner.http_status(SandboxError(403)) == 403
+    assert not hf_sandbox_runner.transient(SandboxError(401))
+    assert hf_sandbox_runner.transient(SandboxError(503))
+    r, log = runner()
+    r._pool = FlakyPool(log, [OK], [SandboxError(403)])
+    with pytest.raises(VerificationBlocked, match="403"):
+        r("pass")
+    assert not [e for e in log if e[0] == "sleep"]
+
+
+def test_train_verified_closes_its_verifier_pool_on_every_exit():
+    """Hosts outlive an unclosed pool by HOST_IDLE_TIMEOUT; `run` must release them."""
+    import ast
+    src = (Path(__file__).resolve().parents[1] / "gpu" / "train_verified.py").read_text()
+    fn = next(n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef) and n.name == "run")
+    tries = [n for n in ast.walk(fn) if isinstance(n, ast.Try)]
+    assert tries and any("release_runner" in ast.dump(t.finalbody[0]) for t in tries if t.finalbody)
