@@ -109,6 +109,12 @@ pub mod repat;
 #[cfg(feature = "cap-glob")]
 pub mod glob;
 pub mod route;
+/// `time.time` / `monotonic` / `perf_counter` (and their `_ns` forms),
+/// `time.sleep`, and the one fused `strftime(<literal>, gmtime())` UTC stamp —
+/// the `cap-time` capability. Absent from the smaller variant entirely, not
+/// merely unreachable in it. Nothing local-time: `time.rs` says why.
+#[cfg(feature = "cap-time")]
+pub mod time;
 pub mod value;
 
 // The handle types are named the way C names them, because they ARE the C

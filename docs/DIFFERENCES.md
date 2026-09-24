@@ -127,14 +127,14 @@ transcendentals are refused rather than approximated, which is why `math` needs
 no capability feature — a larger engine would answer every `math` program
 exactly as the smaller one does (`math.rs`).
 
-Any other import — `itertools`, `functools`, `time`, `datetime`, `textwrap`,
+Any other import — `itertools`, `functools`, `datetime`, `textwrap`,
 `string`, `struct`, `argparse`, `subprocess`, a third-party package, a module of
 the user's own — is `unsupported: module: import <name>` on both engines, and
 `lypning-l` adds the modules in §5.
 
 ### 4.3 Modules served in part
 
-Four modules on `lypning-l` are served as a named list of attributes rather than
+Five modules on `lypning-l` are served as a named list of attributes rather than
 whole, so the walk in the *smaller* engine can decide statically whether the
 larger one would answer. Everything not listed is `unsupported: module-attr:
 <module>.<name>` — including under `from <module> import <name>`:
@@ -145,6 +145,7 @@ larger one would answer. Everything not listed is `unsupported: module-attr:
 | `csv` | `DictReader` `QUOTE_ALL` `QUOTE_MINIMAL` `QUOTE_NONE` `QUOTE_NONNUMERIC` `reader` | `route.rs:MODULE_ATTRS` — the writers are CPython's |
 | `glob` | `escape` `glob` `has_magic` `iglob` | `route.rs:GLOB_SERVED` |
 | `hashlib` | `md5` `sha1` `sha256` `sha512` | `hashlib.rs:SERVED` — `new`, the SHA-3 family and the KDFs are CPython's |
+| `time` | `gmtime` `monotonic` `monotonic_ns` `perf_counter` `perf_counter_ns` `sleep` `strftime` `time` `time_ns` | `time.rs:SERVED` — everything local-time is CPython's |
 
 `collections` serves `Counter` and `defaultdict`; `pathlib` serves `Path`. Both
 are whole-module claims in `route.rs:CAPS`, so an attribute neither serves —
@@ -153,7 +154,7 @@ rather than in the smaller engine's walk, which costs one spawn and no answer.
 
 ## 5. What `lypning-l` adds
 
-`lypning-l` is the same crate built with eight `cap-*` features
+`lypning-l` is the same crate built with nine `cap-*` features
 (`engines.VARIANT_CAPS`, `route.rs:CAPS`, and `lypning route --spectrum` from
 either binary):
 
@@ -167,6 +168,7 @@ either binary):
 | `cap-hashlib` | the `hashlib` module — four constructors | `hashlib.rs` |
 | `cap-pathlib` | the `pathlib` module — `Path` | `pathlib.rs` |
 | `cap-re` | the `re` module and its matcher | `re.rs` |
+| `cap-time` | the `time` module — the clocks, a bounded `sleep`, one UTC stamp | `time.rs` |
 
 `cap-re` serves a **slice** of the pattern language, and the rest of it is
 refusals rather than a best effort: non-ASCII group names, backreferences, lookaround,
