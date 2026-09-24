@@ -1,6 +1,5 @@
-//! The module surface: `MODULES` below — and, on the variant built with the
-//! `cap-*` feature for it, `collections`, `pathlib`, `re`, `csv`, `glob` and
-//! `base64` and `hashlib`.
+//! The module surface: `MODULES` below — the core's eight, and on the variant
+//! built with a `cap-*` feature, the module that feature's `#[cfg]` row names.
 //!
 //! `math` is here rather than behind a `cap-*` because nothing in it is a
 //! capability: the served subset is IEEE-754 and integer arithmetic, and the
@@ -31,162 +30,41 @@ use std::rc::Rc;
 /// Modules lypning can serve. `route.rs` reads this to decide whether a program's
 /// imports are within reach before anything is executed.
 ///
-/// Spelled twice rather than appended to, so the smaller variant's table is the
-/// same bytes it always was: a capability that added an entry at runtime would
-/// still have compiled the branch that adds it. `route::CAPS` carries the same
-/// claim for the ROUTER, which has to answer for a sibling it is not.
-#[cfg(not(any(
-    feature = "cap-collections",
-    feature = "cap-pathlib",
-    feature = "cap-re",
-    feature = "cap-csv",
-    feature = "cap-glob",
-    feature = "cap-base64"
-)))]
-pub const MODULES: &[&str] = &["sys", "os", "os.path", "io", "json", "math", "posixpath", "random"];
-#[cfg(all(
-    feature = "cap-collections",
-    not(feature = "cap-pathlib"),
-    not(feature = "cap-re"),
-    not(feature = "cap-csv"),
-    not(feature = "cap-glob"),
-    not(feature = "cap-base64")
-))]
-pub const MODULES: &[&str] =
-    &["sys", "os", "os.path", "io", "json", "math", "posixpath", "random", "collections"];
-#[cfg(all(
-    feature = "cap-pathlib",
-    not(feature = "cap-collections"),
-    not(feature = "cap-re"),
-    not(feature = "cap-csv"),
-    not(feature = "cap-glob"),
-    not(feature = "cap-base64")
-))]
-pub const MODULES: &[&str] =
-    &["sys", "os", "os.path", "io", "json", "math", "posixpath", "random", "pathlib"];
-#[cfg(all(
-    feature = "cap-collections",
-    feature = "cap-pathlib",
-    not(feature = "cap-re"),
-    not(feature = "cap-csv"),
-    not(feature = "cap-glob"),
-    not(feature = "cap-base64")
-))]
+/// One array, with each capability's module an element behind its own
+/// `#[cfg]` — the attribute is stable on array elements, so a `cap-*` step
+/// APPENDS one line here and touches no other. The core compiles none of those
+/// elements, so its table is the same eight entries, the same bytes, it always
+/// was: nothing is added at runtime, and no branch that would add one exists in
+/// the smaller variant. `route::CAPS` carries the same claim for the ROUTER,
+/// which has to answer for a sibling it is not.
 pub const MODULES: &[&str] = &[
-    "sys", "os", "os.path", "io", "json", "math", "posixpath", "random", "collections", "pathlib",
-];
-#[cfg(all(
-    feature = "cap-collections",
-    feature = "cap-pathlib",
-    feature = "cap-re",
-    not(feature = "cap-csv"),
-    not(feature = "cap-glob"),
-    not(feature = "cap-base64")
-))]
-pub const MODULES: &[&str] = &[
-    "sys", "os", "os.path", "io", "json", "math", "posixpath", "random", "collections",
-    "pathlib", "re",
-];
-#[cfg(all(
-    feature = "cap-collections",
-    feature = "cap-pathlib",
-    feature = "cap-re",
-    feature = "cap-csv",
-    not(feature = "cap-glob"),
-    not(feature = "cap-base64")
-))]
-pub const MODULES: &[&str] = &[
-    "sys", "os", "os.path", "io", "json", "math", "posixpath", "random", "collections",
-    "pathlib", "re",
+    "sys",
+    "os",
+    "os.path",
+    "io",
+    "json",
+    "math",
+    "posixpath",
+    "random",
+    // Capability rows, in the order they were built. Append; never reorder.
+    #[cfg(feature = "cap-collections")]
+    "collections",
+    #[cfg(feature = "cap-pathlib")]
+    "pathlib",
+    #[cfg(feature = "cap-re")]
+    "re",
+    #[cfg(feature = "cap-csv")]
     "csv",
+    #[cfg(feature = "cap-glob")]
+    "glob",
+    #[cfg(feature = "cap-base64")]
+    "base64",
+    #[cfg(feature = "cap-hashlib")]
+    "hashlib",
 ];
-#[cfg(all(
-    feature = "cap-collections",
-    feature = "cap-pathlib",
-    feature = "cap-re",
-    feature = "cap-csv",
-    feature = "cap-glob",
-    not(feature = "cap-base64"),
-    not(feature = "cap-hashlib")
-))]
-pub const MODULES: &[&str] = &[
-    "sys", "os", "os.path", "io", "json", "math", "posixpath", "random", "collections",
-    "pathlib", "re",
-    "csv", "glob",
-];
-#[cfg(all(
-    feature = "cap-collections",
-    feature = "cap-pathlib",
-    feature = "cap-re",
-    feature = "cap-csv",
-    feature = "cap-glob",
-    feature = "cap-base64",
-    not(feature = "cap-hashlib")
-))]
-pub const MODULES: &[&str] = &[
-    "sys", "os", "os.path", "io", "json", "math", "posixpath", "random", "collections",
-    "pathlib", "re",
-    "csv", "glob", "base64",
-];
-#[cfg(all(
-    feature = "cap-collections",
-    feature = "cap-pathlib",
-    feature = "cap-re",
-    feature = "cap-csv",
-    feature = "cap-glob",
-    feature = "cap-base64",
-    feature = "cap-hashlib"
-))]
-pub const MODULES: &[&str] = &[
-    "sys", "os", "os.path", "io", "json", "math", "posixpath", "random", "collections",
-    "pathlib", "re",
-    "csv", "glob", "base64", "hashlib",
-];
-// The rows above are the build-order CHAIN, not every subset: each capability
-// appends one row and stops the row before it. `cap-re`, `cap-csv`, `cap-glob`,
-// `cap-base64` and `cap-hashlib` are never built except as part of `variant-l`,
-// whose feature names the full set — which is what the five guards below say,
-// each naming the caps that precede it in the chain.
-#[cfg(all(feature = "cap-re", not(all(feature = "cap-collections", feature = "cap-pathlib"))))]
-compile_error!("cap-re is only built as part of variant-l (it names the full set)");
-#[cfg(all(
-    feature = "cap-csv",
-    not(all(feature = "cap-collections", feature = "cap-pathlib", feature = "cap-re"))
-))]
-compile_error!("cap-csv is only built as part of variant-l (it names the full set)");
-#[cfg(all(
-    feature = "cap-glob",
-    not(all(
-        feature = "cap-collections",
-        feature = "cap-pathlib",
-        feature = "cap-re",
-        feature = "cap-csv"
-    ))
-))]
-compile_error!("cap-glob is only built as part of variant-l (it names the full set)");
-#[cfg(all(
-    feature = "cap-base64",
-    not(all(
-        feature = "cap-collections",
-        feature = "cap-pathlib",
-        feature = "cap-re",
-        feature = "cap-csv",
-        feature = "cap-glob"
-    ))
-))]
-compile_error!("cap-base64 is only built as part of variant-l (it names the full set)");
-#[cfg(all(
-    feature = "cap-hashlib",
-    not(all(
-        feature = "cap-collections",
-        feature = "cap-pathlib",
-        feature = "cap-re",
-        feature = "cap-csv",
-        feature = "cap-glob",
-        feature = "cap-base64"
-    ))
-))]
-compile_error!("cap-hashlib is only built as part of variant-l (it names the full set)");
+// A `cap-*` is never built except as part of `variant-l`: `build.rs` refuses
+// any `CARGO_FEATURE_CAP_*` without `variant-l`, one rule that needs no list,
+// so a new capability adds nothing there either.
 
 pub fn import(path: &str) -> R<Value> {
     match MODULES.iter().find(|m| **m == path) {

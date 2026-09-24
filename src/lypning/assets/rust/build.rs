@@ -43,6 +43,14 @@ fn main() {
         .filter_map(|(k, _)| k.strip_prefix("CARGO_FEATURE_CAP_").map(|c| format!("cap-{}", c.to_lowercase().replace('_', "-"))))
         .collect();
     caps.sort();
+    // One rule for every capability, present and future: a `cap-*` is only
+    // built as part of `variant-l`, whose feature names the full set. The NAME
+    // above is what both dispatchers route on, so a `lypning` carrying a
+    // capability would answer for a sibling it is not. Keyed on the feature
+    // prefix rather than a list, so adding a `cap-*` adds nothing here.
+    if !caps.is_empty() && !on("VARIANT_L") {
+        panic!("{} on without variant-l: a cap-* feature is only built as part of variant-l (it names the full set)", caps.join(","))
+    }
     println!("cargo:rustc-env=LYPNING_CAPS={}", caps.join(","));
     // The REFERENCE CPython's minor version, because a handful of CPython's own
     // answers are not the same on every version this package supports

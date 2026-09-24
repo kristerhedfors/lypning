@@ -25,7 +25,12 @@ def table(path: Path, name: str) -> list:
     if not m:
         raise SystemExit("table %s not found in %s — the engine moved; fix this script"
                          % (name, path))
-    return re.findall(r'"([^"]+)"', m.group(1))
+    # A `#[cfg(feature = "cap-…")]` element is a larger variant's row, not the
+    # core's (`modules.rs:MODULES` is one array whose capability rows are each
+    # gated on their feature); the brief describes the core, so drop them.
+    body = re.sub(r"//[^\n]*", "", m.group(1))
+    body = re.sub(r'#\[cfg\([^\]]*\)\]\s*"[^"]*"', "", body)
+    return re.findall(r'"([^"]+)"', body)
 
 
 def fmt(names) -> str:

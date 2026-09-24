@@ -57,15 +57,20 @@ def _string_const(file: str, name: str) -> list:
 def _core_modules() -> list:
     """``modules.rs:MODULES`` as the build with no ``cap-*`` feature sees it.
 
-    The table is spelled once per feature combination, and the one guarded by
-    ``cfg(not(any(…)))`` is the core's — which is also the set both engines
-    share, since a capability only ever adds.
+    The table is one array whose capability rows are each an element behind its
+    own ``#[cfg(feature = "cap-…")]``; dropping those leaves the core's — which
+    is also the set both engines share, since a capability only ever adds.
     """
-    m = re.search(r"#\[cfg\(not\(any\((?:[^)]|\)[^\]])*?\)\)\)\]\s*"
-                  r"pub const MODULES: &\[&str\] = &\[(?P<body>.*?)\];",
+    m = re.search(r"pub const MODULES: &\[&str\] = &\[(?P<body>.*?)\];",
                   _text("modules.rs"), re.S)
-    assert m, "modules.rs: no `cfg(not(any(…)))` MODULES table — this test reads the core's by that guard"
-    return _QUOTED.findall(m.group("body"))
+    assert m, "modules.rs: no `pub const MODULES` array — this test reads the core's by name"
+    body = re.sub(r"//[^\n]*", "", m.group("body"))
+    gated = re.findall(r'#\[cfg\(([^\]]*)\)\]\s*"[^"]*"', body)
+    assert all(g.startswith('feature = "cap-') for g in gated), (
+        "modules.rs: a MODULES row is gated on something other than one cap-* feature: %r"
+        % gated)
+    body = re.sub(r'#\[cfg\([^\]]*\)\]\s*"[^"]*"', "", body)
+    return _QUOTED.findall(body)
 
 
 def _caps() -> dict:
