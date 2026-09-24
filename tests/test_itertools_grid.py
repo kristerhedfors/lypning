@@ -96,7 +96,9 @@ LAZY = [
     I + "p = itertools.combinations([1, 2, 3], 2)\nprint(next(p)); print(next(p)); print(next(p))\n"
         "print(next(p, 'done'), next(p, 'done'))",
     I + "p = itertools.product('ab')\nprint(iter(p) is p, next(p), list(p), list(p))",
-    I + "for t in itertools.product(range(10**9), repeat=2):\n    print(t)\n    if t[1] == 2:\n        break",
+    # 10**6, not 10**9: both engines DRAIN the range first (CPython's tuple()),
+    # so 10**9 measured the host's memory, and timed out under suite load
+    I + "for t in itertools.product(range(10**6), repeat=2):\n    print(t)\n    if t[1] == 2:\n        break",
 ]
 
 THE_SHAPE = [
@@ -177,6 +179,11 @@ REFUSED = [
     I + "print(itertools.product(repeat=2**70))",
     I + "print(itertools.combinations('abc', 2**70))",
     I + "print(itertools.combinations('abc', -2**70))",
+    # CPython mallocs r indices before comparing r with n: MemoryError at
+    # these sizes, a host-dependent answer below them (verifier, round 1)
+    I + "print(list(itertools.combinations('abc', 2**63-1)))",
+    I + "print(list(itertools.combinations([], 2**62)))",
+    I + "print(list(itertools.combinations('', 2**20 + 1)))",
     I + "print(list(itertools.product('ab', repeat=10**9)))",
     I + "print(list(itertools.product({1, 2})))",
     I + "print(list(itertools.combinations({'a', 'b'}, 1)))",
@@ -351,3 +358,62 @@ def test_the_capability_is_on_the_larger_variant_only() -> None:
     table = _spectrum(BINARY)
     assert "cap-itertools" in table["self_caps"]
     assert {r["cap"]: r["modules"] for r in table["caps"]}["cap-itertools"] == ["itertools"]
+
+
+#: Round-1 verifier findings, pinned to CPython 3.14.5's exact bytes
+#: (2026-09-24) rather than to whatever interpreter runs the suite:
+#: `product` with no iterables is ONE empty tuple at any `repeat` (it hung,
+#: spinning `repeat` times over nothing); an all-keyword `combinations` call
+#: says "keyword arguments"; `combinations` with a small `r > n` is `[]`.
+PINNED = [
+    (I + "print(list(itertools.product(repeat=2**62)))", "[()]\n", 0, None),
+    (I + "print(list(itertools.product(repeat=2**63-1)), list(itertools.product(repeat=0)))",
+     "[()] [()]\n", 0, None),
+    (I + "print(list(itertools.combinations('ab', 2**20)))", "[]\n", 0, None),
+    (I + "itertools.combinations(r=1, iterable='ab', x=3)", "", 1,
+     "TypeError: combinations() takes at most 2 keyword arguments (3 given)"),
+    (I + "itertools.combinations(x=3, y=4, z=5)", "", 1,
+     "TypeError: combinations() takes at most 2 keyword arguments (3 given)"),
+    (I + "itertools.combinations(iterable='ab', r=1, x=3, y=4)", "", 1,
+     "TypeError: combinations() takes at most 2 keyword arguments (4 given)"),
+    (I + "itertools.combinations(r=2, iterable='b', **{'a': 1})", "", 1,
+     "TypeError: combinations() takes at most 2 keyword arguments (3 given)"),
+    (I + "itertools.combinations('ab', r=1, x=3)", "", 1,
+     "TypeError: combinations() takes at most 2 arguments (3 given)"),
+    # a module is hashable by identity, and `posixpath` IS `os.path`
+    ("import itertools, math\nd = {itertools: 1, math: 2}\n"
+     "print(d[itertools], d[math], len({math, math, itertools}), math in {itertools})",
+     "1 2 2 False\n", 0, None),
+]
+
+
+@needs_l
+@pytest.mark.parametrize("case", PINNED, ids=range(len(PINNED)))
+def test_the_round_one_findings_match_cpython_bytes(case) -> None:
+    program, out, code, err = case
+    got = _run([str(BINARY)], program)
+    last = (got.stderr.strip().splitlines() or [None])[-1]
+    assert (got.stdout, got.returncode, last) == (out, code, err), (program, got.stderr)
+
+
+#: Shared (core) code: a module as a dict/set key, and `posixpath` as the
+#: same object as `os.path`. Exact CPython 3.14.5 bytes.
+CORE_PINNED = [
+    ("import math\nprint({math: 1}[math], len({math, math}), math in {math: 0})",
+     "1 1 True\n"),
+    ("import os, posixpath\nfrom os import path\n"
+     "print(os.path is posixpath, os.path == posixpath, path is posixpath)\n"
+     "print({os.path: 1}.get(posixpath), len({os, os.path, posixpath}))",
+     "True True True\n1 2\n"),
+    ("import sys, json\nprint({sys: 'a', json: 'b'}[json], {sys: 1}.get(json))",
+     "b None\n"),
+]
+
+
+@needs_core
+@pytest.mark.parametrize("case", CORE_PINNED, ids=range(len(CORE_PINNED)))
+def test_a_module_is_hashable_by_identity_on_every_variant(case) -> None:
+    program, out = case
+    for binary in (CORE, BINARY):
+        got = _run([str(binary)], program)
+        assert (got.stdout, got.returncode) == (out, 0), (binary, program, got.stderr)

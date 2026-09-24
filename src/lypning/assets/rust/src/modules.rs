@@ -72,6 +72,11 @@ pub const MODULES: &[&str] = &[
 
 pub fn import(path: &str) -> R<Value> {
     match MODULES.iter().find(|m| **m == path) {
+        // `posixpath` IS `os.path` — one object in `sys.modules` — and a
+        // module's name is its identity here (`==`, `is`, a dict key), so
+        // the two spellings must be one value or `os.path is posixpath` is
+        // False at exit 0.
+        Some(&"posixpath") => Ok(Value::Module("os.path")),
         Some(m) => Ok(Value::Module(m)),
         None => Err(unsupported("module", &format!("import {path}"))),
     }

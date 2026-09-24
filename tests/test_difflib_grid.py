@@ -32,6 +32,7 @@ SERVED = [
     "import difflib as d, json\nprint(json.dumps([1]))",
     "import os, difflib\nprint(os.path.join('a', 'b'))",
     "import difflib\nimport sys\nprint(len(sys.argv))",
+    "import difflib\nprint({difflib: 1}[difflib], difflib in {difflib}, difflib == difflib)",
 ]
 
 REFUSED = [

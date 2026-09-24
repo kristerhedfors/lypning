@@ -53,6 +53,12 @@ pub const SERVED: &[&str] = &["combinations", "product"];
 /// a `MemoryError` there that this engine has no business imitating.
 const MAX_POOLS: usize = 1 << 16;
 
+/// `combinations(x, r)` with `r > len(x)` is `[]` in principle, but CPython
+/// mallocs `r` indices first: `r=2**62` is a MemoryError, `r=2**40` an OOM
+/// kill, `r=2**24` a quiet `[]` (3.14.5, 2026-09-24). Below this bound the
+/// allocation is 8 MiB and every host answers `[]`; above it this refuses.
+const MAX_R: u64 = 1 << 20;
+
 /// The index state of one `product` or `combinations` object — CPython's own
 /// `productobject`/`combinationsobject` fields, less the result-tuple reuse.
 pub struct Combo {
@@ -139,9 +145,14 @@ pub fn call(it: &mut Interp, name: &str, args: &mut Args, kw: &[(Rc<str>, Value)
                 let v = args.take(i);
                 drained.push(Rc::new(it.iter_collect(v)?));
             }
+            // No iterables is no pools whatever `repeat` says — `[()]` in
+            // CPython even at `repeat=2**63-1` — so the loop is skipped
+            // rather than spun `repeat` times over nothing.
             let mut pools = Vec::with_capacity(n as usize);
-            for _ in 0..repeat {
-                pools.extend(drained.iter().cloned());
+            if !drained.is_empty() {
+                for _ in 0..repeat {
+                    pools.extend(drained.iter().cloned());
+                }
             }
             let idx = vec![0; pools.len()];
             Ok(object(Combo { pools, idx, combinations: false, started: false, done: false }))
@@ -152,8 +163,11 @@ pub fn call(it: &mut Interp, name: &str, args: &mut Args, kw: &[(Rc<str>, Value)
             // the sign of `r` is checked AFTER (`itertools_combinations_impl`).
             let total = args.len() + kw.len();
             if total > 2 {
+                // Clinic says "keyword arguments" when NO argument was
+                // positional, "arguments" otherwise (3.14.5, measured).
+                let what = if args.len() == 0 { "keyword arguments" } else { "arguments" };
                 return Err(type_err(format!(
-                    "combinations() takes at most 2 arguments ({total} given)"
+                    "combinations() takes at most 2 {what} ({total} given)"
                 )));
             }
             let mut iterable = args.first().cloned();
@@ -181,6 +195,13 @@ pub fn call(it: &mut Interp, name: &str, args: &mut Args, kw: &[(Rc<str>, Value)
                 return Err(value_err("r must be non-negative"));
             }
             let r = r as u64;
+            // CPython allocates an `r`-sized index array BEFORE it compares
+            // `r` with `n`, so a huge `r > n` is a MemoryError there (or a
+            // lazily-committed `[]`, depending on the host's memory). Past
+            // MAX_R that answer is the host's, not the language's: refuse.
+            if r > pool.len() as u64 && r > MAX_R {
+                return Err(refuse("combinations() with r past 2**20 and above len(iterable)"));
+            }
             // `r > n` yields nothing, and is decided here so no index vector
             // of a size the program chose is ever allocated.
             let done = r > pool.len() as u64;
