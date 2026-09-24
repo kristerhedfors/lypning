@@ -140,6 +140,55 @@ thread_local! {
     static MADE: RefCell<Vec<std::path::PathBuf>> = const { RefCell::new(Vec::new()) };
     static DELETED: RefCell<crate::hash::Set<String>> =
         RefCell::new(crate::hash::Set::with_hasher(crate::hash::BuildFnv));
+    /// See [`hold`].
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
+    static HELD: RefCell<bool> = const { RefCell::new(false) };
+}
+
+/// This run may not commit early: past [`COMMIT_THRESHOLD`] it REFUSES
+/// instead of flushing.
+///
+/// For a program that names `itertools` or `difflib`, set from the SOURCE
+/// before anything runs. Those programs were CPython's before these
+/// capabilities (main refused `import itertools` statically), and their served
+/// surface keeps runtime refusals — `repr` of a product, `set-order`, a
+/// dynamic `getattr`, an uncaught error whose last line carries a hint — that
+/// a flush would turn into an exit 1 with half the output on stdout, from the
+/// chain as well as from a pinned `-c`. Refusing at the threshold instead
+/// keeps every one of them routable: CPython answers the program from the
+/// start, and the cost is a spawn for a program that prints more than 8 MiB.
+/// The core's own programs keep the early flush; nothing there changed.
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
+pub fn hold() {
+    HELD.with(|h| *h.borrow_mut() = true);
+}
+
+/// [`hold`] when the source spells a module whose programs need it. A text
+/// match, so a string or a comment that says `itertools` also holds: an
+/// over-match costs a spawn past 8 MiB, a miss an exit 1.
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
+pub fn hold_for(src: &str) {
+    if src.contains("itertools") || src.contains("difflib") {
+        hold();
+    }
+}
+
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
+pub fn held() -> bool {
+    HELD.with(|h| *h.borrow())
+}
+
+#[cfg(not(any(feature = "cap-itertools", feature = "cap-difflib")))]
+fn held() -> bool {
+    false
+}
+
+fn held_refusal() -> LypningError {
+    unsupported(
+        "output",
+        "more than 8 MiB written by a program that names itertools or difflib, \
+         whose run must stay routable",
+    )
 }
 
 /// The bytes have left the process.
@@ -235,12 +284,18 @@ fn maybe_commit() -> R<()> {
             ));
         }
         if !is_committed() && staged_len() > COMMIT_THRESHOLD {
+            if held() {
+                return Err(held_refusal());
+            }
             commit()?;
             mark_committed(WHY_FLUSHED);
         }
         return Ok(());
     }
     if !is_committed() && buffered_len() > COMMIT_THRESHOLD {
+        if held() {
+            return Err(held_refusal());
+        }
         commit()?;
         mark_committed(WHY_FLUSHED);
     }
@@ -1058,6 +1113,8 @@ pub fn reset() {
     MADE.with(|m| m.borrow_mut().clear());
     COMMITTED.with(|c| *c.borrow_mut() = false);
     COMMIT_WHY.with(|w| *w.borrow_mut() = "");
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
+    HELD.with(|h| *h.borrow_mut() = false);
     STDIN.with(|s| *s.borrow_mut() = None);
     STDIN_POS.with(|p| *p.borrow_mut() = 0);
     #[cfg(feature = "cap-csv")]

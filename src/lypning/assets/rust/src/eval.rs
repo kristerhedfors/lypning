@@ -319,9 +319,51 @@ impl Interp {
     // ---- statements -------------------------------------------------------
 
     pub fn run(&mut self, body: &[Stmt]) -> R<()> {
-        match self.exec_block(body)? {
+        let flow = self.exec_block(body);
+        // An UNCAUGHT NameError ends CPython's traceback with a hint this
+        // engine does not compute — `Did you mean: 'product'?`, `Did you
+        // forget to import 'json'?` — out of every visible name and
+        // `sys.stdlib_module_names`. The core prints the bare line, as it did
+        // before; a program that names `itertools` or `difflib` never ran on
+        // the core at all (main sent it to CPython), so here it refuses
+        // instead of starting to answer with the wrong last line — decided
+        // from the SOURCE (`io::hold_for`), so an error raised before the
+        // import refuses too. `str(e)` carries no hint, so a CAUGHT
+        // NameError is unaffected.
+        //
+        // An uncaught AttributeError is the same case: `x.apend(2)` ends
+        // `Did you mean: 'append'?`, out of `dir(x)`. Both hints are 3.10's;
+        // 3.9 prints the bare line, which is what this engine prints
+        // (measured on 3.9.6, 3.11.15 and 3.14.5).
+        #[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
+        if let Err(e) = &flow {
+            if crate::io::held() && REF_PY_MINOR >= 10 {
+                if let ErrKind::Exc(x) = e.kind() {
+                    if x.kind == "NameError" {
+                        return Err(unsupported(
+                            "name-hint",
+                            "an uncaught NameError, whose last line CPython ends with a suggestion",
+                        ));
+                    }
+                    if x.kind == "AttributeError" {
+                        return Err(unsupported(
+                            "attr-hint",
+                            "an uncaught AttributeError, whose last line CPython ends with a suggestion",
+                        ));
+                    }
+                }
+            }
+        }
+        match flow? {
             Flow::Normal => Ok(()),
             _ => Err(LypningError::syntax(0, "'return'/'break' outside a block")),
+        }
+    }
+
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
+    fn note_cap(&mut self, path: &str) {
+        if matches!(path, "itertools" | "difflib") {
+            crate::io::hold();
         }
     }
 
@@ -685,6 +727,8 @@ impl Interp {
             Stmt::Import { names } => {
                 for (path, bind) in names {
                     let m = modules::import(path)?;
+                    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
+                    self.note_cap(path);
                     // `import os.path` binds `os`, but `os.path` must resolve.
                     if path.contains('.') && bind.as_ref() == path.split('.').next().unwrap() {
                         modules::import(path.split('.').next().unwrap())?;
@@ -697,6 +741,8 @@ impl Interp {
             }
             Stmt::FromImport { module, names } => {
                 let m = modules::import(module)?;
+                #[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
+                self.note_cap(module);
                 for (n, bind) in names {
                     let v = modules::get_attr(&m, n)?;
                     self.bind(bind, v);

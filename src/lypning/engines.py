@@ -66,6 +66,10 @@ SPECTRUM = (LYPNING, LYPNING_L)
 #: buys the LIST and nothing else), ``cap-hashlib`` (``hashlib.md5`` / ``sha1``
 #: / ``sha256`` / ``sha512``; every other name on the module refuses as
 #: ``module-attr`` from the WALK, out of ``route::MODULE_ATTRS``),
+#: ``cap-itertools`` (``itertools.product`` / ``combinations``; every other name
+#: refuses as ``module-attr`` from the WALK, out of the same table),
+#: ``cap-difflib`` (``import difflib`` and nothing on it: its table row is
+#: EMPTY, so every ``difflib.<name>`` refuses from the WALK),
 #: ``cap-pathlib`` (``pathlib.Path``),
 #: ``cap-re`` (the ``re`` matcher) and ``cap-statistics`` (``mean`` / ``median``
 #: / ``median_low`` / ``median_high``; every other name refuses as
@@ -77,8 +81,9 @@ SPECTRUM = (LYPNING, LYPNING_L)
 VARIANT_CAPS: dict = {
     LYPNING: (),
     LYPNING_L: (
-        "cap-base64", "cap-bigint", "cap-collections", "cap-csv", "cap-glob",
-        "cap-hashlib", "cap-pathlib", "cap-re", "cap-statistics",
+        "cap-base64", "cap-bigint", "cap-collections", "cap-csv", "cap-difflib",
+        "cap-glob", "cap-hashlib", "cap-itertools", "cap-pathlib", "cap-re",
+        "cap-statistics",
     ),
 }
 

@@ -1203,13 +1203,8 @@ pub fn call_builtin(
                         }
                     }
                     other => {
-                        for pair in it.iter_collect(other.clone())? {
-                            let kv = it.iter_collect(pair)?;
-                            if kv.len() != 2 {
-                                return Err(value_err(
-                                    "dictionary update sequence element has length != 2",
-                                ));
-                            }
+                        for (i, pair) in it.iter_collect(other.clone())?.into_iter().enumerate() {
+                            let kv = dict_pair(it, pair, i)?;
                             d.insert(kv[0].clone(), kv[1].clone())?;
                         }
                     }
@@ -2139,27 +2134,87 @@ pub fn call_builtin(
                 .get(1)
                 .cloned()
                 .ok_or_else(|| type_err("isinstance expected 2 arguments, got 1"))?;
+            // A class a capability holds as a MODULE ATTRIBUTE — `csv.DictReader`,
+            // `itertools.product` — is a `Value::Bound`, not the `Value::Builtin`
+            // the arms below compare, so it fell to `arg 2 must be a type, not
+            // type`: a TypeError at exit 1 where CPython answers True or False.
+            // The itertools classes are answered: their instances are
+            // `IterObj`s whose kind IS the class's tp_name, so the name compare
+            // below is exact. `csv.DictReader` still refuses.
+            let class = |c: &Value| -> Option<&'static str> {
+                match c {
+                    Value::Builtin(b) => Some(*b),
+                    #[cfg(feature = "cap-itertools")]
+                    Value::Bound(m, _) if matches!(**m, Value::Module("itertools")) => {
+                        match callable_kind(c) {
+                            Some(crate::value::Callable::Class(cls)) => Some(cls),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                }
+            };
+            #[cfg(feature = "cap-csv")]
+            {
+                let held = |c: &Value| {
+                    class(c).is_none()
+                        && matches!(c, Value::Bound(..))
+                        && matches!(callable_kind(c), Some(crate::value::Callable::Class(_)))
+                };
+                let hit = match &cls {
+                    Value::Tuple(t) => t.iter().any(held),
+                    c => held(c),
+                };
+                if hit {
+                    return Err(unsupported(
+                        "isinstance",
+                        "isinstance() against a class a capability module holds as an attribute",
+                    ));
+                }
+            }
+            // `isinstance(1, 3)`: the wording is 3.10's (unions); 3.9 has no
+            // union to name (measured on 3.9.6 and 3.11.15 through 3.14.5).
+            let not_a_type = || {
+                type_err(if REF_PY_MINOR >= 10 {
+                    "isinstance() arg 2 must be a type, a tuple of types, or a union"
+                } else {
+                    "isinstance() arg 2 must be a type or tuple of types"
+                })
+            };
+            // A tuple is tried LEFT TO RIGHT and stops at the first match, so
+            // `isinstance(1, (int, 3))` is True and `(str, 3)` the TypeError:
+            // the names up to the first non-class are what is compared, and
+            // the non-class raises only if none of them matched.
+            let mut bad = false;
             // `&'static str`, not `String`: these come out of `Value::Builtin`,
             // which already interns them, and building a `String` per class was
             // an allocation for a comparison.
             let names: Vec<&'static str> = match &cls {
-                Value::Tuple(t) => t
-                    .iter()
-                    .map(|c| match c {
-                        Value::Builtin(b) => Ok(*b),
-                        other => Err(type_err(format!(
-                            "isinstance() arg 2 must be a type, not {}",
-                            type_name(other)
-                        ))),
-                    })
-                    .collect::<R<Vec<_>>>()?,
-                Value::Builtin(b) => vec![*b],
-                other => {
-                    return Err(type_err(format!(
-                        "isinstance() arg 2 must be a type, not {}",
-                        type_name(other)
-                    )))
+                Value::Tuple(t) => {
+                    let mut out = Vec::new();
+                    for c in t.iter() {
+                        match class(c) {
+                            Some(n) => out.push(n),
+                            None => {
+                                // A nested tuple is legal in CPython and not
+                                // walked here.
+                                if matches!(c, Value::Tuple(_)) {
+                                    return Err(unsupported(
+                                        "isinstance",
+                                        "isinstance() against a nested tuple of classes",
+                                    ));
+                                }
+                                bad = true;
+                                break;
+                            }
+                        }
+                    }
+                    out
                 }
+                c => match class(c) {
+                    Some(n) => vec![n],
+                    None => return Err(not_a_type()),
+                },
             };
             // `isinstance(x, type)` asks whether x is a CLASS. lypning has no
             // class objects of its own and `Value::Builtin` is both `int` and
@@ -2180,7 +2235,7 @@ pub fn call_builtin(
             if matches!(v, Value::ReFlag(_)) && names.contains(&"int") {
                 return Ok(Value::Bool(true));
             }
-            Value::Bool(names.iter().any(|n| {
+            let hit = names.iter().any(|n| {
                 // An exception instance is matched through the SAME hierarchy
                 // table `except` uses, not by its type name. `type_name` of any
                 // `Exc` is the literal string "Exception", so comparing against
@@ -2201,7 +2256,11 @@ pub fn call_builtin(
                     // which is exactly the idiom that would have answered False
                     // at exit 0: `isinstance(c, dict)` is True in CPython.
                     || dict_subclass(n, t)
-            }))
+            });
+            if bad && !hit {
+                return Err(not_a_type());
+            }
+            Value::Bool(hit)
         }
         "open" => {
             // `file` is a keyword too — `open(file='f.txt', mode='w')` — and
@@ -2702,4 +2761,46 @@ fn parse_float(s: &str) -> Option<f64> {
         }
         _ => t.replace('_', "").parse::<f64>().ok(),
     }
+}
+
+/// Element `i` of a `dict(seq)` / `d.update(seq)` sequence, as its two items,
+/// with `dict_merge`'s own errors (CPython 3.9-3.14, measured on 3.9.6,
+/// 3.11.15, 3.12.13, 3.13.13 and 3.14.5): `#i has length n; 2 is required`,
+/// and for an element that is not iterable at all `cannot convert ... #i to a
+/// sequence` — which 3.14 rewords to `object is not iterable` with that
+/// sentence as a NOTE, a traceback line no exception here carries: refused
+/// there.
+pub fn dict_pair(it: &mut Interp, pair: Value, i: usize) -> R<Vec<Value>> {
+    let kv = match &pair {
+        Value::List(_) | Value::Tuple(_) => it.iter_collect(pair)?,
+        _ => {
+            let mut iter = match it.make_iter(pair) {
+                Ok(x) => x,
+                Err(e) if matches!(e.kind(), ErrKind::Exc(x) if x.kind == "TypeError") => {
+                    if REF_PY_MINOR >= 14 {
+                        return Err(unsupported(
+                            "exception-note",
+                            "a dict update element that is not a sequence, which CPython 3.14 annotates",
+                        ));
+                    }
+                    return Err(type_err(format!(
+                        "cannot convert dictionary update sequence element #{i} to a sequence"
+                    )));
+                }
+                Err(e) => return Err(e),
+            };
+            let mut out = Vec::new();
+            while let Some(x) = it.iter_next(&mut iter)? {
+                out.push(x);
+            }
+            out
+        }
+    };
+    if kv.len() != 2 {
+        return Err(value_err(format!(
+            "dictionary update sequence element #{i} has length {}; 2 is required",
+            kv.len()
+        )));
+    }
+    Ok(kv)
 }

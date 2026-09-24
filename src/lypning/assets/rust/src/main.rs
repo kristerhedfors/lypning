@@ -182,6 +182,8 @@ fn execute_inner(src: &str, report_refusal: bool, kind: &mut String, detail: &mu
     if let Err(e) = route::base64_static_check(&body, src) {
         return finish(Err(e), report_refusal, kind, detail);
     }
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
+    io::hold_for(src);
     let mut interp = eval::Interp::new();
     let r = interp.run(&body);
     finish(r, report_refusal, kind, detail)

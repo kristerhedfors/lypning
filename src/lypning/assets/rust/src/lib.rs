@@ -61,6 +61,10 @@ pub mod hashlib;
 pub mod host;
 pub mod io;
 pub mod iter;
+/// `itertools.product` / `combinations` — the `cap-itertools` capability.
+/// Absent from the smaller variant entirely, not merely unreachable in it.
+#[cfg(feature = "cap-itertools")]
+pub mod itertools;
 pub mod json;
 pub mod lex;
 /// `math` — the exactly-defined subset, in EVERY variant, because nothing in it

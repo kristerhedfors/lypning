@@ -99,6 +99,27 @@ impl Interp {
                 return Ok(v);
             }
         }
+        // Sequence repetition, as `PyNumber_Multiply` decides it: the LEFT
+        // operand is the sequence if it is one, else the right, and a count
+        // with no `__index__` is `can't multiply sequence by non-int of type
+        // 'T'` naming the count. The arms below read the count through
+        // `int_val`, whose "cannot be interpreted as an integer" is CPython's
+        // wording for a different call (`'x' * 1.5`, `[1] * 'x'`, `'x' *
+        // zip()`; measured on 3.9.6, 3.11.15 and 3.14.5).
+        if let Mul = op {
+            let seq = |v: &Value| {
+                matches!(v, Value::Str(_) | Value::Bytes(_) | Value::List(_) | Value::Tuple(_))
+            };
+            let n = if seq(a) { Some(b) } else if seq(b) { Some(a) } else { None };
+            if let Some(n) = n {
+                if !matches!(n, Value::Int(_) | Value::Bool(_)) {
+                    return Err(type_err(format!(
+                        "can't multiply sequence by non-int of type '{}'",
+                        type_name(n)
+                    )));
+                }
+            }
+        }
         Ok(match (op, a, b) {
             (Add, Value::Str(x), Value::Str(y)) => Value::Str(format!("{x}{y}").into()),
             (Add, Value::Bytes(x), Value::Bytes(y)) => {
@@ -212,6 +233,17 @@ impl Interp {
                     "percent-format",
                     "bytes % args (PEP 461 formatting)",
                 ))
+            }
+            // `str + x`, `list + x`, `tuple + x`: the LEFT operand's
+            // `sq_concat` words the refusal, not the binary-op fallback
+            // (3.9.6 through 3.14.5, measured). `bytes + str` is its own
+            // sentence and keeps the generic arm's.
+            (Add, Value::Str(_) | Value::List(_) | Value::Tuple(_), r) => {
+                let l = type_name(a);
+                return Err(type_err(format!(
+                    "can only concatenate {l} (not \"{}\") to {l}",
+                    type_name(r)
+                )));
             }
             _ => {
                 return Err(type_err(format!(
@@ -474,8 +506,11 @@ impl Interp {
                 false
             }
             other => {
+                // 3.14 says what `in` actually looks for (measured on 3.14.5;
+                // 3.9-3.13 keep `is not iterable`).
+                let what = if REF_PY_MINOR >= 14 { "a container or iterable" } else { "iterable" };
                 return Err(type_err(format!(
-                    "argument of type '{}' is not iterable",
+                    "argument of type '{}' is not {what}",
                     type_name(other)
                 )))
             }
@@ -508,11 +543,11 @@ impl Interp {
             }
             Value::List(l) => {
                 let b = l.borrow();
-                let i = norm_index(crate::eval::int_val(idx)?, b.len(), "list")?;
+                let i = norm_index(idx_val(idx, "list")?, b.len(), "list")?;
                 b[i].clone()
             }
             Value::Tuple(t) => {
-                let i = norm_index(crate::eval::int_val(idx)?, t.len(), "tuple")?;
+                let i = norm_index(idx_val(idx, "tuple")?, t.len(), "tuple")?;
                 t[i].clone()
             }
             Value::Str(s) => {
@@ -522,11 +557,11 @@ impl Interp {
                 // collects the whole string into a `Vec<char>` to reach one of
                 // them, which is O(n) in the string for an O(1) question.
                 if s.is_ascii() {
-                    let i = norm_index(crate::eval::int_val(idx)?, s.len(), "string")?;
+                    let i = norm_index(idx_val(idx, "string")?, s.len(), "string")?;
                     Value::Str(crate::value::substr(&s[i..i + 1]))
                 } else {
                     let chars: Vec<char> = s.chars().collect();
-                    let i = norm_index(crate::eval::int_val(idx)?, chars.len(), "string")?;
+                    let i = norm_index(idx_val(idx, "string")?, chars.len(), "string")?;
                     Value::Str(crate::value::char_str(chars[i]))
                 }
             }
@@ -534,7 +569,7 @@ impl Interp {
                 // The receiver is `bytes`, and CPython names the type in the
                 // message: "index out of range" for bytes, not "bytearray index
                 // out of range" — which named a type this subset does not even have.
-                let i = norm_index(crate::eval::int_val(idx)?, b.len(), "")?;
+                let i = norm_index(idx_val(idx, "byte")?, b.len(), "")?;
                 ival(b[i] as i64)
             }
             Value::Range(a, bb, st) => {
@@ -552,7 +587,7 @@ impl Interp {
                     ));
                 }
                 // CPython says "range object index out of range" here, not "range".
-                let i = norm_index(crate::eval::int_val(idx)?, n as usize, "range object")?;
+                let i = norm_index(idx_val(idx, "range")?, n as usize, "range object")?;
                 ival(a + (i as i64) * st)
             }
             other => return Err(not_subscriptable(other)),
@@ -575,7 +610,7 @@ impl Interp {
                 // A STORE names the operation: `list assignment index out of range`,
                 // where a read says `list index out of range`. Both stores said
                 // the read's words. Measured on 3.10 through 3.13, 2026-09-15.
-                let i = norm_index(crate::eval::int_val(&idx)?, n, "list assignment")?;
+                let i = norm_index(idx_val(&idx, "list")?, n, "list assignment")?;
                 l.borrow_mut()[i] = v;
             }
             other => {
@@ -1098,6 +1133,23 @@ impl Interp {
         // message differently, and `value::attr_error` is the renderer that
         // knows which (`value::Callable`).
         Err(crate::value::attr_error(base, name))
+    }
+}
+
+/// A sequence index that is not an integer: the SEQUENCE's TypeError, never
+/// `int_val`'s `cannot be interpreted as an integer` (`[1]['a']`, measured on
+/// 3.9.6, 3.11.15, 3.12.13, 3.13.13 and 3.14.5). A str says it differently,
+/// and named the type only from 3.11 on.
+fn idx_val(idx: &Value, seq: &str) -> R<i64> {
+    match crate::eval::int_val(idx) {
+        Err(e) if matches!(e.kind(), ErrKind::Exc(_)) => Err(type_err(match seq {
+            "string" if REF_PY_MINOR >= 11 => {
+                format!("string indices must be integers, not '{}'", type_name(idx))
+            }
+            "string" => "string indices must be integers".to_string(),
+            _ => format!("{seq} indices must be integers or slices, not {}", type_name(idx)),
+        })),
+        r => r,
     }
 }
 

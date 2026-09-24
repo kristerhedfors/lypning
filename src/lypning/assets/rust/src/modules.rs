@@ -63,6 +63,10 @@ pub const MODULES: &[&str] = &[
     "hashlib",
     #[cfg(feature = "cap-statistics")]
     "statistics",
+    #[cfg(feature = "cap-itertools")]
+    "itertools",
+    #[cfg(feature = "cap-difflib")]
+    "difflib",
 ];
 // A `cap-*` is never built except as part of `variant-l`: `build.rs` refuses
 // any `CARGO_FEATURE_CAP_*` without `variant-l`, one rule that needs no list,
@@ -70,6 +74,11 @@ pub const MODULES: &[&str] = &[
 
 pub fn import(path: &str) -> R<Value> {
     match MODULES.iter().find(|m| **m == path) {
+        // `posixpath` IS `os.path` — one object in `sys.modules` — and a
+        // module's name is its identity here (`==`, `is`, a dict key), so
+        // the two spellings must be one value or `os.path is posixpath` is
+        // False at exit 0.
+        Some(&"posixpath") => Ok(Value::Module("os.path")),
         Some(m) => Ok(Value::Module(m)),
         None => Err(unsupported("module", &format!("import {path}"))),
     }
@@ -278,6 +287,13 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
         // STATIC block in the core's walk.
         #[cfg(feature = "cap-statistics")]
         ("statistics", _) => return crate::statistics::module_attr(name),
+        // `itertools.product` and `itertools.combinations`. Every other name —
+        // `chain`, `islice`, `permutations`, `count`, `groupby` — refuses with
+        // the `module-attr` kind, which the router blocks on statically out of
+        // `route::MODULE_ATTRS`, in the CORE's walk. `difflib` has no arm: its
+        // row there is EMPTY, so every `difflib.<name>` is the arm below.
+        #[cfg(feature = "cap-itertools")]
+        ("itertools", _) => return crate::itertools::module_attr(name),
         _ => {
             return Err(unsupported(
                 "module-attr",
@@ -383,6 +399,8 @@ pub fn call_module_method(
         ("hashlib", _) => return crate::hashlib::call(it, name, args, &kw),
         #[cfg(feature = "cap-statistics")]
         ("statistics", _) => return crate::statistics::call(it, name, args, &kw),
+        #[cfg(feature = "cap-itertools")]
+        ("itertools", _) => return crate::itertools::call(it, name, args, &kw),
         ("random", _) => return crate::random::call(it, name, args, &kw),
         ("math", _) => return crate::math::call(it, name, args, &kw),
         // `Path.cwd()`. A classmethod on the type object, reached through

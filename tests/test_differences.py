@@ -207,7 +207,9 @@ def test_every_capability_row_names_the_module_it_serves():
     ("glob", ("route.rs", "GLOB_SERVED")),
     ("hashlib", ("hashlib.rs", "SERVED")),
     ("statistics", ("statistics.rs", "SERVED")),
+    ("itertools", ("itertools.rs", "SERVED")),
     ("csv", None),
+    ("difflib", None),
 ])
 def test_the_partial_surfaces_are_the_served_lists(module, source):
     """§4.3 is the list a reader uses to decide whether a program costs a spawn,
@@ -215,7 +217,7 @@ def test_the_partial_surfaces_are_the_served_lists(module, source):
     rows = {_names(r[0])[0]: r for r in _table_rows("| module | served | source |")[1:]}
     assert module in rows, "docs/DIFFERENCES.md §4.3 has no `%s` row" % module
     doc = set(_names(rows[module][1]))
-    crate = set(_module_attrs_row("csv") if source is None else _string_const(*source))
+    crate = set(_module_attrs_row(module) if source is None else _string_const(*source))
     assert doc == crate, _fail("what lypning-l serves of `%s` (§4.3)" % module, doc, crate)
 
 
