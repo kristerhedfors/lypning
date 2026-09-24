@@ -161,6 +161,69 @@ EXACT = [
     ("print(int(b'x'*205))", "", 1, "ValueError: " + _LONG),
     ("print(int(b'12', 1))", "", 1,
      "ValueError: int() base must be >= 2 and <= 36, or 0"),
+    # ONE sign, before the prefix only: the parser stripped one and then let
+    # `from_str_radix` read a second, so `int('--12')` was 12 and `int('0x-1',
+    # 16)` was -1, both at exit 0 (round 2, 2026-09-24).
+    ("print(int('--12'))", "", 1,
+     "ValueError: invalid literal for int() with base 10: '--12'"),
+    ("print(int(b'0x-1',16))", "", 1,
+     "ValueError: invalid literal for int() with base 16: b'0x-1'"),
+    ("print(int('-+12'))", "", 1,
+     "ValueError: invalid literal for int() with base 10: '-+12'"),
+    ("print(int(b'++1',16))", "", 1,
+     "ValueError: invalid literal for int() with base 16: b'++1'"),
+    ("print(int(b'0x+1',0))", "", 1,
+     "ValueError: invalid literal for int() with base 0: b'0x+1'"),
+    ("print(int(b'+-0x1f',0))", "", 1,
+     "ValueError: invalid literal for int() with base 0: b'+-0x1f'"),
+    ("print(int('-0x-1',16))", "", 1,
+     "ValueError: invalid literal for int() with base 16: '-0x-1'"),
+    ("print(int('-0x1f',16), int(' +12 '), int('-0b1_0', 0), int('+0o7', 8))",
+     "-31 12 -2 7\n", 0, ""),
+    ("print(int(base=16))", "", 1, "TypeError: int() missing string argument"),
+    # float(bytes) is ASCII text, never decoded, and the message names the bytes.
+    ("print(float(b' 1.5 '), float(b'1_5'), float(b'-inf'), float(b'1e5'))",
+     "1.5 15.0 -inf 100000.0\n", 0, ""),
+    ("print(float(b'\\xff1'))", "", 1,
+     "ValueError: could not convert string to float: b'\\xff1'"),
+    ("print(float(b''))", "", 1, "ValueError: could not convert string to float: b''"),
+    # The UTF-8 decode error names CPython's reason and byte range.
+    ("print(b'\\xc3'.decode())", "", 1,
+     "UnicodeDecodeError: 'utf-8' codec can't decode byte 0xc3 in position 0: "
+     "unexpected end of data"),
+    ("print(b'\\xe2\\x82'.decode())", "", 1,
+     "UnicodeDecodeError: 'utf-8' codec can't decode bytes in position 0-1: "
+     "unexpected end of data"),
+    ("print(b'\\xc3\\x28'.decode())", "", 1,
+     "UnicodeDecodeError: 'utf-8' codec can't decode byte 0xc3 in position 0: "
+     "invalid continuation byte"),
+    ("print(b'ab\\xe2\\x82\\x28'.decode())", "", 1,
+     "UnicodeDecodeError: 'utf-8' codec can't decode bytes in position 2-3: "
+     "invalid continuation byte"),
+    ("print(b'\\xed\\xa0\\x80'.decode())", "", 1,
+     "UnicodeDecodeError: 'utf-8' codec can't decode byte 0xed in position 0: "
+     "invalid continuation byte"),
+    ("print(b'\\xf0\\x9f\\x98'.decode())", "", 1,
+     "UnicodeDecodeError: 'utf-8' codec can't decode bytes in position 0-2: "
+     "unexpected end of data"),
+    ("print(b'a\\x80'.decode())", "", 1,
+     "UnicodeDecodeError: 'utf-8' codec can't decode byte 0x80 in position 1: "
+     "invalid start byte"),
+    # ASCII is not UTF-8: this answered 'é' at exit 0.
+    ("print(b'\\xc3\\xa9'.decode('ascii'))", "", 1,
+     "UnicodeDecodeError: 'ascii' codec can't decode byte 0xc3 in position 0: "
+     "ordinal not in range(128)"),
+    # bytes + anything else is `sq_concat`'s message, not the generic one.
+    ("print(b'a' + 'x')", "", 1, "TypeError: can't concat str to bytes"),
+    ("print(b'a' + None)", "", 1, "TypeError: can't concat NoneType to bytes"),
+    # Keywords and `**` mappings are gathered, and evaluated, in source order.
+    ("f = lambda **k: k\nprint(f(x=1, **{'y':2}, z=3))",
+     "{'x': 1, 'y': 2, 'z': 3}\n", 0, ""),
+    ("f = lambda **k: k\nprint(f(**{'y':2}, x=1, **{'w':0}, z=3))",
+     "{'y': 2, 'x': 1, 'w': 0, 'z': 3}\n", 0, ""),
+    ("def g(n):\n    print(n)\n    return n\nf = lambda **k: k\n"
+     "print(f(a=g(1), **g({'b':2}), c=g(3)))",
+     "1\n{'b': 2}\n3\n{'a': 1, 'b': 2, 'c': 3}\n", 0, ""),
     # `keyword argument repeated` is a compile error: nothing before it runs.
     ("print(1)\nprint(sorted([2,1], reverse=True, reverse=False))", "", 1,
      "SyntaxError: keyword argument repeated: reverse"),
@@ -170,6 +233,17 @@ EXACT_L = [
     (B + "print(int(binascii.b2a_hex(b'\\xff\\x00'), 16))", "65280\n", 0, ""),
     (B + "print(1)\nprint(binascii.b2a_base64(b'a', newline=False, newline=True))", "", 1,
      "SyntaxError: keyword argument repeated: newline"),
+    (B + "print(int(binascii.unhexlify('2d2d31')))", "", 1,
+     "ValueError: invalid literal for int() with base 10: b'--1'"),
+    (B + "print(float(binascii.hexlify(b'\\x12')))", "12.0\n", 0, ""),
+    (B + "print(float(binascii.hexlify(b'abc')))", "616263.0\n", 0, ""),
+    (B + "print(binascii.unhexlify('c3').decode())", "", 1,
+     "UnicodeDecodeError: 'utf-8' codec can't decode byte 0xc3 in position 0: "
+     "unexpected end of data"),
+    (B + "h = binascii.hexlify(b'abc')\nprint(h + 'x')", "", 1,
+     "TypeError: can't concat str to bytes"),
+    (B + "f = lambda **k: k\nprint(f(x=1, **{'y':2}, z=3))",
+     "{'x': 1, 'y': 2, 'z': 3}\n", 0, ""),
 ]
 # A keyword given twice through `**` is a TypeError whose message names the
 # callee; every callee here took the LAST value and answered at exit 0.
@@ -345,3 +419,42 @@ def test_a_served_function_in_an_except_clause_routes_to_cpython() -> None:
     route = engines.route(program, binary=CORE)
     assert route.engine == engines.CPYTHON, (route.engine, route.kind, route.detail)
     assert route.kind == "exception", (route.kind, route.detail)
+
+
+# A handler that is not an exception CLASS is a TypeError in CPython the moment
+# an exception reaches it. The engines match handlers by NAME, so it used to
+# be skipped as a non-match; and once a capability import routed the program
+# into lypning-l, the core's `exception` blocker was dropped with it (round 2,
+# 2026-09-24: `import csv` then `except int:` answered through the chain).
+NOT_A_CLASS = [
+    B + "try:\n    1/0\nexcept len:\n    print('p')\nexcept ZeroDivisionError:\n    print('z')",
+    B + "try:\n    1/0\nexcept (int, ZeroDivisionError):\n    print('p')",
+    B + "h = binascii.hexlify\ntry:\n    1/0\nexcept h:\n    print('p')",
+    B + "E = (binascii.hexlify,)\ntry:\n    1/0\nexcept E:\n    print('p')",
+    "from binascii import hexlify\ntry:\n    1/0\nexcept hexlify:\n    print('p')",
+    B + "def h():\n    pass\ntry:\n    1/0\nexcept h:\n    print('p')",
+    "import math, binascii\ntry:\n    1/0\nexcept math.sqrt:\n    print('p')",
+    "import csv\ntry:\n    1/0\nexcept int:\n    print('p')",
+    "import base64\ntry:\n    1/0\nexcept print:\n    print('p')",
+]
+
+
+@needs_core
+@pytest.mark.parametrize("program", NOT_A_CLASS, ids=range(len(NOT_A_CLASS)))
+def test_a_handler_that_is_not_a_class_routes_to_cpython_and_refuses(program: str) -> None:
+    route = engines.route(program, binary=CORE)
+    assert route.engine == engines.CPYTHON, (route.engine, route.kind, route.detail)
+    got = _run([str(BINARY)], program)
+    problem = _refusal_problem(got)
+    assert problem is None, "%s\n  program: %r" % (problem, program)
+    assert ": unsupported: exception: except " in got.stderr, got.stderr
+
+
+@needs_core
+def test_a_handler_the_exception_never_reaches_is_not_refused() -> None:
+    """CPython validates a clause only when it is tried: a matching clause
+    ABOVE the bad one answers."""
+    body = "try:\n    1/0\nexcept ZeroDivisionError:\n    print('z')\nexcept int:\n    print('p')"
+    for binary, program in ((CORE, body), (BINARY, B + body)):
+        got = _run([str(binary)], program)
+        assert (got.stdout, got.returncode) == ("z\n", 0), (binary, got)

@@ -937,6 +937,9 @@ pub fn call_builtin(
             if base != 0 && !(2..=36).contains(&base) {
                 return Err(value_err("int() base must be >= 2 and <= 36, or 0"));
             }
+            if explicit_base && args.first().is_none() {
+                return Err(type_err("int() missing string argument"));
+            }
             if explicit_base && !matches!(args.first(), Some(Value::Str(_)) | Some(Value::Bytes(_)))
             {
                 return Err(type_err("int() can't convert non-string with explicit base"));
@@ -1016,7 +1019,14 @@ pub fn call_builtin(
                     } else {
                         t
                     };
-                    if !underscores_are_between_digits(t2, base as u32, t2.len() < t.len()) {
+                    // ONE sign, and only before the prefix. The sign has been
+                    // stripped above, so a second one here is malformed — and
+                    // `from_str_radix` would have read it as the sign: `int(
+                    // '--12')` printed 12 and `int('0x-1', 16)` printed -1 at
+                    // exit 0, where CPython raises ValueError for both.
+                    if t2.starts_with(['+', '-'])
+                        || !underscores_are_between_digits(t2, base as u32, t2.len() < t.len())
+                    {
                         return Err(value_err(format!(
                             "invalid literal for int() with base {reported}: {}",
                             lit(s)?
@@ -1123,60 +1133,86 @@ pub fn call_builtin(
                 }
             }
         }
-        "float" => match args.first() {
-            None => Value::Float(0.0),
-            #[cfg(feature = "cap-re")]
-            Some(Value::ReFlag(b)) => Value::Float(*b as f64),
-            #[cfg(feature = "cap-re")]
-            Some(v @ (Value::Pattern(_) | Value::Match(_))) => {
-                return Err(crate::re::guard_one(v, "float() of").unwrap_err())
-            }
-            Some(Value::Str(s)) => {
-                let t = s.trim();
-                let lower = t.to_ascii_lowercase();
-                match lower.as_str() {
-                    "inf" | "+inf" | "infinity" | "+infinity" => Value::Float(f64::INFINITY),
-                    "-inf" | "-infinity" => Value::Float(f64::NEG_INFINITY),
-                    "nan" | "+nan" | "-nan" => Value::Float(f64::NAN),
-                    // Same underscore rule as `int()`: between digits only, so
-                    // `float('1_')` is a ValueError and not 1.0. Checked on the
-                    // sign-stripped body, since `float('-1_0')` is fine.
-                    _ if !underscores_are_between_digits(
-                        t.strip_prefix(['-', '+']).unwrap_or(t),
-                        10,
-                        false,
-                    ) =>
-                    {
+        "float" => {
+            // `float(b'1.5')` is 1.5: CPython reads a bytes argument as ASCII
+            // text (never decoding it) and names the BYTES repr when it fails.
+            // It fell to the TypeError arm below, so `float(hexlify(b'\x12'))`
+            // died at exit 1 where CPython prints 12.0.
+            let text;
+            let first = match args.first() {
+                Some(Value::Bytes(b)) => {
+                    if !b.is_ascii() {
                         return Err(value_err(format!(
                             "could not convert string to float: {}",
-                            fmt::str_repr(s)?
-                        )))
+                            fmt::bytes_repr(b)
+                        )));
                     }
-                    _ => match t.replace('_', "").parse::<f64>() {
-                        Ok(v) => Value::Float(v),
-                        Err(_) => {
+                    text = Value::Str(decode_utf8(b)?.into());
+                    Some(&text)
+                }
+                o => o,
+            };
+            let lit = |s: &str| -> R<String> {
+                match args.first() {
+                    Some(Value::Bytes(b)) => Ok(fmt::bytes_repr(b)),
+                    _ => fmt::str_repr(s),
+                }
+            };
+            match first {
+                None => Value::Float(0.0),
+                #[cfg(feature = "cap-re")]
+                Some(Value::ReFlag(b)) => Value::Float(*b as f64),
+                #[cfg(feature = "cap-re")]
+                Some(v @ (Value::Pattern(_) | Value::Match(_))) => {
+                    return Err(crate::re::guard_one(v, "float() of").unwrap_err())
+                }
+                Some(Value::Str(s)) => {
+                    let t = s.trim();
+                    let lower = t.to_ascii_lowercase();
+                    match lower.as_str() {
+                        "inf" | "+inf" | "infinity" | "+infinity" => Value::Float(f64::INFINITY),
+                        "-inf" | "-infinity" => Value::Float(f64::NEG_INFINITY),
+                        "nan" | "+nan" | "-nan" => Value::Float(f64::NAN),
+                        // Same underscore rule as `int()`: between digits only, so
+                        // `float('1_')` is a ValueError and not 1.0. Checked on the
+                        // sign-stripped body, since `float('-1_0')` is fine.
+                        _ if !underscores_are_between_digits(
+                            t.strip_prefix(['-', '+']).unwrap_or(t),
+                            10,
+                            false,
+                        ) =>
+                        {
                             return Err(value_err(format!(
                                 "could not convert string to float: {}",
-                                fmt::str_repr(s)?
+                                lit(s)?
                             )))
                         }
-                    },
+                        _ => match t.replace('_', "").parse::<f64>() {
+                            Ok(v) => Value::Float(v),
+                            Err(_) => {
+                                return Err(value_err(format!(
+                                    "could not convert string to float: {}",
+                                    lit(s)?
+                                )))
+                            }
+                        },
+                    }
+                }
+                // `float(2**100)` needs the round-to-nearest a wide integer does
+                // not carry here; `get()` refuses rather than round through an
+                // intermediate this engine cannot make exact.
+                Some(Value::Int(i)) => Value::Float(i.get()? as f64),
+                Some(Value::Bool(b)) => Value::Float(*b as i64 as f64),
+                Some(Value::Float(f)) => Value::Float(*f),
+                Some(other) => {
+                    return Err(type_err(format!(
+                        "float() argument must be a string or {}, not '{}'",
+                        real_number(),
+                        type_name(other)
+                    )))
                 }
             }
-            // `float(2**100)` needs the round-to-nearest a wide integer does
-            // not carry here; `get()` refuses rather than round through an
-            // intermediate this engine cannot make exact.
-            Some(Value::Int(i)) => Value::Float(i.get()? as f64),
-            Some(Value::Bool(b)) => Value::Float(*b as i64 as f64),
-            Some(Value::Float(f)) => Value::Float(*f),
-            Some(other) => {
-                return Err(type_err(format!(
-                    "float() argument must be a string or {}, not '{}'",
-                    real_number(),
-                    type_name(other)
-                )))
-            }
-        },
+        }
         "bool" => Value::Bool(match args.first() {
             None => false,
             Some(v) => truthy(v)?,

@@ -213,6 +213,12 @@ impl Interp {
                     "bytes % args (PEP 461 formatting)",
                 ))
             }
+            // bytes has no `nb_add`: CPython falls to its `sq_concat`, whose
+            // message is not the generic one. `b'a' + 'x'` is "can't concat
+            // str to bytes". No right operand here has an `__radd__`.
+            (Add, Value::Bytes(_), r) => {
+                return Err(type_err(format!("can't concat {} to bytes", type_name(r))))
+            }
             _ => {
                 return Err(type_err(format!(
                     "unsupported operand type(s) for {}: '{}' and '{}'",

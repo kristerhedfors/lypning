@@ -1111,11 +1111,13 @@ impl Parser {
         let mut star = Vec::new();
         let mut kwargs = Vec::new();
         let mut dstar = Vec::new();
+        let mut dstar_at = Vec::new();
         loop {
             if self.is_op(")") {
                 break;
             }
             if self.eat_op("**") {
+                dstar_at.push(kwargs.len());
                 dstar.push(self.expr()?);
             } else if self.eat_op("*") {
                 star.push(args.len());
@@ -1161,6 +1163,7 @@ impl Parser {
             star,
             kwargs,
             dstar,
+            dstar_at,
         })
     }
 

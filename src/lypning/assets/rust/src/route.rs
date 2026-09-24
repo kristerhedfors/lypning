@@ -1452,31 +1452,26 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                     // binascii.hexlify:` and `except math.sqrt:` resolved, so
                     // the handler was admitted and silently never matched,
                     // where CPython raises TypeError the moment an exception
-                    // reaches it. A router block: a binary run directly still
-                    // takes the handler as a non-match, because the run-time
-                    // walk (`static_stop_check`) is kept off programs that
-                    // import neither glob nor hashlib.
-                    let ok = match &dotted {
-                        Some((module, leaf)) => {
-                            match crate::modules::MODULES.iter().find(|m| **m == module) {
-                                Some(m) => match crate::modules::get_attr(
-                                    &crate::value::Value::Module(m),
-                                    leaf,
-                                ) {
-                                    Ok(crate::value::Value::Builtin(n))
-                                        if crate::builtins::is_exception_name(n) =>
-                                    {
-                                        true
-                                    }
-                                    _ => false,
-                                },
-                                None => crate::builtins::is_exception_name(leaf),
-                            }
-                        }
-                        None => crate::builtins::is_exception_name(k),
-                    };
+                    // reaches it.
+                    let (ok, every_rung) = except_clause(
+                        dotted.as_ref().map(|(m, l)| (m.as_str(), *l)),
+                        k,
+                    );
                     if !ok {
                         req.block("exception", format!("except {k}"));
+                        // `import csv` then `except int:` blocked on the
+                        // `module` line first, so the core routed the program
+                        // to lypning-l on the import and this blocker was
+                        // dropped: the handler ran as a non-match and printed
+                        // at exit 0 where CPython raises TypeError. When the
+                        // verdict cannot differ between rungs — a bare name,
+                        // or a module this binary already serves — it stops
+                        // the whole spectrum. A module only a larger rung
+                        // serves (`except csv.Error` from the core) is that
+                        // rung's to decide, and keeps the route it had.
+                        if every_rung {
+                            req.stop_only("exception", format!("except {k}"));
+                        }
                     }
                     // `except binascii.<anything>`: no binascii name is a class
                     // any rung serves (`Error` is not served, and the rest are
@@ -2802,6 +2797,28 @@ fn glob_bless(
     }
 }
 
+/// Is an `except` clause an exception CLASS this binary can match — and would
+/// every rung give the same answer? `module` is the dotted prefix, already
+/// resolved through `import … as` when the caller can; `k` is the clause as
+/// written. The walk above asks it statically, and `eval` asks it again when
+/// an exception actually reaches the clause, so a program run directly with
+/// `-c` refuses where CPython raises TypeError instead of skipping the handler.
+pub fn except_clause(dotted: Option<(&str, &str)>, k: &str) -> (bool, bool) {
+    match dotted {
+        Some((module, leaf)) => match crate::modules::MODULES.iter().find(|m| **m == module) {
+            Some(m) => (
+                matches!(
+                    crate::modules::get_attr(&crate::value::Value::Module(m), leaf),
+                    Ok(crate::value::Value::Builtin(n)) if crate::builtins::is_exception_name(n)
+                ),
+                true,
+            ),
+            None => (crate::builtins::is_exception_name(leaf), false),
+        },
+        None => (crate::builtins::is_exception_name(k), true),
+    }
+}
+
 /// The spectrum stop, asked of a program that is ABOUT TO RUN rather than of
 /// one being routed — and it is the same walk, so the two can never disagree.
 ///
@@ -3171,6 +3188,7 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             kwargs,
             star,
             dstar,
+            ..
         } => {
             // Before the callee and the arguments are walked, so that a
             // program whose arguments hold a second blocker is still counted
