@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-24** — Count an engine-mismatch draw in GPU evaluation and GRPO instead of aborting the arm (#TBD)
+**2026-09-24** — Count an engine-mismatch draw in GPU evaluation and GRPO instead of aborting the arm ([#126](https://github.com/kristerhedfors/lypning/pull/126))
 
 - The seed-1111 arm-A pilot (HF job `6ab52a686b030d633f68e503`, Actions
   `36008052722`) completed SFT, then aborted in its base test arm on one
