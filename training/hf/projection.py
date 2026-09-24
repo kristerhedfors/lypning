@@ -229,6 +229,8 @@ def evaluation_minutes(cases, draws, sequences_per_call, batch_seconds,
     scoring = [scoring_seconds(batch, score_worker_seconds, score_workers, waves) for batch in batches]
     if serial:
         return (sum(generation) + sum(scoring)) / 60.0
+    if not batches:
+        return 0.0      # no cases, no call: what the serial sum gives
     total = generation[0] + scoring[-1]
     total += sum(max(g, s) for g, s in zip(generation[1:], scoring[:-1]))
     return total / 60.0

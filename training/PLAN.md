@@ -541,8 +541,11 @@ add 0.6 min to it and nothing to the eval-2 job (453.4). At the measured and
 lower readings a call generates in under 45 s, scoring is the longer of the
 two, and every wave still lands (24.4 / 23.1 min); the measured pilot is then
 373.6. The upper reading still does not fit: a pilot of 812.4 min reaches
-the ceiling. These are projections from one smoke's aggregates and stated
-constants, re-run 2026-09-24. No launch decision is taken here.
+the ceiling. The overlap also assumes the scoring threads do not slow the
+generate loop they share the interpreter lock with; no run has measured that,
+and `--serial-scoring` is the comparison that would. These are projections
+from one smoke's aggregates and stated constants, re-run 2026-09-24. No launch
+decision is taken here.
 
 ## Kill criteria (unchanged, `LADDER.md` §6)
 

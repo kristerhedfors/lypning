@@ -346,6 +346,10 @@ def test_an_overlapped_evaluation_is_the_first_call_the_longer_of_each_pair_and_
             scoring = sum(projection.scoring_seconds(b, per_draw, 48) for b in batches) / 60
             assert max(gen, scoring) - 1e-9 <= over <= ser + 1e-9
             assert ser == pytest.approx(gen + scoring)
+    # No cases: no call and no scoring, in either mode (the overlap once indexed call 0).
+    assert projection.evaluation_minutes(0, 16, 256, seconds, 20.8, 48) == 0.0
+    assert projection.project(lambda b: b / 2.0, 1.0, 1.0, 1.0, {"test_cases": 0})["stages"][5]["minutes"] == \
+        pytest.approx(2 * 1.0)
     # One call: nothing to overlap with.
     one = projection.evaluation_minutes(16, 16, 256, seconds, 20.8, 48)
     assert one == projection.evaluation_minutes(16, 16, 256, seconds, 20.8, 48, serial=True)

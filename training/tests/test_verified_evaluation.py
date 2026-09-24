@@ -579,7 +579,33 @@ def test_an_interrupt_cancels_queued_scorings_and_joins_every_thread(tmp_path, m
                     0, torch, seed=11, draws=2, sequences_per_call=4, score_workers=1)
     assert scoring_threads() == [], "every scoring thread joined before the interrupt propagates"
     assert len(verifier.seen) < 4, "queued scorings of the chunk were cancelled, not run"
+    # The draw in flight finished and scored, its three siblings were
+    # cancelled: writing it alone would leave a chunk with holes and no
+    # witness. The serial loop interrupted mid-scoring writes nothing of it.
+    assert not (tmp_path / "eval.jsonl").exists(), "no partial chunk after teardown"
     assert torch.state == 123 and model.training
+
+
+def test_an_interrupt_after_a_chunk_scored_keeps_that_chunk_whole(tmp_path, monkeypatch):
+    """Interrupted while chunk 1 generates, chunk 0 already scored: chunk 0's rows, all of them."""
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(GenerationConfig=SimpleNamespace))
+    ev, torch = load_evaluation(), FakeTorch()
+    written = tmp_path / "eval.jsonl"
+
+    def hook(call):
+        if call == 1:
+            deadline = time.monotonic() + 5
+            while not (written.exists() and len(written.read_text().splitlines()) == 4):
+                assert time.monotonic() < deadline, "chunk 0 was never written"
+                time.sleep(0.005)
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        ev.evaluate(SeededModel(torch, hook=hook), Tokenizer(), OVERLAP_CASES, Scorer(), decoding(10),
+                    written, 0, torch, seed=11, draws=2, sequences_per_call=4, score_workers=2)
+    assert [(json.loads(line)["case_id"], json.loads(line)["draw"])
+            for line in written.read_text().splitlines()] == [("c0", 0), ("c0", 1), ("c1", 0), ("c1", 1)]
+    assert scoring_threads() == []
 
 
 def test_the_trainer_overlaps_by_default_records_it_and_keeps_it_out_of_every_identity():

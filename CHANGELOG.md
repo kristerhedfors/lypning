@@ -22,7 +22,8 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   blocked abort are byte-identical to the serial loop, pinned serial against
   overlapped in `training/tests/test_verified_evaluation.py`, including abort
   cases. An abort surfaces once the overlapping `generate` returns. The pool
-  is cancelled and joined on every path. Changes `code_sha256`.
+  is cancelled and joined on every path, and a chunk interrupted mid-scoring
+  is written whole or not at all. Changes `code_sha256`.
 - `train_verified --serial-scoring` keeps the serial loop for diagnosis;
   `experiment.json` records `scoring` (`overlapped`|`serial`), outside every
   reuse and arm identity.

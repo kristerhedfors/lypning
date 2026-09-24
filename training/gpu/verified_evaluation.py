@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
+import threading
 
 from pipeline.jsonio import append_jsonl
 from pipeline.training import messages, program_from_completion
@@ -133,8 +134,12 @@ class ScoringStage:
     meanwhile is never scored or written, so the file, the witness and the
     exception are what the serial loop would have left, one call later.
     `close` runs on every path: queued scorings are cancelled and every thread
-    is joined, so none outlives `evaluate`. (A SIGTERM with no handler ends the
-    process outright, threads included.)
+    is joined, so none outlives `evaluate`. A chunk still in flight when that
+    happens (an interrupt mid-`generate`) is written whole or not at all, as
+    the serial loop interrupted mid-scoring writes nothing of its chunk: its
+    cancelled draws must not read as rows that were never drawn, with no
+    witness to say why. (A SIGTERM with no handler ends the process outright,
+    threads included.)
     """
 
     def __init__(self, verifier, witness_path, step, score_workers, *, overlapped=True):
@@ -145,6 +150,10 @@ class ScoringStage:
         self._stage = (ThreadPoolExecutor(max_workers=1, thread_name_prefix="eval-stage")
                        if self.overlapped else None)
         self._running = None
+        # `close` sets `_abandoned` under `_emitting`; a chunk emits under it
+        # too, so a chunk is either fully written before teardown or not at all.
+        self._emitting = threading.Lock()
+        self._abandoned = False
 
     def score_chunk(self, pending, emit):
         """Score every draw of a chunk, emit the successes in order, re-raise the first block.
@@ -165,9 +174,13 @@ class ScoringStage:
                 scores.append(None)
                 if failure is None:
                     failure = exc
-        for item, score in zip(pending, scores):
-            if score is not None:
-                emit(item, score)
+        with self._emitting:
+            if self._abandoned:
+                # Torn down mid-chunk: `failure` may be our own cancellation.
+                return
+            for item, score in zip(pending, scores):
+                if score is not None:
+                    emit(item, score)
         if failure is not None:
             raise failure
 
@@ -187,7 +200,9 @@ class ScoringStage:
             running.result()
 
     def close(self):
-        """Cancel every scoring not yet started, then join every thread."""
+        """Abandon the chunk in flight, cancel every scoring not yet started, join every thread."""
+        with self._emitting:
+            self._abandoned = True
         self._pool.shutdown(wait=True, cancel_futures=True)
         if self._stage is not None:
             self._stage.shutdown(wait=True, cancel_futures=True)
