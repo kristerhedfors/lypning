@@ -65,11 +65,13 @@ IDLE_TIMEOUT = "10m"
 #: default killed every host before each evaluation: HF jobs
 #: 6ab4a05a52d0dbd7f1d8909d and 6ab4d66d6b030d633f68d8d7 (2026-09-24) both died
 #: in an SFT evaluation, the second after 30 minutes of retries. Idle cpu-basic
-#: hosts cost cents; the pool still cancels them when the stage closes it.
+#: hosts cost cents; `train_verified.run` closes the runner (cancelling the
+#: hosts it owns) when its stage ends or fails, so the long timeout only
+#: bounds a process that died without reaching its `finally`. There is
+#: deliberately no pool rebuild: closing a pool under 48 in-flight scorers,
+#: re-adopting its cancelled hosts by name and re-checking the Space head
+#: mid-run are each a new way to lose a run (review of #124, 2026-09-24).
 HOST_IDLE_TIMEOUT = "3h"
-#: Consecutive transient failures of one request after which the pool itself
-#: is presumed dead and rebuilt (fresh hosts are booted on the next create).
-POOL_RESET_AFTER = 3
 #: Under /usr/local on purpose: a pooled sandbox's Landlock ruleset lets it read
 #: the standard system trees, and a top-level /runner is not one of them.
 WORKER = "/usr/local/lib/lypning-verifier/container_worker.py"
@@ -143,8 +145,16 @@ def pool_limit(value, name):
 
 
 def http_status(exc):
-    """The HTTP status an SDK error carries, or None for a connection-level failure."""
+    """The HTTP status an SDK error carries, or None for a connection-level failure.
+
+    `HfHubHTTPError` carries it on `.response`; the sandbox server's
+    `SandboxError` on `.status_code`. Reading only the first made every
+    sandbox-server 4xx look like a dropped connection, retried for the whole
+    budget instead of refused at once.
+    """
     code = getattr(getattr(exc, "response", None), "status_code", None)
+    if not isinstance(code, int):
+        code = getattr(exc, "status_code", None)
     return code if isinstance(code, int) else None
 
 
@@ -192,9 +202,6 @@ class HfSandboxPoolRunner:
         self._sleep = sleep
         #: Builds a pool from `_pool_kwargs()`; tests inject one, the default is the SDK's.
         self._pool_factory = pool_factory
-        #: Bumped each time the pool is rebuilt, so N threads that saw the same
-        #: dead pool rebuild it once, not N times.
-        self._pool_generation = 0
         #: Scorings run concurrently (`gpu/verified_evaluation.py`); the pool is
         #: built once and the interpreter admitted once, whichever thread is first.
         self._lock = threading.RLock()
@@ -263,25 +270,6 @@ class HfSandboxPoolRunner:
                 self._pool = SandboxPool(**kwargs)
         return self._pool
 
-    def _reset_pool(self, generation):
-        """Discard a pool that keeps failing, so the next request boots fresh hosts.
-
-        Only the first thread to report generation `generation` resets it; the
-        others find a newer pool already in place. Closing cancels the hosts we
-        own, which are dead or dying anyway, and a closed pool's in-flight
-        requests fail transiently and are retried on the new one.
-        """
-        with self._lock:
-            if generation != self._pool_generation:
-                return
-            pool, self._pool = self._pool, None
-            self._pool_generation += 1
-        if pool is not None:
-            try:
-                pool.close()
-            except Exception:
-                pass
-
     def close(self):
         pool, self._pool = self._pool, None
         if pool is not None:
@@ -320,7 +308,6 @@ class HfSandboxPoolRunner:
         attempt = 0
         while True:
             attempt += 1
-            generation = self._pool_generation
             try:
                 code, raw = self.transport(request_bytes, timeout_s + 30)
                 break
@@ -332,8 +319,6 @@ class HfSandboxPoolRunner:
                     if attempt > 1:
                         reason += " (after %d attempts)" % attempt
                     raise VerificationBlocked(reason) from exc
-                if attempt % POOL_RESET_AFTER == 0:
-                    self._reset_pool(generation)
                 self._sleep(backoff_schedule()[attempt - 1])
         if code != 0:
             raise VerificationBlocked("sandbox worker failed; exit %s" % code)

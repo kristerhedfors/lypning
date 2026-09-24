@@ -450,7 +450,7 @@ def test_the_smoke_loads_through_the_trainers_own_loaders_in_its_order():
     used = [c for c in calls(HWSMOKE, "tv") if c in LOADERS]
     assert used == list(LOADERS), used
     trainer = (ROOT / "training" / "gpu" / "train_verified.py").read_text(encoding="utf-8")
-    run = next(n for n in ast.walk(ast.parse(trainer)) if isinstance(n, ast.FunctionDef) and n.name == "run")
+    run = next(n for n in ast.walk(ast.parse(trainer)) if isinstance(n, ast.FunctionDef) and n.name == "_run")
     in_run = [n.func.id for n in ast.walk(run) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
     for loader in LOADERS:
         assert loader in in_run, "run() no longer shares %s with the smoke" % loader

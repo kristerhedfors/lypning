@@ -6,6 +6,8 @@ import json
 import os
 from types import SimpleNamespace
 
+from pathlib import Path
+
 import pytest
 
 from pipeline import hf_sandbox_runner
@@ -135,11 +137,7 @@ def test_a_transient_hub_failure_is_retried_with_backoff_and_a_persistent_one_bl
         ("create-failed",), ("sleep", b), ("create-failed",), ("sleep", 2 * b)]
     n = hf_sandbox_runner.TRANSPORT_ATTEMPTS
     r, log = runner()
-    dead = FlakyPool(log, [OK], [HubError(503)] * n)
-    r._pool = dead
-    # A rebuilt pool is the same dead one here, so the budget still runs out.
-    r._pool_factory = lambda **kw: dead
-    r._space_sha = lambda: REVISION
+    r._pool = FlakyPool(log, [OK], [HubError(503)] * n)
     with pytest.raises(VerificationBlocked, match=r"HubError: Server error '503'.*after %d attempts" % n):
         r("pass")
     waits = [e[1] for e in log if e[0] == "sleep"]
@@ -345,29 +343,26 @@ def test_pool_hosts_outlive_the_training_gap_between_evaluations():
     assert built[0]["idle_timeout"] == hf_sandbox_runner.HOST_IDLE_TIMEOUT == "3h"
 
 
-def test_a_pool_that_keeps_failing_is_rebuilt_once_and_the_request_answers():
-    log = []
-    dead = FlakyPool(log, [OK], [HubError(503)] * 50)
-    fresh = FakePool(log, [OK])
-    pools = iter([dead, fresh])
-    r = HfSandboxPoolRunner(IMAGE, REVISION, BUNDLE, check=False, space_sha=lambda: REVISION,
-                            pool_factory=lambda **kw: next(pools),
-                            sleep=lambda s: log.append(("sleep", s)))
-    assert r("pass").stdout == "answer"
-    failures = [e for e in log if e[0] == "create-failed"]
-    assert len(failures) == hf_sandbox_runner.POOL_RESET_AFTER, "rebuilt after that many tries"
-    assert ("close",) in log, "the dead pool was closed (its owned hosts cancelled)"
-    assert r._pool is fresh and r._pool_generation == 1
+def test_a_sandbox_server_4xx_is_refused_at_once():
+    """`SandboxError` carries its status on `.status_code`, not `.response`."""
+    class SandboxError(Exception):
+        def __init__(self, status):
+            super().__init__("Sandbox API error (%d)" % status)
+            self.status_code = status
+    assert hf_sandbox_runner.http_status(SandboxError(403)) == 403
+    assert not hf_sandbox_runner.transient(SandboxError(401))
+    assert hf_sandbox_runner.transient(SandboxError(503))
+    r, log = runner()
+    r._pool = FlakyPool(log, [OK], [SandboxError(403)])
+    with pytest.raises(VerificationBlocked, match="403"):
+        r("pass")
+    assert not [e for e in log if e[0] == "sleep"]
 
 
-def test_a_stale_generation_does_not_rebuild_a_pool_again():
-    log = []
-    first, second = FakePool(log, [OK]), FakePool(log, [OK])
-    pools = iter([first, second])
-    r = HfSandboxPoolRunner(IMAGE, REVISION, BUNDLE, check=False, space_sha=lambda: REVISION,
-                            pool_factory=lambda **kw: next(pools), sleep=lambda s: None)
-    r.pool()
-    r._reset_pool(0)
-    r.pool()
-    r._reset_pool(0)  # a second thread that saw the same dead pool
-    assert r._pool is second and r._pool_generation == 1
+def test_train_verified_closes_its_verifier_pool_on_every_exit():
+    """Hosts outlive an unclosed pool by HOST_IDLE_TIMEOUT; `run` must release them."""
+    import ast
+    src = (Path(__file__).resolve().parents[1] / "gpu" / "train_verified.py").read_text()
+    fn = next(n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef) and n.name == "run")
+    tries = [n for n in ast.walk(fn) if isinstance(n, ast.Try)]
+    assert tries and any("release_runner" in ast.dump(t.finalbody[0]) for t in tries if t.finalbody)

@@ -506,7 +506,7 @@ def test_the_experiment_a_stage_writes_carries_the_purpose_the_lineage_rule_read
     """
     import ast
     source = (Path(__file__).resolve().parents[1] / "gpu" / "train_verified.py").read_text(encoding="utf-8")
-    run = next(n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.FunctionDef) and n.name == "run")
+    run = next(n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.FunctionDef) and n.name == "_run")
     manifest = next(n.value for n in ast.walk(run) if isinstance(n, ast.Assign)
                     and any(isinstance(t, ast.Name) and t.id == "manifest" for t in n.targets))
     written = {k.value: ast.unparse(v) for k, v in zip(manifest.keys, manifest.values)}
