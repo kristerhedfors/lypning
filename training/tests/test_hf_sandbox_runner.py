@@ -135,7 +135,11 @@ def test_a_transient_hub_failure_is_retried_with_backoff_and_a_persistent_one_bl
         ("create-failed",), ("sleep", b), ("create-failed",), ("sleep", 2 * b)]
     n = hf_sandbox_runner.TRANSPORT_ATTEMPTS
     r, log = runner()
-    r._pool = FlakyPool(log, [OK], [HubError(503)] * n)
+    dead = FlakyPool(log, [OK], [HubError(503)] * n)
+    r._pool = dead
+    # A rebuilt pool is the same dead one here, so the budget still runs out.
+    r._pool_factory = lambda **kw: dead
+    r._space_sha = lambda: REVISION
     with pytest.raises(VerificationBlocked, match=r"HubError: Server error '503'.*after %d attempts" % n):
         r("pass")
     waits = [e[1] for e in log if e[0] == "sleep"]
@@ -321,3 +325,49 @@ def test_the_runner_carries_its_stage_into_the_pool_it_builds():
     assert "stage" in inspect.signature(execution_runner).parameters
     source = inspect.getsource(r.HfSandboxPoolRunner._pool_locked)
     assert "stage=self._stage" in source, "the pool must be named with the stage, not without"
+
+
+def test_pool_hosts_outlive_the_training_gap_between_evaluations():
+    """The HOST idle timeout, not the per-sandbox one (2026-09-24, two dead jobs).
+
+    SFT trains 25-40 minutes between evaluations with no scoring. At the SDK's
+    600 s host default every host was gone by the next evaluation, and
+    huggingface_hub 1.31.0 re-raises for a host it has already used instead of
+    replacing it, so each request got a dead host's 503 until the budget ran out.
+    """
+    built = []
+    def factory(**kw):
+        built.append(kw)
+        return FakePool([], [OK])
+    r = HfSandboxPoolRunner(IMAGE, REVISION, BUNDLE, check=False, space_sha=lambda: REVISION,
+                            pool_factory=factory, sleep=lambda s: None)
+    assert r("pass").stdout == "answer"
+    assert built[0]["idle_timeout"] == hf_sandbox_runner.HOST_IDLE_TIMEOUT == "3h"
+
+
+def test_a_pool_that_keeps_failing_is_rebuilt_once_and_the_request_answers():
+    log = []
+    dead = FlakyPool(log, [OK], [HubError(503)] * 50)
+    fresh = FakePool(log, [OK])
+    pools = iter([dead, fresh])
+    r = HfSandboxPoolRunner(IMAGE, REVISION, BUNDLE, check=False, space_sha=lambda: REVISION,
+                            pool_factory=lambda **kw: next(pools),
+                            sleep=lambda s: log.append(("sleep", s)))
+    assert r("pass").stdout == "answer"
+    failures = [e for e in log if e[0] == "create-failed"]
+    assert len(failures) == hf_sandbox_runner.POOL_RESET_AFTER, "rebuilt after that many tries"
+    assert ("close",) in log, "the dead pool was closed (its owned hosts cancelled)"
+    assert r._pool is fresh and r._pool_generation == 1
+
+
+def test_a_stale_generation_does_not_rebuild_a_pool_again():
+    log = []
+    first, second = FakePool(log, [OK]), FakePool(log, [OK])
+    pools = iter([first, second])
+    r = HfSandboxPoolRunner(IMAGE, REVISION, BUNDLE, check=False, space_sha=lambda: REVISION,
+                            pool_factory=lambda **kw: next(pools), sleep=lambda s: None)
+    r.pool()
+    r._reset_pool(0)
+    r.pool()
+    r._reset_pool(0)  # a second thread that saw the same dead pool
+    assert r._pool is second and r._pool_generation == 1
