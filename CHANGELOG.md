@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-24** — Score each evaluation chunk while the next one generates ([#TBD](https://github.com/kristerhedfors/lypning/pull/TBD))
+**2026-09-24** — Score each evaluation chunk while the next one generates ([#122](https://github.com/kristerhedfors/lypning/pull/122))
 
 - `verified_evaluation.ScoringStage`: chunk i is scored on the verifier pool
   while chunk i+1 generates. One chunk is scored at a time, and the scoring
@@ -32,7 +32,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   smoke's own projection. `PLAN.md` Step 4 and `ORCHESTRATION.md` P14 carry
   the re-run from smoke job `6ab4582d6b030d633f68c90e` (2026-09-24).
 
-**2026-09-24** — Fit arm A's pilot to the h200 smoke: no probe, SFT step 0 from base-dev, eval-2 split ([#TBD](https://github.com/kristerhedfors/lypning/pull/TBD))
+**2026-09-24** — Fit arm A's pilot to the h200 smoke: no probe, SFT step 0 from base-dev, eval-2 split ([#122](https://github.com/kristerhedfors/lypning/pull/122))
 
 - `round02_pilot.sh`: with `GRPO_STEPS` 0 no probe runs; `grpo-skipped.json`
   says why (a probe binds adapter and code, so arm C re-probes in its own job)
