@@ -1007,3 +1007,20 @@ def test_the_str_and_bytes_twins_answer_the_same_shape(method, lypning_bin):
                 % ("bytes" if subj.startswith("b") else "str", method, call,
                    got.stdout, ref.stdout)
             )
+
+
+def test_a_module_is_hashable_by_identity(lypning_bin):
+    """A module is a dict or set key in CPython, hashed by identity — and one
+    process holds one of each, so its name IS its identity. The engine raised
+    `TypeError: unhashable type: 'module'` at exit 1, the program's own exit,
+    which the chain never retries: `{os}`, `{os: 1}` and `os in {…}` all died
+    where CPython answers. A module is never one key with the string that
+    names it. The expected bytes are CPython 3.14.5's.
+    """
+    program = ("import os, sys\n"
+               "print(len({os, sys, os}), os in {os: 1}, {os: 1}.get(sys))\n"
+               "d = {os: 1, 'os': 2, sys: 3}\n"
+               "print(len(d), d[os], d['os'], {os: 1} == {os: 1}, sys in {os})\n")
+    ours = engines.run(engines.LYPNING, program, binary=lypning_bin)
+    assert not ours.refused, ours.stderr
+    assert (ours.returncode, ours.stdout) == (0, "2 True None\n3 1 2 True False\n"), ours.stderr

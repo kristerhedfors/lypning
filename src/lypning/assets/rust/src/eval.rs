@@ -1047,7 +1047,19 @@ impl Interp {
                     _ => f = self.eval(func)?,
                 }
                 let mut a = Args::with_capacity(args.len());
+                // `time.strftime(<fmt>, time.gmtime())`: the one place a
+                // `gmtime()` is served, and the runtime's own check of it —
+                // see `time::fused_gmtime`.
+                #[cfg(feature = "cap-time")]
+                let fused = crate::time::fused_gmtime(&f, args, star, kwargs, dstar);
                 for (i, x) in args.iter().enumerate() {
+                    #[cfg(feature = "cap-time")]
+                    let v = if fused && i == 1 {
+                        crate::time::eval_blessed(self, x)?
+                    } else {
+                        self.eval(x)?
+                    };
+                    #[cfg(not(feature = "cap-time"))]
                     let v = self.eval(x)?;
                     if star.contains(&i) {
                         a.extend(self.iter_collect(v)?);

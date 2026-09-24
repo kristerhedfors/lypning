@@ -29,10 +29,13 @@
 //! argument of a `strftime` whose format is a string LITERAL the walk has read,
 //! so its value never reaches anything but [`strftime`]: printing it, indexing
 //! it, `gmtime(0)`, `gmtime()` held in a name, `from time import gmtime` — all
-//! refuse statically. At runtime it is a plain 9-tuple, and [`strftime`]
-//! re-checks every field it formats, so even a tuple that reached it some way
-//! the walk did not foresee is formatted exactly as CPython formats it or
-//! refused.
+//! refuse statically — and the walk learns every name `time` is imported as
+//! BEFORE it judges any call (`route::time_prescan`), because text order is not
+//! run order. At runtime it is a plain 9-tuple, which is why the runtime
+//! refuses every `gmtime()` but the one the evaluator hands to `strftime` in
+//! that same fused shape ([`fused_gmtime`]): a call the walk did not see still
+//! cannot print a tuple where CPython prints a `struct_time`. [`strftime`]
+//! re-checks every field it formats on top of that.
 //!
 //! **A function is only ever called.** `f = time.time`, `print(time.time)`,
 //! `print(time)`: CPython prints `<built-in function time>` and
@@ -163,10 +166,60 @@ pub fn call(_it: &mut crate::eval::Interp, name: &str, args: &mut Args, kw: &[(R
             std::thread::sleep(d);
             Value::None
         }
-        "gmtime" => gmtime(now_ns(CLOCK_REALTIME)?.div_euclid(1_000_000_000)),
+        "gmtime" if BLESSED.with(|b| b.replace(false)) => {
+            gmtime(now_ns(CLOCK_REALTIME)?.div_euclid(1_000_000_000))
+        }
+        "gmtime" => {
+            return Err(refuse(
+                "time.gmtime() outside time.strftime(<literal>, time.gmtime()): there is no \
+                 struct_time here",
+            ))
+        }
         "strftime" => strftime(&args[0], &args[1])?,
         _ => return Err(unsupported("module-attr", &format!("time.{name}"))),
     })
+}
+
+thread_local! {
+    /// Set for exactly the evaluation of the one `gmtime()` a served
+    /// `strftime` is about to consume, and taken by that call. A `gmtime()`
+    /// that finds it clear refuses.
+    static BLESSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Is this call `time.strftime(<fmt>, <name>.gmtime())` — the callee already
+/// evaluated to the module's `strftime`, two plain positionals, the second a
+/// no-argument `.gmtime()` on a bare NAME? The runtime's half of the walk's
+/// fused-shape rule, and the reason a `gmtime()` the walk never saw — a `def`
+/// above `import time`, a module handed out of a function — cannot hand a bare
+/// 9-tuple to anything but `strftime`: every other `gmtime()` refuses in
+/// [`call`]. The base must be a name because evaluating a name runs no code,
+/// so nothing can call `gmtime` between the blessing and the call it blesses.
+pub fn fused_gmtime(
+    f: &Value,
+    args: &[crate::ast::Expr],
+    star: &[usize],
+    kwargs: &[(Rc<str>, crate::ast::Expr)],
+    dstar: &[crate::ast::Expr],
+) -> bool {
+    use crate::ast::Expr;
+    matches!(f, Value::Bound(r, "strftime") if matches!(**r, Value::Module("time")))
+        && args.len() == 2
+        && star.is_empty()
+        && kwargs.is_empty()
+        && dstar.is_empty()
+        && matches!(&args[1], Expr::Call { func, args: a, star: s, kwargs: k, dstar: d }
+            if a.is_empty() && s.is_empty() && k.is_empty() && d.is_empty()
+                && matches!(&**func, Expr::Attr(b, n) if n.as_ref() == "gmtime" && matches!(**b, Expr::Name(_))))
+}
+
+/// Evaluate the `gmtime()` [`fused_gmtime`] found, with the blessing set for
+/// it alone and cleared whatever happens.
+pub fn eval_blessed(it: &mut crate::eval::Interp, x: &crate::ast::Expr) -> R<Value> {
+    BLESSED.with(|b| b.set(true));
+    let r = it.eval(x);
+    BLESSED.with(|b| b.set(false));
+    r
 }
 
 /// CPython's `time.sleep` argument rule, in its order: the TYPE, then a NaN,
@@ -377,6 +430,29 @@ mod tests {
         assert!(format_block("\u{e9}%Y").is_some());
         let s = strftime(&Value::Str("%Y-%m-%d %H:%M:%S %%".into()), &gmtime(951_782_400)).unwrap();
         assert!(matches!(s, Value::Str(ref x) if &**x == "2000-02-29 00:00:00 %"));
+    }
+
+    /// The runtime backstop, with the walk bypassed: the interpreter alone
+    /// must refuse every `gmtime()` but the fused one, whatever shape reached it.
+    #[test]
+    fn gmtime_refuses_at_runtime_outside_the_fused_shape() {
+        let run = |src: &str| {
+            let body = crate::parse::parse(src).unwrap();
+            crate::eval::Interp::new().run(&body)
+        };
+        for src in [
+            "import time\nx = time.gmtime()\n",
+            "def f():\n    return time.gmtime()\nimport time\nf()\n",
+            "import time\nm = [time]\nx = m[0].strftime('%Y', m[0].gmtime())\n",
+            "import time\ng = time.gmtime\nx = time.strftime('%Y', g())\n",
+        ] {
+            let e = run(src).expect_err(src);
+            assert!(e.is_unsupported(), "{src}: {e}");
+        }
+        run("import time\nx = time.strftime('%Y', time.gmtime())\n").unwrap();
+        // The blessing is consumed: a second, unblessed call still refuses.
+        let e = run("import time\nx = time.strftime('%Y', time.gmtime())\ny = time.gmtime()\n").unwrap_err();
+        assert!(e.is_unsupported());
     }
 
     #[test]

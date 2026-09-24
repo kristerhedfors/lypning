@@ -115,6 +115,11 @@ SERVED = [
         "s = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())\n"
         "b = int(time.time())\n"
         "print(s in (civil(a), civil(b)))",
+    # The fused stamp inside a `def` written ABOVE the import: the walk learns
+    # `time` before it judges any call (`route::time_prescan`).
+    "def f():\n    return time.strftime('%Y', time.gmtime())\nimport time\nprint(len(f()))",
+    # A module is hashable by identity (`value.rs`), one key per module.
+    T + "import os\nprint(len({os, os}), os in {os: 1})",
     # The errors a literal argument raises, which the served shape keeps.
     T + "time.sleep(-1)",
     T + "try:\n    time.sleep(-0.5)\nexcept ValueError as e:\n    print('ValueError', e)",
@@ -203,6 +208,23 @@ REFUSED = [
     T + "time.sleep(10**30)",
     "from time import sleep\nfor _ in range(3):\n    sleep(0)\nprint('ok')",
     "from time import sleep as z\nwhile False:\n    z(0)\nprint('ok')",
+    # Text order is not run order: every `time.X` below is reached with the
+    # module bound, though the walk reads the import after it. Each printed a
+    # bare 9-tuple where CPython prints a `struct_time`, or slept in a loop.
+    "def f():\n    return time.gmtime()\nimport time\nprint(f())",
+    "def f():\n    return time.gmtime()\nimport time\nprint(type(f()).__name__)",
+    "def f():\n    return time.gmtime()\nimport time\nprint(f().tm_year > 2000)",
+    "f = lambda: time.gmtime()\nimport time\nprint(f())",
+    "def g():\n    return time.gmtime()\ndef f():\n    global time\n    import time\nf()\nprint(g())",
+    "i = 0\nwhile i < 2:\n    if i == 1:\n        print(time.gmtime())\n    else:\n        import time\n    i += 1",
+    "def f():\n    return time\nimport time\nm = f()\nprint(m.gmtime())",
+    "def f():\n    return time\nimport time\nh = f().gmtime\nprint(h())",
+    "def f():\n    return time\nimport time\nx = [f()]\nprint(x[0].gmtime())",
+    "def f():\n    return time\nimport time\nprint(list(map(lambda m: m.gmtime(), [f()])))",
+    "def f():\n    return time\nimport time\nprint(len({f()}))",
+    "def f():\n    for _ in range(3):\n        time.sleep(0.2)\n    return 'slept'\nimport time\nprint(f())",
+    "def f():\n    time.sleep(5)\nimport time\nf()\nprint('ok')",
+    "if False:\n    from time import sleep\nfor _ in range(2):\n    sleep(0)\nprint('ok')",
 ]
 
 BARRIER = "import os\nos.mkdir('NEWD')\n"

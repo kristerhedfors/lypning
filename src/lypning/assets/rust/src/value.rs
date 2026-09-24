@@ -242,7 +242,8 @@ pub enum HKey {
 /// The identity of a bound method, as a dict or set key — see [`HKey::Bound`].
 #[derive(PartialEq, Eq, Hash)]
 pub struct BoundId {
-    /// `0` a module, `1` a type object, `2` an instance. Part of the key
+    /// `0` a module, `1` a type object, `2` an instance — the receiver of a
+    /// bound method — and `3` a module ITSELF, as a key (`{os}`). Part of the key
     /// because the first two are identified by NAME and nothing stops a module
     /// and a type from sharing one; two objects that hash alike and compare
     /// alike are one dict entry, which would be a wrong answer at exit 0.
@@ -351,6 +352,16 @@ pub fn hkey(v: &Value) -> R<HKey> {
         // which the chain never retries — so `{csv.reader}`, `{os.getcwd: 1}`
         // and `x.append in {x.append}` simply died where CPython answers.
         Value::Bound(r, name) => return bound_key(r, *name),
+        // A MODULE is hashable in CPython, by identity — and one process holds
+        // one of each, so the name is the identity, exactly as `is` and `==`
+        // above compare it. The key is a `BoundId` of its own kind (`3`), so a
+        // module is never one entry with a bound method, a type or a string
+        // that shares its name. `{os}`, `{time: 1}` and `m in {…}` raised
+        // `unhashable type: 'module'` at exit 1, the program's own exit.
+        // Set iteration order stays refused (see the module docs above).
+        Value::Module(m) => {
+            return Ok(HKey::Bound(Rc::new(BoundId { kind: 3, owner: m, addr: 0, name: "" })))
+        }
         // An iterator IS hashable in CPython — by object identity, which is an
         // address this engine has no business reproducing. It refuses for the
         // same reason a `re.Match` and a `.parents` view do, and the refusal is

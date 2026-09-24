@@ -806,7 +806,7 @@ pub fn route(src: &str) -> Route {
             // Only for a source that mentions the module at all, so a program
             // with no glob in it pays one substring search.
             req.glob_wrappers = trusted_wrappers(src);
-            walk_block(&body, &mut req);
+            walk_program(&body, &mut req);
             imports = req.imports.iter().cloned().collect();
             let reads_stdin = reads_stdin || req.reads_stdin;
             // A refusal the walk spelled outright is the more specific one and
@@ -1220,6 +1220,62 @@ fn walk_block(body: &[Stmt], req: &mut Requirements) {
     }
 }
 
+/// A WHOLE program's walk: [`walk_block`] after [`time_prescan`], on the
+/// variant that serves `time`, and exactly `walk_block` everywhere else.
+fn walk_program(body: &[Stmt], req: &mut Requirements) {
+    #[cfg(feature = "cap-time")]
+    time_prescan(body, req);
+    walk_block(body, req);
+}
+
+/// Every name any `import time [as t]` or `from time import f [as g]` binds,
+/// ANYWHERE in the program, collected before the walk judges a single
+/// `time.X`. The walk reads the source in text order and the program does not
+/// run in it: a `def` or `lambda` written above `import time`, a `global time`
+/// imported inside a function, and a loop whose later iteration runs an import
+/// its earlier one skipped all call `time.X` with the module already bound —
+/// and a walk that learned the name only at the import let each of them past
+/// every rule below (a bare 9-tuple printed for a `struct_time`, a sleep in a
+/// loop). Held program-wide and never given up, which only ever refuses more.
+#[cfg(feature = "cap-time")]
+fn time_prescan(body: &[Stmt], req: &mut Requirements) {
+    for s in body {
+        match s {
+            Stmt::Import { names } => {
+                for (path, bound) in names {
+                    if path.as_ref() == "time" && !req.time_mods.iter().any(|m| m == bound.as_ref()) {
+                        req.time_mods.push(bound.to_string());
+                    }
+                }
+            }
+            Stmt::FromImport { module, names } if module.as_ref() == "time" => {
+                for (n, bind) in names {
+                    if let Some(f) = crate::time::SERVED.iter().copied().find(|x| *x == n.as_ref()) {
+                        req.time_names.push((bind.to_string(), f));
+                    }
+                }
+            }
+            Stmt::If { arms, els } => {
+                arms.iter().for_each(|(_, b)| time_prescan(b, req));
+                time_prescan(els, req);
+            }
+            Stmt::For { body, els, .. } | Stmt::While { body, els, .. } => {
+                time_prescan(body, req);
+                time_prescan(els, req);
+            }
+            Stmt::Def { body, .. } => time_prescan(body, req),
+            Stmt::Try { body, handlers, els, finally } => {
+                time_prescan(body, req);
+                handlers.iter().for_each(|h| time_prescan(&h.body, req));
+                time_prescan(els, req);
+                time_prescan(finally, req);
+            }
+            Stmt::With { body, .. } => time_prescan(body, req),
+            _ => {}
+        }
+    }
+}
+
 fn walk_stmt(s: &Stmt, req: &mut Requirements) {
     match s {
         Stmt::Import { names } => {
@@ -1244,7 +1300,7 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                 // whatever literal that spelling held above it.
                 req.bind_pattern(bound, None);
                 #[cfg(feature = "cap-time")]
-                if path.as_ref() == "time" {
+                if path.as_ref() == "time" && !req.time_mods.iter().any(|m| m == bound.as_ref()) {
                     req.time_mods.push(bound.to_string());
                 }
                 if !crate::modules::MODULES.contains(&path.as_ref()) {
@@ -2292,7 +2348,7 @@ pub fn base64_static_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
         return Ok(());
     }
     let mut req = Requirements::default();
-    walk_block(body, &mut req);
+    walk_program(body, &mut req);
     match req.base64_stop {
         Some((k, d)) => Err(crate::err::unsupported(&k, &d)),
         None => Ok(()),
@@ -2934,7 +2990,7 @@ pub fn static_stop_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
         glob_wrappers: trusted_wrappers(src),
         ..Requirements::default()
     };
-    walk_block(body, &mut req);
+    walk_program(body, &mut req);
     match req.spectrum_stop {
         Some((k, d)) => Err(crate::err::unsupported(&k, &d)),
         None => Ok(()),
