@@ -29,7 +29,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   reuse and arm identity.
 - `projection.py` prices the overlap: per call max(generation, previous
   scoring), then a final scoring tail; `--serial-scoring` reproduces the
-  smoke's own projection. `PLAN.md` Step 4 and `ORCHESTRATION.md` P14 carry
+  smoke's own projection. `training/PLAN.md` Step 4 and `training/ORCHESTRATION.md` P14 carry
   the re-run from smoke job `6ab4582d6b030d633f68c90e` (2026-09-24).
 
 **2026-09-24** — Fit arm A's pilot to the h200 smoke: no probe, SFT step 0 from base-dev, eval-2 split ([#122](https://github.com/kristerhedfors/lypning/pull/122))
@@ -48,7 +48,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   `--reading all` prints the four readings side by side, with what whole
   scoring waves would add (`scoring_wave_minutes`). `train_verified` refuses
   `--reuse-step0` without `JOB_ID` or a completed source before the model
-  load. `PLAN.md` Step 4
+  load. `training/PLAN.md` Step 4
   holds the re-run from smoke job `6ab4582d6b030d633f68c90e` (2026-09-24).
 
 **2026-09-23** — Arm A's approved configuration, an h200 hardware smoke, and an optional split eval-2 job ([#121](https://github.com/kristerhedfors/lypning/pull/121))
