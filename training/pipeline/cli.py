@@ -2818,9 +2818,17 @@ def cmd_training_prepare(args) -> int:
         print("training preparation blocked: %s" % exc, file=sys.stderr)
         return 1
     counts = {s: sum(c["split"] == s for c in bundle["cases"]) for s in ("train", "dev", "test")}
+    # Aggregates only: this runs inside the GPU job, whose log is streamed into a
+    # PUBLIC Actions log. The per-case `reference_scores` (case ids and refusal
+    # detail, for the eval-2 benchmark too) printed here until 2026-09-24; they
+    # stay in bundle.json, which only the private work repo receives.
+    statuses = {}
+    for score in bundle["reference_scores"].values():
+        key = score.get("status") if isinstance(score, dict) else None
+        statuses[str(key)] = statuses.get(str(key), 0) + 1
     print(json.dumps({"digest": bundle["digest"], "cases": counts,
                       "families": len({c["family"] for c in bundle["cases"]}),
-                      "reference_scores": bundle["reference_scores"]}, indent=2))
+                      "reference_statuses": dict(sorted(statuses.items()))}, indent=2))
     return 0
 
 
