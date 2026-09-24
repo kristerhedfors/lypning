@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-24** — A free readout of any pilot job's SFT selection (#TBD)
+**2026-09-24** — A free readout of any pilot job's SFT selection ([#125](https://github.com/kristerhedfors/lypning/pull/125))
 
 - `pilot-readout.yml` prints a job's selected SFT step, selection rule, every
   observation and the base-dev and selected headline metrics, by named
