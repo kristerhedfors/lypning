@@ -549,3 +549,104 @@ def test_a_json_error_inside_a_container_refuses_on_every_variant() -> None:
         got = _run([str(binary)], "import json\njson.dumps({'k': [1, {2}]})")
         assert got.returncode == engines.UNSUPPORTED_EXIT and got.stdout == "", (
             binary, got.stderr)
+
+
+#: Round-3 verifier findings. An uncaught AttributeError in a program that
+#: names itertools or difflib refuses (`attr-hint`): CPython 3.10+ ends it with
+#: `Did you mean: 'append'?`, out of `dir(x)`, which this engine does not
+#: compute. The flag is read from the SOURCE, so an error raised BEFORE the
+#: import refuses too (for NameError as well).
+REFUSED_3 = [
+    I + "x = [1]; x.apend(2)",
+    I + "d = {}; d.iterms()",
+    I + "'a'.strp()",
+    I + "(1).bit_lenght()",
+    I + "itertools.product('a').__next",
+    "x = [1]; x.apend(2)\nimport itertools",
+    "print(nope)\nimport difflib",
+    # more than 8 MiB of output refuses rather than flushing: a refusal later
+    # in the run would otherwise be an exit 1 with half the output written
+    I + "print('x' * (9 << 20)); print('ok')",
+    I + "print('x' * (9 << 20)); print(itertools.product.mro()[0] is itertools.product)",
+]
+
+
+@needs_l
+@pytest.mark.parametrize("program", REFUSED_3, ids=range(len(REFUSED_3)))
+def test_the_round_three_refusals_are_clean(program: str) -> None:
+    got = _run([str(BINARY)], program)
+    problem = _refusal_problem(got)
+    assert problem is None, "this program must refuse, not answer: %s\n  program: %r" % (
+        problem, program)
+
+
+#: ...and the CHAIN answers each of them with CPython's exact bytes (3.14.5,
+#: 2026-09-25): the flush-past-8-MiB programs were an exit 1 with the prefix
+#: already on stdout.
+BIG = "x" * (9 << 20) + "\n"
+CHAIN_3 = [
+    (I + "print('x' * (9 << 20)); print(list(itertools.product([1], repeat=70000))[:0])",
+     BIG + "[]\n", 0, None),
+    (I + "print('x' * (9 << 20)); print(repr(itertools.product([1]))[:5])",
+     BIG + "<iter\n", 0, None),
+    (I + "print('x' * (9 << 20)); print(len(list(itertools.combinations(range(3), 2**30))))",
+     BIG + "0\n", 0, None),
+    (I + "print('x' * (9 << 20)); x = getattr(itertools, 'perm' + 'utations'); print(1)",
+     BIG + "1\n", 0, None),
+    (I + "print('x' * (9 << 20)); print(list(itertools.product(repeat=2**70)))",
+     BIG, 1, "OverflowError: Python int too large to convert to C ssize_t"),
+    (I + "x = [1]; x.apend(2)", "", 1,
+     "AttributeError: 'list' object has no attribute 'apend'. Did you mean: 'append'?"),
+    (I + "itertools.product('a').__next", "", 1,
+     "AttributeError: 'itertools.product' object has no attribute '__next'."
+     " Did you mean: '__ne__'?"),
+]
+
+
+@needs_core
+@pytest.mark.skipif(sys.version_info[:2] != (3, 14), reason="bytes pinned to CPython 3.14")
+@pytest.mark.parametrize("case", CHAIN_3, ids=range(len(CHAIN_3)))
+def test_the_chain_answers_the_round_three_findings_with_cpython_bytes(case) -> None:
+    program, out, code, err = case
+    env = dict(os.environ, LYPNING_CPYTHON=sys.executable, LYPNING_L_BIN=str(BINARY))
+    with tempfile.TemporaryDirectory() as d:
+        got = subprocess.run([str(CORE), "run", "-c", program], capture_output=True,
+                             text=True, cwd=d, timeout=300, env=env)
+    last = (got.stderr.strip().splitlines() or [None])[-1]
+    assert (got.stdout == out, got.returncode, last) == (True, code, err), (
+        program, got.stdout[-80:], got.stderr[-300:])
+
+
+#: Sequence repetition by a non-int names the COUNT, left operand first, as
+#: `PyNumber_Multiply` does: `'x' * itertools.product('a')` (round 3) said
+#: "cannot be interpreted as an integer". Shared code; CPython 3.14.5 bytes.
+CORE_PINNED_3 = [
+    ("'x' * 1.5", "TypeError: can't multiply sequence by non-int of type 'float'"),
+    ("1.5 * 'x'", "TypeError: can't multiply sequence by non-int of type 'float'"),
+    ("'x' * None", "TypeError: can't multiply sequence by non-int of type 'NoneType'"),
+    ("'x' * 'y'", "TypeError: can't multiply sequence by non-int of type 'str'"),
+    ("[1] * 'x'", "TypeError: can't multiply sequence by non-int of type 'str'"),
+    ("'x' * [1]", "TypeError: can't multiply sequence by non-int of type 'list'"),
+    ("{} * 'x'", "TypeError: can't multiply sequence by non-int of type 'dict'"),
+    ("(1,) * {}", "TypeError: can't multiply sequence by non-int of type 'dict'"),
+    ("b'a' * []", "TypeError: can't multiply sequence by non-int of type 'list'"),
+    ("'x' * zip()", "TypeError: can't multiply sequence by non-int of type 'zip'"),
+    ("range(3) * 'x'", "TypeError: can't multiply sequence by non-int of type 'range'"),
+    ("x = [1]\nx *= 'a'", "TypeError: can't multiply sequence by non-int of type 'str'"),
+    ("range(3) * 2", "TypeError: unsupported operand type(s) for *: 'range' and 'int'"),
+]
+
+
+@needs_core
+@pytest.mark.parametrize("case", CORE_PINNED_3, ids=range(len(CORE_PINNED_3)))
+def test_sequence_repetition_names_the_count_on_every_variant(case) -> None:
+    program, err = case
+    for binary in (CORE, BINARY):
+        got = _run([str(binary)], program)
+        last = (got.stderr.strip().splitlines() or [None])[-1]
+        assert (got.stdout, got.returncode, last) == ("", 1, err), (binary, program, got.stderr)
+    got = _run([str(BINARY)], I + "x = 'x' * itertools.product('a')")
+    assert got.stderr.strip().splitlines()[-1] == (
+        "TypeError: can't multiply sequence by non-int of type 'itertools.product'")
+    ok = _run([str(CORE)], "print('ab' * True, [0] * 2, 2 * (1,), b'a' * False)")
+    assert ok.stdout == "ab [0, 0] (1, 1) b''\n", ok.stderr

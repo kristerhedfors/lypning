@@ -105,10 +105,6 @@ pub struct Interp {
     /// skill both name. Recycling keeps the table, so a repeatedly called
     /// function grows it once for the whole run instead of once per call.
     scope_pool: Vec<Scope>,
-    /// The program imported `itertools` or `difflib` — modules the core does
-    /// not serve, so no smaller engine answers it. See [`Interp::run`].
-    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
-    imported_cap: bool,
 }
 
 /// How many scope-chain vectors to keep. Above the depth of any recursion this
@@ -135,8 +131,6 @@ impl Interp {
             handling: Vec::new(),
             chain_pool: Vec::new(),
             scope_pool: Vec::new(),
-            #[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
-            imported_cap: false,
             // Read once, here, rather than per statement. Zero — the CLI's
             // value, since a process can simply be killed — compiles the check
             // down to a comparison that is never true.
@@ -204,17 +198,34 @@ impl Interp {
         // engine does not compute — `Did you mean: 'product'?`, `Did you
         // forget to import 'json'?` — out of every visible name and
         // `sys.stdlib_module_names`. The core prints the bare line, as it did
-        // before; a program that imported `itertools` or `difflib` never ran
-        // on the core at all (main sent it to CPython), so here it refuses
-        // instead of starting to answer with the wrong last line. `str(e)`
-        // carries no hint, so a CAUGHT NameError is unaffected.
+        // before; a program that names `itertools` or `difflib` never ran on
+        // the core at all (main sent it to CPython), so here it refuses
+        // instead of starting to answer with the wrong last line — decided
+        // from the SOURCE (`io::hold_for`), so an error raised before the
+        // import refuses too. `str(e)` carries no hint, so a CAUGHT
+        // NameError is unaffected.
+        //
+        // An uncaught AttributeError is the same case: `x.apend(2)` ends
+        // `Did you mean: 'append'?`, out of `dir(x)`. Both hints are 3.10's;
+        // 3.9 prints the bare line, which is what this engine prints
+        // (measured on 3.9.6, 3.11.15 and 3.14.5).
         #[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
         if let Err(e) = &flow {
-            if self.imported_cap && matches!(e.kind(), ErrKind::Exc(x) if x.kind == "NameError") {
-                return Err(unsupported(
-                    "name-hint",
-                    "an uncaught NameError, whose last line CPython ends with a suggestion",
-                ));
+            if crate::io::held() && REF_PY_MINOR >= 10 {
+                if let ErrKind::Exc(x) = e.kind() {
+                    if x.kind == "NameError" {
+                        return Err(unsupported(
+                            "name-hint",
+                            "an uncaught NameError, whose last line CPython ends with a suggestion",
+                        ));
+                    }
+                    if x.kind == "AttributeError" {
+                        return Err(unsupported(
+                            "attr-hint",
+                            "an uncaught AttributeError, whose last line CPython ends with a suggestion",
+                        ));
+                    }
+                }
             }
         }
         match flow? {
@@ -226,7 +237,7 @@ impl Interp {
     #[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
     fn note_cap(&mut self, path: &str) {
         if matches!(path, "itertools" | "difflib") {
-            self.imported_cap = true;
+            crate::io::hold();
         }
     }
 

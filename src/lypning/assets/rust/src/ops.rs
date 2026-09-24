@@ -99,6 +99,27 @@ impl Interp {
                 return Ok(v);
             }
         }
+        // Sequence repetition, as `PyNumber_Multiply` decides it: the LEFT
+        // operand is the sequence if it is one, else the right, and a count
+        // with no `__index__` is `can't multiply sequence by non-int of type
+        // 'T'` naming the count. The arms below read the count through
+        // `int_val`, whose "cannot be interpreted as an integer" is CPython's
+        // wording for a different call (`'x' * 1.5`, `[1] * 'x'`, `'x' *
+        // zip()`; measured on 3.9.6, 3.11.15 and 3.14.5).
+        if let Mul = op {
+            let seq = |v: &Value| {
+                matches!(v, Value::Str(_) | Value::Bytes(_) | Value::List(_) | Value::Tuple(_))
+            };
+            let n = if seq(a) { Some(b) } else if seq(b) { Some(a) } else { None };
+            if let Some(n) = n {
+                if !matches!(n, Value::Int(_) | Value::Bool(_)) {
+                    return Err(type_err(format!(
+                        "can't multiply sequence by non-int of type '{}'",
+                        type_name(n)
+                    )));
+                }
+            }
+        }
         Ok(match (op, a, b) {
             (Add, Value::Str(x), Value::Str(y)) => Value::Str(format!("{x}{y}").into()),
             (Add, Value::Bytes(x), Value::Bytes(y)) => {
