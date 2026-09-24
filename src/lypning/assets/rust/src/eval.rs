@@ -190,6 +190,15 @@ impl Interp {
         }
     }
 
+    /// Remove `name` from the scope [`Self::bind`] would write, if it is there.
+    fn unbind(&mut self, name: &str) {
+        let scope = match self.chain.last() {
+            Some(s) if !self.declared_global(name) => s,
+            _ => &self.globals,
+        };
+        scope.borrow_mut().remove(name);
+    }
+
     // ---- statements -------------------------------------------------------
 
     pub fn run(&mut self, body: &[Stmt]) -> R<()> {
@@ -461,8 +470,15 @@ impl Interp {
                                 // engine matches clauses by name, so a clause
                                 // that is not an exception class it knows would
                                 // silently never match; refuse it instead.
+                                // A bare name is read through the scopes, not
+                                // off its spelling: `ValueError = len` makes
+                                // `except ValueError` a TypeError in CPython,
+                                // and matching by name caught it at exit 0.
                                 if let Some(k) = h.kinds.iter().find(|k| {
                                     !crate::route::except_clause(k.rsplit_once('.'), k).0
+                                        || (!k.contains('.')
+                                            && !matches!(self.lookup(k),
+                                                Ok(Value::Builtin(n)) if name_eq(n, k)))
                                 }) {
                                     return Err(unsupported(
                                         "exception",
@@ -484,6 +500,13 @@ impl Interp {
                                     self.handling.push((kind, msg));
                                     handled = Some(self.exec_block(&h.body));
                                     self.handling.pop();
+                                    // `except E as n` ends in `del n`: the
+                                    // name is unbound on every path out, so a
+                                    // read after the handler is CPython's
+                                    // NameError, not the caught exception.
+                                    if let Some(n) = &h.name {
+                                        self.unbind(n);
+                                    }
                                     break;
                                 }
                             }
@@ -1096,8 +1119,14 @@ impl Interp {
                     }
                     let Some(d) = d else { break };
                     let v = self.eval(d)?;
+                    // CPython's TypeError names the callee's QUALNAME
+                    // (`__main__.f() argument after ** must be a mapping, not
+                    // NoneType`), and a Counter or defaultdict IS a mapping.
                     let Value::Dict(m) = &v else {
-                        return Err(type_err("argument after ** must be a mapping"));
+                        return Err(crate::err::unsupported(
+                            "call",
+                            &format!("argument after ** of type {}", type_name(&v)),
+                        ));
                     };
                     let pairs: Vec<(Value, Value)> =
                         m.borrow().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
@@ -1746,7 +1775,7 @@ pub fn exc_matches(clause: &str, kind: &str) -> bool {
             "OSError" | "IOError" | "EnvironmentError" | "FileNotFoundError" | "PermissionError"
                 | "FileExistsError" | "IsADirectoryError" | "NotADirectoryError"
         ),
-        "ValueError" => kind == "UnicodeDecodeError" || kind == "JSONDecodeError",
+        "ValueError" => matches!(kind, "UnicodeDecodeError" | "UnicodeEncodeError" | "JSONDecodeError"),
         "NameError" => kind == "UnboundLocalError",
         _ => false,
     }

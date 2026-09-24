@@ -1127,6 +1127,12 @@ impl Requirements {
     /// that binds arrives here — an assignment, a `for` target, a `with … as`,
     /// a parameter, an `import … as`, an `except … as`, a `def`'s own name.
     fn bind_pattern(&mut self, name: &str, lit: Option<PatLit>) {
+        // `ValueError = len` turns a later `except ValueError` into CPython's
+        // TypeError; the runtime reads the name through the scopes and
+        // refuses, and this stops the route before the first statement.
+        if crate::builtins::EXCEPTIONS.contains(&name) {
+            self.stop("exception", format!("rebinding of {name}"));
+        }
         if !self.tracks_literals() {
             return;
         }

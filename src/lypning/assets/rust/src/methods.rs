@@ -491,7 +491,8 @@ fn arity(ty: &str, name: &str) -> Option<(usize, usize)> {
         ("bytes", "strip" | "lstrip" | "rstrip") => (0, 1),
         ("bytes", "join" | "partition" | "rpartition") => (1, 1),
         ("bytes", "splitlines") => (0, 1),
-        ("bytes", "decode") => (0, 2),
+        ("bytes", "decode" | "hex") => (0, 2),
+        ("bytes", "upper" | "lower") => (0, 0),
         ("list", "append" | "remove" | "extend" | "count") => (1, 1),
         ("list", "insert") => (2, 2),
         ("list", "pop") => (0, 1),
@@ -526,12 +527,26 @@ fn check_arity(ty: &str, name: &str, args: &Args, kw: &[(Rc<str>, Value)]) -> R<
     if n <= hi && (n >= lo || !kw.is_empty()) {
         return Ok(());
     }
-    Err(type_err(if lo == hi {
-        format!("{ty}.{name}() takes exactly {lo} {} ({n} given)", plural(lo))
+    // CPython's three spellings, read off 3.14.5: METH_NOARGS and METH_O name
+    // the type, Argument Clinic names the bare method with `()`, and the
+    // `PyArg_UnpackTuple` methods say `expected`.
+    let clinic = matches!(name, "split" | "rsplit" | "splitlines" | "encode" | "decode" | "hex")
+        || (ty, name) == ("str", "replace");
+    Err(type_err(if (ty, name) == ("list", "sort") {
+        "sort() takes no positional arguments".to_string()
+    } else if lo == hi && lo < 2 {
+        let what = if lo == 0 { "no arguments" } else { "exactly one argument" };
+        format!("{ty}.{name}() takes {what} ({n} given)")
+    } else if lo == hi {
+        format!("{name} expected {lo} {}, got {n}", plural(lo))
+    } else if clinic && n > hi {
+        format!("{name}() takes at most {hi} {} ({n} given)", plural(hi))
+    } else if clinic {
+        format!("{name}() takes at least {lo} positional {} ({n} given)", plural(lo))
     } else if n > hi {
-        format!("{ty}.{name}() takes at most {hi} {} ({n} given)", plural(hi))
+        format!("{name} expected at most {hi} {}, got {n}", plural(hi))
     } else {
-        format!("{ty}.{name}() takes at least {lo} {} ({n} given)", plural(lo))
+        format!("{name} expected at least {lo} {}, got {n}", plural(lo))
     }))
 }
 
@@ -1209,11 +1224,30 @@ pub(crate) fn ascii_encode_errors(s: &str, errors: Option<&Value>) -> R<Vec<u8>>
         None => "strict".to_string(),
     };
     Ok(match e.as_str() {
+        // CPython names the first RUN of unencodable characters, by
+        // character index: one character is escaped (`'\xe9'`, `'\u20ac'`,
+        // `'\U0001f600'`, never its printable repr), a run is `0-2`.
         "strict" => {
+            let cs: Vec<char> = s.chars().collect();
+            let lo = cs.iter().position(|c| !c.is_ascii()).unwrap_or(0);
+            let hi = lo + cs[lo..].iter().take_while(|c| !c.is_ascii()).count();
+            let what = if hi - lo == 1 {
+                let u = cs[lo] as u32;
+                let esc = if u < 0x100 {
+                    format!("\\x{u:02x}")
+                } else if u < 0x10000 {
+                    format!("\\u{u:04x}")
+                } else {
+                    format!("\\U{u:08x}")
+                };
+                format!("character '{esc}' in position {lo}")
+            } else {
+                format!("characters in position {lo}-{}", hi - 1)
+            };
             return Err(LypningError::exc(
                 "UnicodeEncodeError",
-                "'ascii' codec can't encode character",
-            ))
+                format!("'ascii' codec can't encode {what}: ordinal not in range(128)"),
+            ));
         }
         // Every byte of a non-ASCII character has the high bit set, so dropping
         // the non-ASCII BYTES drops exactly the characters CPython drops.

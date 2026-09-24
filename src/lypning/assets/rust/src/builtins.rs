@@ -188,6 +188,44 @@ pub const EXCEPTIONS: &[&str] = &[
 /// them, in the population that does — 1,173 programs a model wrote.
 pub const MODULE_EXCEPTIONS: &[&str] = &["JSONDecodeError"];
 
+/// The ZERO of every run of Unicode decimal digits (category Nd), read off
+/// CPython 3.14.5's `unicodedata` (Unicode 16.0.0) on 2026-09-25: 75 runs of
+/// exactly ten, `0`..`9` in order, which is every non-ASCII decimal there is.
+const DECIMAL_ZEROS: [u32; 75] = [
+    0x660, 0x6f0, 0x7c0, 0x966, 0x9e6, 0xa66, 0xae6, 0xb66, 0xbe6, 0xc66, 0xce6, 0xd66, 0xde6,
+    0xe50, 0xed0, 0xf20, 0x1040, 0x1090, 0x17e0, 0x1810, 0x1946, 0x19d0, 0x1a80, 0x1a90, 0x1b50,
+    0x1bb0, 0x1c40, 0x1c50, 0xa620, 0xa8d0, 0xa900, 0xa9d0, 0xa9f0, 0xaa50, 0xabf0, 0xff10,
+    0x104a0, 0x10d30, 0x10d40, 0x11066, 0x110f0, 0x11136, 0x111d0, 0x112f0, 0x11450, 0x114d0,
+    0x11650, 0x116c0, 0x116d0, 0x116da, 0x11730, 0x118e0, 0x11950, 0x11bf0, 0x11c50, 0x11d50,
+    0x11da0, 0x11f50, 0x16130, 0x16a60, 0x16ac0, 0x16b50, 0x16d70, 0x1ccf0, 0x1d7ce, 0x1d7d8,
+    0x1d7e2, 0x1d7ec, 0x1d7f6, 0x1e140, 0x1e2f0, 0x1e4f0, 0x1e5f1, 0x1e950, 0x1fbf0,
+];
+
+/// CPython's `_PyUnicode_TransformDecimalAndSpaceToASCII`, which `int()` and
+/// `float()` of a str read through: a Unicode decimal digit is its ASCII
+/// digit, Unicode whitespace is a space, and any other non-ASCII character
+/// is `?`, which no literal accepts. `int('٣')` is 3 in CPython and was a
+/// ValueError here at exit 1. Error messages still quote the ORIGINAL text.
+fn ascii_digits(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.is_ascii() {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    s.chars()
+        .map(|c| {
+            let u = c as u32;
+            if c.is_ascii() {
+                c
+            } else if c.is_whitespace() {
+                ' '
+            } else if let Some(z) = DECIMAL_ZEROS.iter().find(|&&z| u >= z && u < z + 10) {
+                (b'0' + (u - z) as u8) as char
+            } else {
+                '?'
+            }
+        })
+        .collect()
+}
+
 pub fn is_exception_name(n: &str) -> bool {
     EXCEPTIONS.iter().any(|e| name_eq(e, n)) || MODULE_EXCEPTIONS.iter().any(|e| name_eq(e, n))
 }
@@ -976,7 +1014,8 @@ pub fn call_builtin(
             match first {
                 None => ival(0),
                 Some(Value::Str(s)) => {
-                    let t = s.trim();
+                    let norm = ascii_digits(s);
+                    let t = norm.trim();
                     let (t, neg) = match t.strip_prefix('-') {
                         Some(r) => (r, true),
                         None => (t.strip_prefix('+').unwrap_or(t), false),
@@ -1167,7 +1206,8 @@ pub fn call_builtin(
                     return Err(crate::re::guard_one(v, "float() of").unwrap_err())
                 }
                 Some(Value::Str(s)) => {
-                    let t = s.trim();
+                    let norm = ascii_digits(s);
+                    let t = norm.trim();
                     let lower = t.to_ascii_lowercase();
                     match lower.as_str() {
                         "inf" | "+inf" | "infinity" | "+infinity" => Value::Float(f64::INFINITY),

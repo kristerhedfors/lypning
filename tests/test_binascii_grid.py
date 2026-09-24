@@ -458,3 +458,138 @@ def test_a_handler_the_exception_never_reaches_is_not_refused() -> None:
     for binary, program in ((CORE, body), (BINARY, B + body)):
         got = _run([str(binary)], program)
         assert (got.stdout, got.returncode) == ("z\n", 0), (binary, got)
+
+
+# Round 3 (2026-09-25): shared-code bugs a served `import binascii` made
+# reachable from lypning-l, closed at the root so both variants hold them.
+# (program, stdout, exit, last stderr line), CPython 3.14.5's exact bytes.
+EXACT_ROUND3 = [
+    # `except E as n` ends in `del n`: the name is unbound after the handler.
+    ("try:\n    1/0\nexcept ZeroDivisionError as e:\n    pass\nprint(e)", "", 1,
+     "NameError: name 'e' is not defined"),
+    ("def f():\n    try:\n        1/0\n    except Exception as e:\n        pass\n    print(e)\nf()",
+     "", 1,
+     "UnboundLocalError: cannot access local variable 'e' where it is not associated with a value"),
+    ("try:\n    1/0\nexcept ZeroDivisionError as e:\n    print(e)\ne = 5\nprint(e)",
+     "division by zero\n5\n", 0, ""),
+    # bytes.upper/lower take nothing; bytes.hex takes at most two.
+    ("print(b'a'.upper(1))", "", 1, "TypeError: bytes.upper() takes no arguments (1 given)"),
+    ("print(b'a'.lower(1, 2))", "", 1, "TypeError: bytes.lower() takes no arguments (2 given)"),
+    ("print(b'a'.hex(1, 2, 3))", "", 1, "TypeError: hex() takes at most 2 arguments (3 given)"),
+    ("print([].append())", "", 1,
+     "TypeError: list.append() takes exactly one argument (0 given)"),
+    ("print([1].sort(1))", "", 1, "TypeError: sort() takes no positional arguments"),
+    # int() and float() of a str read every Unicode decimal digit.
+    ("print(int('\u0663'), int('\u0661', 16), int('\u0661_2'), float('\u0663.5'))",
+     "3 1 12 3.5\n", 0, ""),
+    ("print(int('\u3000\u0663\u00a0'), int('-\u0663'), int('\uff11\uff12'), float(' \u0967e2 '))",
+     "3 -3 12 100.0\n", 0, ""),
+    ("print(int('\u0663x'))", "", 1,
+     "ValueError: invalid literal for int() with base 10: '\u0663x'"),
+    # The ascii codec's message names the character or the run, and an
+    # `except ValueError` catches it.
+    ("print('\u00e9'.encode('ascii'))", "", 1,
+     "UnicodeEncodeError: 'ascii' codec can't encode character '\\xe9' in position 0: "
+     "ordinal not in range(128)"),
+    ("try:\n    'a\u00e9\u00fc\u20ac'.encode('ascii')\nexcept ValueError as e:\n    print(e)",
+     "'ascii' codec can't encode characters in position 1-3: ordinal not in range(128)\n", 0, ""),
+    ("try:\n    'a\U0001f600'.encode('ascii')\nexcept ValueError as e:\n    print(e)",
+     "'ascii' codec can't encode character '\\U0001f600' in position 1: "
+     "ordinal not in range(128)\n", 0, ""),
+    ("try:\n    'a\u20acb'.encode('ascii')\nexcept ValueError as e:\n    print(e)",
+     "'ascii' codec can't encode character '\\u20ac' in position 1: "
+     "ordinal not in range(128)\n", 0, ""),
+    # str/list/tuple concatenation and sequence repetition in CPython's words.
+    ("print('a' + b'ab')", "", 1, 'TypeError: can only concatenate str (not "bytes") to str'),
+    ("print([1] + b'ab')", "", 1, 'TypeError: can only concatenate list (not "bytes") to list'),
+    ("print((1,) + b'ab')", "", 1,
+     'TypeError: can only concatenate tuple (not "bytes") to tuple'),
+    ("print(b'a' * '3')", "", 1, "TypeError: can't multiply sequence by non-int of type 'str'"),
+    ("print(b'a' * 1.5)", "", 1,
+     "TypeError: can't multiply sequence by non-int of type 'float'"),
+    ("print(1.5 * [1])", "", 1,
+     "TypeError: can't multiply sequence by non-int of type 'float'"),
+    ("print([1] * 'a')", "", 1, "TypeError: can't multiply sequence by non-int of type 'str'"),
+    ("print('ab' * True, [1] * 2, 3 * (1,), b'x' * 0)", "ab [1, 1] (1, 1, 1) b''\n", 0, ""),
+    # A non-ASCII character in a bytes literal is a compile error.
+    ("print(1)\nprint(b'\u0663' if 0 else 1)", "", 1,
+     "SyntaxError: bytes can only contain ASCII literal characters"),
+    ("print(1)\nprint(br'\u00e9')", "", 1,
+     "SyntaxError: bytes can only contain ASCII literal characters"),
+]
+EXACT_L_ROUND3 = [
+    (B + "try:\n    1/0\nexcept ZeroDivisionError as e:\n    pass\nprint(e)", "", 1,
+     "NameError: name 'e' is not defined"),
+    (B + "x = binascii.hexlify(b'\\x01')\nprint(x.upper(1))", "", 1,
+     "TypeError: bytes.upper() takes no arguments (1 given)"),
+    (B + "print(int(binascii.unhexlify('d9a3').decode()))", "3\n", 0, ""),
+    (B + "print('\u00e9'.encode('ascii'))", "", 1,
+     "UnicodeEncodeError: 'ascii' codec can't encode character '\\xe9' in position 0: "
+     "ordinal not in range(128)"),
+    (B + "print('a' + binascii.hexlify(b'a'))", "", 1,
+     'TypeError: can only concatenate str (not "bytes") to str'),
+    (B + "print(b'\u0663' if 0 else 1)", "", 1,
+     "SyntaxError: bytes can only contain ASCII literal characters"),
+]
+# Refused on both variants: a shadowed exception name in a handler (CPython's
+# TypeError), a codec error's five-argument repr/args, and a `**` that is not
+# a dict (CPython's message names the callee's qualname).
+REFUSED_ROUND3 = [
+    ("ValueError = len\ntry:\n    int('z')\nexcept ValueError:\n    print('c')", "exception"),
+    ("def g():\n    ZeroDivisionError = len\n    try:\n        1/0\n"
+     "    except ZeroDivisionError:\n        print('c')\ng()", "exception"),
+    ("print('a')\nValueError = KeyError\ntry:\n    {}['k']\nexcept ValueError:\n    print('c')",
+     "exception"),
+    ("try:\n    b'\\xc3'.decode()\nexcept ValueError as e:\n    print(repr(e))", "exception"),
+    ("try:\n    b'\\xc3'.decode()\nexcept ValueError as e:\n    print(e.args)", "exception"),
+    ("try:\n    b'\\xc3'.decode()\nexcept ValueError as e:\n    print(e.start)", "exception"),
+    ("def f(**k):\n    print(k)\nf(x=1, **None)", "call"),
+    ("print(**[1])", "call"),
+]
+
+
+@needs_core
+@pytest.mark.parametrize("row", EXACT_ROUND3, ids=range(len(EXACT_ROUND3)))
+def test_round3_shared_code_answers_cpythons_bytes(row) -> None:
+    program, out, code, last = row
+    for binary in (CORE, BINARY):
+        problem = _exact_problem(_run([str(binary)], program), out, code, last)
+        assert problem is None, "%s: %s\n  program: %r" % (binary, problem, program)
+
+
+@needs_l
+@pytest.mark.parametrize("row", EXACT_L_ROUND3, ids=range(len(EXACT_L_ROUND3)))
+def test_round3_binascii_programs_answer_cpythons_bytes(row) -> None:
+    program, out, code, last = row
+    problem = _exact_problem(_run([str(BINARY)], program), out, code, last)
+    assert problem is None, "%s\n  program: %r" % (problem, program)
+
+
+@needs_core
+@pytest.mark.parametrize("row", REFUSED_ROUND3, ids=range(len(REFUSED_ROUND3)))
+def test_round3_refusals_hold_on_both_variants(row) -> None:
+    body, kind = row
+    for binary, program in ((CORE, body), (BINARY, B + body)):
+        got = _run([str(binary)], program)
+        assert got.returncode == engines.UNSUPPORTED_EXIT and got.stdout == "", (
+            binary, program, got.returncode, got.stdout, got.stderr)
+        assert got.stderr.count("\n") == 1 and ": unsupported: %s: " % kind in got.stderr, (
+            got.stderr)
+
+
+@needs_core
+def test_a_rebound_exception_name_routes_to_cpython() -> None:
+    """`ValueError = len` stops every rung in the walk: the handler would be
+    CPython's TypeError, and matching it by name answered 'c' at exit 0."""
+    for program in (B + "ValueError = len\ntry:\n    int('z')\nexcept ValueError:\n    print('c')",
+                    "import csv\nKeyError = 1\nprint(csv.QUOTE_ALL)"):
+        route = engines.route(program, binary=CORE)
+        assert route.engine == engines.CPYTHON, (route.engine, route.kind, route.detail)
+
+
+@needs_core
+def test_a_from_imported_module_exception_still_matches() -> None:
+    program = ("import json\nfrom json import JSONDecodeError\ntry:\n    json.loads('x')\n"
+               "except JSONDecodeError:\n    print('ok')")
+    got = _run([str(CORE)], program)
+    assert (got.stdout, got.returncode) == ("ok\n", 0), got

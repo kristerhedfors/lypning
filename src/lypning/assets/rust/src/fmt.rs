@@ -239,6 +239,12 @@ pub fn repr(v: &Value) -> R<String> {
         #[cfg(feature = "cap-re")]
         Value::Pattern(_) | Value::Match(_) => return crate::re::repr(v),
         Value::Exc(kind, msg) => {
+            // A codec error's repr is its FIVE arguments — `UnicodeDecodeError(
+            // 'utf-8', b'\xc3', 0, 1, 'unexpected end of data')` — and this
+            // value keeps only the rendered message.
+            if matches!(*kind, "UnicodeDecodeError" | "UnicodeEncodeError") {
+                return Err(unsupported("exception", &format!("repr() of a {kind}")));
+            }
             if msg.is_empty() {
                 format!("{kind}()")
             } else if *kind == "KeyError" {

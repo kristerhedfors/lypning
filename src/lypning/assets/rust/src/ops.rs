@@ -99,6 +99,21 @@ impl Interp {
                 return Ok(v);
             }
         }
+        // `seq * x` needs an INDEX: CPython's `sq_repeat` names the operand
+        // that is not one, the right one when the left is a sequence.
+        // `int_val` said "'float' object cannot be interpreted as an integer".
+        if let Mul = op {
+            let seq = |v: &Value| {
+                matches!(v, Value::Str(_) | Value::Bytes(_) | Value::List(_) | Value::Tuple(_))
+            };
+            let n = if seq(a) { b } else { a };
+            if (seq(a) || seq(b)) && !matches!(n, Value::Int(_) | Value::Bool(_)) {
+                return Err(type_err(format!(
+                    "can't multiply sequence by non-int of type '{}'",
+                    type_name(n)
+                )));
+            }
+        }
         Ok(match (op, a, b) {
             (Add, Value::Str(x), Value::Str(y)) => Value::Str(format!("{x}{y}").into()),
             (Add, Value::Bytes(x), Value::Bytes(y)) => {
@@ -218,6 +233,16 @@ impl Interp {
             // str to bytes". No right operand here has an `__radd__`.
             (Add, Value::Bytes(_), r) => {
                 return Err(type_err(format!("can't concat {} to bytes", type_name(r))))
+            }
+            // str, list and tuple have `sq_concat` too, and say so in their own
+            // words: `'a' + b'x'` is "can only concatenate str (not "bytes")
+            // to str".
+            (Add, l @ (Value::Str(_) | Value::List(_) | Value::Tuple(_)), r) => {
+                let t = type_name(l);
+                return Err(type_err(format!(
+                    "can only concatenate {t} (not \"{}\") to {t}",
+                    type_name(r)
+                )));
             }
             _ => {
                 return Err(type_err(format!(
@@ -912,6 +937,13 @@ impl Interp {
             }
         }
         if let Value::Exc(kind, msg) = base {
+            // `.args`, `.start`, `.object`… of a codec error are its five
+            // constructor arguments, which the flat message cannot give back.
+            if matches!(*kind, "UnicodeDecodeError" | "UnicodeEncodeError")
+                && matches!(name, "args" | "encoding" | "object" | "start" | "end" | "reason")
+            {
+                return Err(unsupported("exception", &format!("{kind}.{name}")));
+            }
             match name {
                 // `SystemExit.code` is the exit status, typed — the message is
                 // its `str()`, and the constructor kept the two reversible.
