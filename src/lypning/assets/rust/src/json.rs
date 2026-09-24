@@ -416,10 +416,7 @@ fn write_value(out: &mut String, v: &Value, o: &Opts, depth: usize) -> R<()> {
             // is `type_name`'s and cannot drift away from the one every other
             // message prints.
             if crate::value::is_environ(d) {
-                return Err(type_err(format!(
-                    "Object of type {} is not JSON serializable",
-                    type_name(v)
-                )));
+                return Err(not_serializable(v));
             }
             let mut pairs: Vec<(String, Value, Value)> = Vec::new();
             for (k, val) in d.borrow().iter() {
@@ -535,7 +532,7 @@ fn write_value(out: &mut String, v: &Value, o: &Opts, depth: usize) -> R<()> {
                 newline_indent(out, o, depth + 1);
                 write_json_str(out, k, o.ensure_ascii);
                 out.push_str(&o.key_sep);
-                write_value(out, val, o, depth + 1)?;
+                write_value(out, val, o, depth + 1).map_err(noted)?;
             }
             newline_indent(out, o, depth);
             out.push('}');
@@ -543,14 +540,31 @@ fn write_value(out: &mut String, v: &Value, o: &Opts, depth: usize) -> R<()> {
         Value::Set(_) => {
             return Err(type_err("Object of type set is not JSON serializable"))
         }
-        other => {
-            return Err(type_err(format!(
-                "Object of type {} is not JSON serializable",
-                type_name(other)
-            )))
-        }
+        other => return Err(not_serializable(other)),
     }
     Ok(())
+}
+
+/// `Object of type X is not JSON serializable`, where X is
+/// `type(o).__name__` — the tp_name AFTER its last dot. `itertools.product`
+/// and `collections.deque` print as `product` and `deque` here, and nowhere
+/// else (every other message names the dotted tp_name).
+fn not_serializable(v: &Value) -> LypningError {
+    let t = type_name(v);
+    let t = t.rsplit('.').next().unwrap_or(t);
+    type_err(format!("Object of type {t} is not JSON serializable"))
+}
+
+/// An error raised while serializing an item INSIDE a list, tuple or dict.
+/// CPython 3.14 attaches `when serializing dict item 'k'` (one note per level)
+/// and the traceback prints those notes after the message, so its last line is
+/// a note this engine's exceptions cannot carry: refused on 3.14, the message
+/// alone on 3.13 and earlier (measured on 3.12.13, 3.13.13, 3.14.5).
+fn noted(e: LypningError) -> LypningError {
+    if REF_PY_MINOR >= 14 && matches!(e.kind(), ErrKind::Exc(_)) {
+        return unsupported("json", "an error inside a container, which CPython 3.14 annotates");
+    }
+    e
 }
 
 fn write_seq(out: &mut String, items: &[Value], o: &Opts, depth: usize) -> R<()> {
@@ -564,7 +578,7 @@ fn write_seq(out: &mut String, items: &[Value], o: &Opts, depth: usize) -> R<()>
             out.push_str(&o.item_sep);
         }
         newline_indent(out, o, depth + 1);
-        write_value(out, x, o, depth + 1)?;
+        write_value(out, x, o, depth + 1).map_err(noted)?;
     }
     newline_indent(out, o, depth);
     out.push(']');

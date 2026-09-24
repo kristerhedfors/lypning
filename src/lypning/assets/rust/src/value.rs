@@ -1428,6 +1428,13 @@ fn bound_kind(recv: &Value, name: &str) -> Callable {
 /// through `except AttributeError as e: print(e)`.
 pub fn attr_error(base: &Value, name: &str) -> crate::err::LypningError {
     match callable_kind(base) {
+        // `mro` is the one non-dunder attribute EVERY type object has
+        // (`dir(type)`), so `int.mro()` and `itertools.product.mro()` answer in
+        // CPython. Nothing here builds a class's MRO: refused, never the
+        // AttributeError at exit 1 it used to be.
+        Some(Callable::Class(cls)) if name == "mro" => {
+            crate::err::unsupported("type-attr", &format!("{cls}.mro"))
+        }
         Some(Callable::Class(cls)) => crate::err::attr_err(format!(
             "type object '{cls}' has no attribute '{name}'"
         )),

@@ -105,6 +105,10 @@ pub struct Interp {
     /// skill both name. Recycling keeps the table, so a repeatedly called
     /// function grows it once for the whole run instead of once per call.
     scope_pool: Vec<Scope>,
+    /// The program imported `itertools` or `difflib` — modules the core does
+    /// not serve, so no smaller engine answers it. See [`Interp::run`].
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
+    imported_cap: bool,
 }
 
 /// How many scope-chain vectors to keep. Above the depth of any recursion this
@@ -131,6 +135,8 @@ impl Interp {
             handling: Vec::new(),
             chain_pool: Vec::new(),
             scope_pool: Vec::new(),
+            #[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
+            imported_cap: false,
             // Read once, here, rather than per statement. Zero — the CLI's
             // value, since a process can simply be killed — compiles the check
             // down to a comparison that is never true.
@@ -193,9 +199,34 @@ impl Interp {
     // ---- statements -------------------------------------------------------
 
     pub fn run(&mut self, body: &[Stmt]) -> R<()> {
-        match self.exec_block(body)? {
+        let flow = self.exec_block(body);
+        // An UNCAUGHT NameError ends CPython's traceback with a hint this
+        // engine does not compute — `Did you mean: 'product'?`, `Did you
+        // forget to import 'json'?` — out of every visible name and
+        // `sys.stdlib_module_names`. The core prints the bare line, as it did
+        // before; a program that imported `itertools` or `difflib` never ran
+        // on the core at all (main sent it to CPython), so here it refuses
+        // instead of starting to answer with the wrong last line. `str(e)`
+        // carries no hint, so a CAUGHT NameError is unaffected.
+        #[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
+        if let Err(e) = &flow {
+            if self.imported_cap && matches!(e.kind(), ErrKind::Exc(x) if x.kind == "NameError") {
+                return Err(unsupported(
+                    "name-hint",
+                    "an uncaught NameError, whose last line CPython ends with a suggestion",
+                ));
+            }
+        }
+        match flow? {
             Flow::Normal => Ok(()),
             _ => Err(LypningError::syntax(0, "'return'/'break' outside a block")),
+        }
+    }
+
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
+    fn note_cap(&mut self, path: &str) {
+        if matches!(path, "itertools" | "difflib") {
+            self.imported_cap = true;
         }
     }
 
@@ -530,6 +561,8 @@ impl Interp {
             Stmt::Import { names } => {
                 for (path, bind) in names {
                     let m = modules::import(path)?;
+                    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
+                    self.note_cap(path);
                     // `import os.path` binds `os`, but `os.path` must resolve.
                     if path.contains('.') && bind.as_ref() == path.split('.').next().unwrap() {
                         modules::import(path.split('.').next().unwrap())?;
@@ -542,6 +575,8 @@ impl Interp {
             }
             Stmt::FromImport { module, names } => {
                 let m = modules::import(module)?;
+                #[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
+                self.note_cap(module);
                 for (n, bind) in names {
                     let v = modules::get_attr(&m, n)?;
                     self.bind(bind, v);

@@ -28,8 +28,9 @@ access — the last three raising CPython's own message naming
 **What refuses, and must keep refusing** (`REFUSED`): the object's `repr`
 (a heap address), `len()` and `type()` of it (an iterator-type name), `hash()`,
 an integer past 64 bits (CPython's `OverflowError` names a C type), a set as an
-input (`set-order`), a keyword `combinations` does not bind, `isinstance`
-against the class, and every name on the module outside the two.
+input (`set-order`), a keyword `combinations` does not bind, `mro()` of the
+class, an uncaught NameError (CPython's last line carries a suggestion), and
+every name on the module outside the two.
 """
 
 from __future__ import annotations
@@ -188,9 +189,21 @@ REFUSED = [
     I + "print(list(itertools.product({1, 2})))",
     I + "print(list(itertools.combinations({'a', 'b'}, 1)))",
     I + "print(list(itertools.combinations(x='abc', r=2)))",
-    I + "print(isinstance(itertools.product('a'), itertools.product))",
-    I + "print(isinstance(1, (int, itertools.combinations)))",
     I + "print(itertools.product.__name__)",
+    # every type object has `mro` (round 2); nothing here builds one
+    I + "print(len(itertools.product.mro()))",
+    I + "itertools.combinations.mro",
+    I + "x = itertools.product\nprint(x.mro()[-1])",
+    # CPython 3.14 annotates an error inside a json container with a note,
+    # which is its traceback's last line
+    I + "import json\njson.dumps({'k': itertools.product('a')})",
+    I + "import json\njson.dumps([1, itertools.combinations('a', 1)])",
+    # an uncaught NameError: CPython ends it with a suggestion
+    I + "del itertools\nprint(itertools)",
+    I + "print(json)",
+    I + "print(itertool)",
+    "from itertools import product\nprint(prodcut('a'))",
+    "import difflib\nprint(difflib2)",
 ] + [
     I + "print(itertools.%s)" % n
     for n in ("chain", "islice", "permutations", "count", "groupby", "accumulate", "cycle",
@@ -417,3 +430,122 @@ def test_a_module_is_hashable_by_identity_on_every_variant(case) -> None:
     for binary in (CORE, BINARY):
         got = _run([str(binary)], program)
         assert (got.stdout, got.returncode) == (out, 0), (binary, program, got.stderr)
+
+
+#: Round-2 verifier findings, pinned to CPython 3.14.5's exact bytes
+#: (2026-09-25): `isinstance` against the classes is ANSWERED (and a tuple is
+#: tried left to right); json names `type(o).__name__`, not the dotted
+#: tp_name; the operand messages are the left operand's own.
+PINNED_2 = [
+    (I + "print(isinstance(itertools.product([1]), itertools.product),"
+         " isinstance(itertools.product([1]), itertools.combinations),"
+         " isinstance(1, (int, itertools.combinations)),"
+         " isinstance(itertools.combinations('a', 1), (str, itertools.combinations)))",
+     "True False True True\n", 0, None),
+    (I + "import json\njson.dumps(itertools.product('ab'))", "", 1,
+     "TypeError: Object of type product is not JSON serializable"),
+    (I + "import json\njson.dumps(itertools.combinations('a', 1))", "", 1,
+     "TypeError: Object of type combinations is not JSON serializable"),
+    (I + "'x' + itertools.product('a')", "", 1,
+     'TypeError: can only concatenate str (not "itertools.product") to str'),
+    (I + "dict(itertools.product('ab'))", "", 1,
+     "ValueError: dictionary update sequence element #0 has length 1; 2 is required"),
+    (I + "isinstance(1, itertools.product('a'))", "", 1,
+     "TypeError: isinstance() arg 2 must be a type, a tuple of types, or a union"),
+    (I + "'abc'.startswith(itertools.product('a'))", "", 1,
+     "TypeError: startswith first arg must be str or a tuple of str, not itertools.product"),
+    (I + "[1, 2][itertools.product('a')]", "", 1,
+     "TypeError: list indices must be integers or slices, not itertools.product"),
+    (I + "1 in itertools.product", "", 1,
+     "TypeError: argument of type 'type' is not a container or iterable"),
+    (I + "try:\n    print(itertool)\nexcept NameError as e:\n    print(e)",
+     "name 'itertool' is not defined\n", 0, None),
+]
+
+
+@needs_l
+@pytest.mark.parametrize("case", PINNED_2, ids=range(len(PINNED_2)))
+def test_the_round_two_findings_match_cpython_bytes(case) -> None:
+    program, out, code, err = case
+    got = _run([str(BINARY)], program)
+    last = (got.stderr.strip().splitlines() or [None])[-1]
+    assert (got.stdout, got.returncode, last) == (out, code, err), (program, got.stderr)
+
+
+#: Shared (core) code reached through the round-2 findings: each message is
+#: CPython 3.14.5's, caught and printed or uncaught, on EVERY variant.
+CORE_PINNED_2 = [
+    ("'x' + 1", "", 1, 'TypeError: can only concatenate str (not "int") to str'),
+    ("[1] + (2,)", "", 1, 'TypeError: can only concatenate list (not "tuple") to list'),
+    ("(1,) + [2]", "", 1, 'TypeError: can only concatenate tuple (not "list") to tuple'),
+    ("s = 'x'\ns += None", "", 1,
+     'TypeError: can only concatenate str (not "NoneType") to str'),
+    ("dict([(1,)])", "", 1,
+     "ValueError: dictionary update sequence element #0 has length 1; 2 is required"),
+    ("dict(['ab', (1, 2, 3)])", "", 1,
+     "ValueError: dictionary update sequence element #1 has length 3; 2 is required"),
+    ("d = {}\nd.update([(1, 2), 'c'])", "", 1,
+     "ValueError: dictionary update sequence element #1 has length 1; 2 is required"),
+    ("print(dict(['ab', (1, 2)]))", "{'a': 'b', 1: 2}\n", 0, None),
+    ("isinstance(1, 3)", "", 1,
+     "TypeError: isinstance() arg 2 must be a type, a tuple of types, or a union"),
+    ("isinstance(1, (str, 3))", "", 1,
+     "TypeError: isinstance() arg 2 must be a type, a tuple of types, or a union"),
+    ("print(isinstance(1, (int, 3)), isinstance('a', (int, str)))", "True True\n", 0, None),
+    ("'abc'.startswith(1)", "", 1,
+     "TypeError: startswith first arg must be str or a tuple of str, not int"),
+    ("'abc'.endswith([1])", "", 1,
+     "TypeError: endswith first arg must be str or a tuple of str, not list"),
+    ("print('abc'.startswith(('a', 1)), 'abc'.endswith(('c', 'x')))", "True True\n", 0, None),
+    ("'abc'.startswith((1, 'a'))", "", 1,
+     "TypeError: tuple for startswith must only contain str, not int"),
+    ("'abc'.startswith(('x', 1), 10)", "", 1,
+     "TypeError: tuple for startswith must only contain str, not int"),
+    ("'abc'.find('a', 'x')", "", 1,
+     "TypeError: slice indices must be integers or None or have an __index__ method"),
+    ("b'abc'.find(b'a', 1.5)", "", 1,
+     "TypeError: slice indices must be integers or None or have an __index__ method"),
+    ("x = 'a'\n[1, 2][x]", "", 1, "TypeError: list indices must be integers or slices, not str"),
+    ("x = 'a'\n(1, 2)[x]", "", 1, "TypeError: tuple indices must be integers or slices, not str"),
+    ("x = 'a'\n'ab'[x]", "", 1, "TypeError: string indices must be integers, not 'str'"),
+    ("x = None\nb'ab'[x]", "", 1,
+     "TypeError: byte indices must be integers or slices, not NoneType"),
+    ("x = 1.0\nrange(3)[x]", "", 1,
+     "TypeError: range indices must be integers or slices, not float"),
+    ("x = [1]\nk = 'a'\nx[k] = 2", "", 1,
+     "TypeError: list indices must be integers or slices, not str"),
+    ("1 in 5", "", 1, "TypeError: argument of type 'int' is not a container or iterable"),
+    ("import json\njson.dumps(int)", "", 1,
+     "TypeError: Object of type type is not JSON serializable"),
+    ("import json\nprint(json.dumps([1, (2, {'a': None})]))", '[1, [2, {"a": null}]]\n', 0, None),
+    ("print(int.mro())", None, 90, None),
+    # a NameError on the core keeps the bare line it always printed (main's
+    # behaviour; the hint is a known core gap, not this unit's)
+    ("try:\n    print(nope)\nexcept NameError as e:\n    print(e)",
+     "name 'nope' is not defined\n", 0, None),
+]
+
+
+@needs_core
+@pytest.mark.parametrize("case", CORE_PINNED_2, ids=range(len(CORE_PINNED_2)))
+def test_the_shared_messages_match_cpython_bytes_on_every_variant(case) -> None:
+    program, out, code, err = case
+    for binary in (CORE, BINARY):
+        got = _run([str(binary)], program)
+        if code == engines.UNSUPPORTED_EXIT:
+            assert got.returncode == code and got.stdout == "", (binary, program, got.stderr)
+            assert len(got.stderr.strip().splitlines()) == 1, (binary, program, got.stderr)
+            continue
+        last = (got.stderr.strip().splitlines() or [None])[-1]
+        assert (got.stdout, got.returncode, last) == (out, code, err), (
+            binary, program, got.stderr)
+
+
+#: A json error INSIDE a container carries a 3.14 note; the core refuses it
+#: cleanly rather than print a last line CPython does not.
+@needs_core
+def test_a_json_error_inside_a_container_refuses_on_every_variant() -> None:
+    for binary in (CORE, BINARY):
+        got = _run([str(binary)], "import json\njson.dumps({'k': [1, {2}]})")
+        assert got.returncode == engines.UNSUPPORTED_EXIT and got.stdout == "", (
+            binary, got.stderr)

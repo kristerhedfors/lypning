@@ -34,7 +34,11 @@
 //! interpreter on 2026-09-24 and pinned by `tests/test_itertools_grid.py`.
 //! What this does NOT word it refuses: an integer past 64 bits (CPython's
 //! `OverflowError` names `C ssize_t`), a keyword `combinations` does not bind,
-//! and a `product` whose pool list would be absurdly long.
+//! a `product` whose pool list would be absurdly long, `mro()` of either class
+//! (`value::attr_error`), and an UNCAUGHT NameError in a program that imported
+//! this module (`Interp::run`: CPython's last line carries a suggestion).
+//! `isinstance(x, itertools.product)` is answered: the object's kind IS the
+//! class's tp_name (`builtins.rs`, `isinstance`).
 
 use crate::args::Args;
 use crate::err::*;

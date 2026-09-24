@@ -998,32 +998,44 @@ fn str_method(
             }
         }
         "startswith" | "endswith" => {
-            let pats: Vec<Rc<str>> = match args.first() {
-                Some(Value::Str(p)) => vec![p.clone()],
-                Some(Value::Tuple(t)) => t
-                    .iter()
-                    .map(|x| match x {
-                        Value::Str(p) => Ok(p.clone()),
-                        other => Err(type_err(format!(
-                            "tuple for {name} must only contain str, not {}",
-                            type_name(other)
-                        ))),
-                    })
-                    .collect::<R<Vec<_>>>()?,
-                _ => return Err(type_err(format!("{name} first arg must be str or a tuple of str"))),
-            };
             // The optional start/end arguments slice first — and a start past
             // the end of the string is False, not a test against the empty
-            // slice. See `slice_str`.
-            match slice_str(s, args.get(1), args.get(2))? {
-                None => Value::Bool(false),
-                Some((sub, _)) => Value::Bool(pats.iter().any(|p| {
-                    if name == "startswith" {
-                        sub.starts_with(p.as_ref())
-                    } else {
-                        sub.ends_with(p.as_ref())
+            // slice. See `slice_str`. They are converted BEFORE the first
+            // argument's type is looked at, as Argument Clinic does.
+            let sub = slice_str(s, args.get(1), args.get(2))?;
+            let hit = |p: &str| match &sub {
+                None => false,
+                Some((sub, _)) if name == "startswith" => sub.starts_with(p),
+                Some((sub, _)) => sub.ends_with(p),
+            };
+            match args.first() {
+                Some(Value::Str(p)) => Value::Bool(hit(p)),
+                // `tailmatch` per item, LEFT TO RIGHT: a match returns True
+                // before a later non-str is ever looked at, so
+                // `'abc'.startswith(('a', 1))` is True and `(1, 'a')` the
+                // TypeError (3.14.5, measured).
+                Some(Value::Tuple(t)) => {
+                    for x in t.iter() {
+                        match x {
+                            Value::Str(p) if hit(p) => return Ok(Value::Bool(true)),
+                            Value::Str(_) => {}
+                            other => {
+                                return Err(type_err(format!(
+                                    "tuple for {name} must only contain str, not {}",
+                                    type_name(other)
+                                )))
+                            }
+                        }
                     }
-                })),
+                    Value::Bool(false)
+                }
+                Some(other) => {
+                    return Err(type_err(format!(
+                        "{name} first arg must be str or a tuple of str, not {}",
+                        type_name(other)
+                    )))
+                }
+                None => return Err(type_err(format!("{name} first arg must be str or a tuple of str"))),
             }
         }
         "find" | "index" | "rfind" | "rindex" => {
@@ -1265,6 +1277,17 @@ fn join_parts(sep: &str, items: &[Value]) -> R<Value> {
     Ok(Value::Str(out.into()))
 }
 
+/// A `start`/`end` bound: `_PyEval_SliceIndex`'s TypeError for a non-integer
+/// (3.9.6 through 3.14.5, measured), never `int_val`'s.
+fn slice_bound(v: &Value) -> R<i64> {
+    int_val(v).map_err(|e| match e.kind() {
+        ErrKind::Exc(_) => {
+            type_err("slice indices must be integers or None or have an __index__ method")
+        }
+        _ => e,
+    })
+}
+
 /// Apply the optional `start`/`end` arguments that several str methods take:
 /// the slice, plus the CHARACTER offset it begins at so a caller reporting a
 /// position can translate back.
@@ -1319,7 +1342,7 @@ fn slice_str<'a>(
     let lo = match start {
         None | Some(Value::None) => 0,
         Some(v) => {
-            let raw = int_val(v)?;
+            let raw = slice_bound(v)?;
             // Folded and floored, never capped — see above.
             if raw < 0 {
                 (n + raw).max(0)
@@ -1330,7 +1353,7 @@ fn slice_str<'a>(
     };
     let hi = match end {
         None | Some(Value::None) => n,
-        Some(v) => crate::eval::clamp_index(int_val(v)?, n),
+        Some(v) => crate::eval::clamp_index(slice_bound(v)?, n),
     };
     if hi < lo {
         return Ok(None);
@@ -1724,13 +1747,8 @@ pub(crate) fn dict_method(
                         }
                     }
                     other => {
-                        for pair in it.iter_collect(other.clone())? {
-                            let kv = it.iter_collect(pair)?;
-                            if kv.len() != 2 {
-                                return Err(value_err(
-                                    "dictionary update sequence element has length != 2",
-                                ));
-                            }
+                        for (i, pair) in it.iter_collect(other.clone())?.into_iter().enumerate() {
+                            let kv = crate::builtins::dict_pair(it, pair, i)?;
                             d.borrow_mut().insert(kv[0].clone(), kv[1].clone())?;
                         }
                     }
@@ -2698,7 +2716,7 @@ fn slice_bytes<'a>(b: &'a [u8], start: Option<&Value>, end: Option<&Value>) -> R
     let lo = match start {
         None | Some(Value::None) => 0,
         Some(v) => {
-            let raw = int_val(v)?;
+            let raw = slice_bound(v)?;
             if raw < 0 {
                 (n + raw).max(0)
             } else {
@@ -2708,7 +2726,7 @@ fn slice_bytes<'a>(b: &'a [u8], start: Option<&Value>, end: Option<&Value>) -> R
     };
     let hi = match end {
         None | Some(Value::None) => n,
-        Some(v) => crate::eval::clamp_index(int_val(v)?, n),
+        Some(v) => crate::eval::clamp_index(slice_bound(v)?, n),
     };
     if hi < lo {
         return Ok(None);
