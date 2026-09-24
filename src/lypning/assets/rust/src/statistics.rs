@@ -12,27 +12,32 @@
 //! TypeError and the refusal of an inexact wide-int division all come from the
 //! code every other program already runs, rather than from a second copy of it.
 //!
-//! **`mean` is served over `int` and `bool` only.** CPython sums through
-//! `Fraction`, exactly, and converts once: with only ints the result is an
-//! `int` when the total divides by `n` (`mean([1, 2, 3])` is `2`, not `2.0`) and
-//! otherwise `float(Fraction(total, n))`, which is the correctly rounded
-//! quotient — the same number `int / int` is, and the engine's `int / int` is
-//! correctly rounded (or refuses past 64 bits, `cap-bigint`). A FLOAT element
-//! refuses: `mean([0.1, 0.2, 0.3])` is `0.2` in CPython, a float sum gives
-//! `0.20000000000000004`, and `fsum(xs) / n` rounds twice and was measured by
-//! the scout to disagree on 17,526 of 100,000 random lists. Serving floats
-//! needs a correctly rounded quotient of a ~2,100-bit rational, and no corpus
-//! program (mined 2026-09-24) calls `mean` on one.
+//! **`mean` is exact, as CPython's is.** CPython sums through `Fraction` and
+//! converts once. With only ints the result is an `int` when the total divides
+//! by `n` (`mean([1, 2, 3])` is `2`, not `2.0`) and otherwise the correctly
+//! rounded `int / int` the engine already has. With a float anywhere it is
+//! `float(Fraction(total, n))`: `mean([0.1, 0.2, 0.3])` is `0.2` where a float
+//! sum gives `0.20000000000000004` and `fsum(xs) / n` rounds twice (the scout
+//! measured 17,526 disagreements in 100,000 random lists). So the floats go
+//! into [`Fix`], an exact fixed-point sum in units of `2**-1074`, which is
+//! divided by `n` and rounded ONCE, half to even. A float mean used to refuse
+//! here, and a refusal at runtime is not free: past `io::COMMIT_THRESHOLD` of
+//! output it cannot be routed onward and the run fails at exit 1 where CPython
+//! answers. A non-numeric element raises `_exact_ratio`'s own TypeError.
 //!
 //! **What refuses, and where.** Every name outside [`SERVED`] — `stdev`,
 //! `pstdev`, `fmean`, `mode`, `StatisticsError`, … — is a `module-attr` block
 //! in the CORE's walk, out of `route::MODULE_ATTRS`, which a test below holds
 //! to this list. At runtime (kind `statistics`): empty data, which CPython
-//! answers with a `StatisticsError` this engine has no class for; a float or
-//! non-numeric element in `mean`; keywords and a wrong argument count, whose
+//! answers with a `StatisticsError` this engine has no class for; a set
+//! holding a non-numeric element in `mean` (its first one is set order's), a
+//! `RegexFlag` (an int subclass `_convert` rebuilds), a float next to an int
+//! past 64 bits; keywords and a wrong argument count, whose
 //! TypeError wording is CPython's; and a median over items `<` does not
 //! totally order (mixed kinds, a NaN at any depth, a set, a wide int next to a
-//! float — [`Shape`]), where the engine's sort would not give timsort's answer.
+//! float — [`Shape`]), where the engine's sort would not give timsort's answer
+//! — unless the first pair timsort compares already has no order, whose
+//! TypeError is raised exactly.
 
 use crate::args::Args;
 use crate::ast::BinOp;
@@ -76,6 +81,7 @@ pub fn call(
     // A set is fine here: the medians sort, and a total order with a stable
     // sort makes the input order invisible — which is what `comparable` below
     // guarantees before the sort runs.
+    let set = matches!(data, Value::Set(_));
     let mut items = it.collect_unordered(data)?;
     let n = items.len();
     if n == 0 {
@@ -83,6 +89,29 @@ pub fn call(
     }
     // One element is returned without a comparison, in CPython and here.
     if n > 1 {
+        // Timsort's FIRST comparison is always `data[1] < data[0]` (measured on
+        // 3.14.5 at n = 2 … 200), so when that pair has no order at all the
+        // TypeError is known exactly — and is CPython's answer, where a
+        // refusal after a flush would be an exit 1 of our own. A set's order
+        // is not CPython's, so it falls through to `Shape`, which refuses.
+        let kind = |v: &Value| match v {
+            Value::Bool(_) | Value::Int(_) | Value::Float(_) => Some(1),
+            Value::Str(_) => Some(2),
+            Value::Bytes(_) => Some(3),
+            Value::Tuple(_) => Some(4),
+            Value::List(_) => Some(5),
+            Value::None => Some(6),
+            _ => None,
+        };
+        if let (false, Some(a), Some(b)) = (set, kind(&items[1]), kind(&items[0])) {
+            if a != b || a == 6 {
+                return Err(crate::err::type_err(format!(
+                    "'<' not supported between instances of '{}' and '{}'",
+                    crate::value::type_name(&items[1]),
+                    crate::value::type_name(&items[0])
+                )));
+            }
+        }
         let mut shape = Shape::Unset;
         if !items.iter().all(|x| shape.admit(x, 0)) || !shape.exact() {
             return Err(refuse(&format!(
@@ -191,11 +220,14 @@ impl Shape {
     }
 }
 
-/// The exact integer mean: `total // n` when it divides, else the engine's
-/// correctly rounded `total / n`. It STREAMS, as CPython's does: `mean` over a
-/// generator of 10**10 items holds one running total, never 10**10 values. A
-/// `range` needs no loop at all — its mean is `(first + last) / 2` exactly,
-/// the same rational CPython's `Fraction(total, n)` reduces to.
+/// The exact mean. Ints and bools add into `total` through the engine's own
+/// `+` (so a wide total is a bigint, as in CPython); floats add into [`Fix`],
+/// an exact fixed-point sum, and a non-finite float into `inf` — CPython's
+/// `partials[None]`, a plain float sum that drops every finite term. It
+/// STREAMS, as CPython's `_sum` does: `mean` over a generator of 10**10 items
+/// holds one running total, never 10**10 values. A `range` needs no loop at
+/// all — its mean is `(first + last) / 2` exactly, the same rational CPython's
+/// `Fraction(total, n)` reduces to.
 fn mean(it: &mut crate::eval::Interp, data: Value) -> R<Value> {
     if let Value::Range(a, b, st) = data {
         let n = if st > 0 {
@@ -209,8 +241,10 @@ fn mean(it: &mut crate::eval::Interp, data: Value) -> R<Value> {
         let last = a as i128 + (n - 1) * st as i128;
         return exact_div(it, &ival(a), &ival(last as i64), 2);
     }
+    let set = matches!(data, Value::Set(_));
     let mut it_ = match data {
-        // A set's order never shows in an exact integer sum.
+        // A set's order never shows in an exact sum — but it would in WHICH
+        // non-numeric element raises first, so there that one refuses.
         Value::Set(_) => {
             let items = it.collect_unordered(data)?;
             crate::iter::Iter::Tuple(Rc::new(items), 0)
@@ -218,18 +252,46 @@ fn mean(it: &mut crate::eval::Interp, data: Value) -> R<Value> {
         other => it.make_iter(other)?,
     };
     let mut total = ival(0);
+    let mut fix = Fix([0; LIMBS]);
+    let mut float = false;
+    let mut wide = false;
+    let mut inf: Option<f64> = None;
     let mut n: i64 = 0;
     while let Some(x) = it.iter_next(&mut it_)? {
         match &x {
-            Value::Int(_) | Value::Bool(_) => total = it.binop(BinOp::Add, &total, &x)?,
-            Value::Float(_) => {
-                return Err(refuse(
-                    "mean() over a float, which CPython sums as an exact fraction and rounds once",
-                ))
+            Value::Int(_) | Value::Bool(_) => {
+                total = it.binop(BinOp::Add, &total, &x)?;
+                // Into the exact sum too, in case a float comes: the int total
+                // itself may be past 64 bits long before any single item is.
+                match &x {
+                    Value::Int(i) => match i.small() {
+                        Some(v) => fix.add_int(v),
+                        None => wide = true,
+                    },
+                    _ => fix.add_int(matches!(x, Value::Bool(true)) as i64),
+                }
             }
-            other => {
+            Value::Float(f) => {
+                float = true;
+                if f.is_finite() {
+                    fix.add_f64(*f);
+                } else {
+                    inf = Some(inf.map_or(*f, |s| s + f));
+                }
+            }
+            #[cfg(feature = "cap-re")]
+            Value::ReFlag(_) => return Err(refuse("mean() over a RegexFlag, an int subclass")),
+            other if set => {
                 return Err(refuse(&format!(
-                    "mean() over a '{}' (CPython raises TypeError)",
+                    "mean() over a set holding a '{}'",
+                    crate::value::type_name(other)
+                )))
+            }
+            // `_exact_ratio`'s own message: nothing this engine holds but an
+            // int, a bool or a float has `as_integer_ratio` or `numerator`.
+            other => {
+                return Err(crate::err::type_err(format!(
+                    "can't convert type '{}' to numerator/denominator",
                     crate::value::type_name(other)
                 )))
             }
@@ -239,7 +301,121 @@ fn mean(it: &mut crate::eval::Interp, data: Value) -> R<Value> {
     if n == 0 {
         return Err(refuse("mean requires at least one data point (a StatisticsError)"));
     }
-    exact_div(it, &total, &ival(0), n)
+    if !float {
+        return exact_div(it, &total, &ival(0), n);
+    }
+    // `_convert(total / n, float)`: a non-finite sum is returned divided by n
+    // (still inf or nan); otherwise `float(Fraction)`, rounded once.
+    if let Some(s) = inf {
+        return Ok(Value::Float(s / n as f64));
+    }
+    if wide {
+        return Err(refuse("mean() over a float and an int past 64 bits"));
+    }
+    Ok(Value::Float(fix.div_round(n as u64)))
+}
+
+/// 35 limbs, two's complement: a finite float is `m * 2**e` with
+/// `e >= -1074`, so every one is an integer multiple of `2**-1074` below
+/// `2**2098`, and 2**63 of them (or of i64s) stay below `2**2239`.
+const LIMBS: usize = 35;
+/// Bit `k` of the sum is worth `2**(k - 1074)`.
+struct Fix([u64; LIMBS]);
+
+impl Fix {
+    /// `±(m << pos)`, exactly.
+    fn add(&mut self, neg: bool, m: u64, pos: u32) {
+        let (l, off) = ((pos / 64) as usize, pos % 64);
+        let w = (m as u128) << off;
+        let mut carry = 0u128;
+        let mut borrow = false;
+        for (k, limb) in self.0.iter_mut().enumerate().skip(l) {
+            let part = match k - l {
+                0 => w as u64,
+                1 => (w >> 64) as u64,
+                _ => 0,
+            };
+            if neg {
+                let (a, b1) = limb.overflowing_sub(part);
+                let (a, b2) = a.overflowing_sub(borrow as u64);
+                *limb = a;
+                borrow = b1 || b2;
+                if k > l + 1 && !borrow {
+                    break;
+                }
+            } else {
+                let t = *limb as u128 + part as u128 + carry;
+                *limb = t as u64;
+                carry = t >> 64;
+                if k > l + 1 && carry == 0 {
+                    break;
+                }
+            }
+        }
+    }
+
+    fn add_f64(&mut self, f: f64) {
+        let b = f.to_bits();
+        let e = ((b >> 52) & 0x7ff) as u32;
+        let m = b & ((1 << 52) - 1);
+        let (m, pos) = if e == 0 { (m, 0) } else { (m | 1 << 52, e - 1) };
+        self.add(b >> 63 == 1, m, pos);
+    }
+
+    fn add_int(&mut self, i: i64) {
+        self.add(i < 0, i.unsigned_abs(), 1074);
+    }
+
+    /// `float(Fraction(sum, n))`: the magnitude divided by `n` with the
+    /// remainder as a sticky bit, rounded once, half to even. The bits of a
+    /// float `m * 2**(s - 1074)` with `m < 2**53` are `(s << 52) + m` — the
+    /// subnormals (`s == 0`) included, and a mantissa that rounds up to 2**53
+    /// carries into the exponent by the same addition.
+    fn div_round(mut self, n: u64) -> f64 {
+        let neg = self.0[LIMBS - 1] >> 63 == 1;
+        if neg {
+            let mut c = true;
+            for l in self.0.iter_mut() {
+                let (v, o) = (!*l).overflowing_add(c as u64);
+                *l = v;
+                c = o;
+            }
+        }
+        let mut r: u128 = 0;
+        for l in self.0.iter_mut().rev() {
+            let cur = (r << 64) | *l as u128;
+            *l = (cur / n as u128) as u64;
+            r = cur % n as u128;
+        }
+        let q = &self.0;
+        let bit = |k: usize| (q[k / 64] >> (k % 64)) & 1;
+        // A quotient of zero has no top bit: `h = 0` reads `m = 0`, and the
+        // `s == 0` rounding below gives 0 or the smallest subnormal. An exact
+        // zero sum is `+0.0` (`neg` is false for it, as `Fraction(0)` has no
+        // sign); a negative one that ROUNDS to zero is `-0.0`, as in CPython.
+        let h = (0..LIMBS)
+            .rev()
+            .find(|&k| q[k] != 0)
+            .map_or(0, |k| k * 64 + 63 - q[k].leading_zeros() as usize);
+        let s = h.saturating_sub(52);
+        let mut m: u64 = 0;
+        for k in (s..=h).rev() {
+            m = m << 1 | bit(k);
+        }
+        let up = if s == 0 {
+            let r2 = r * 2;
+            r2 > n as u128 || (r2 == n as u128 && m & 1 == 1)
+        } else {
+            let rest = r != 0 || (0..s - 1).any(|k| bit(k) == 1);
+            bit(s - 1) == 1 && (rest || m & 1 == 1)
+        };
+        let v = f64::from_bits(((s as u64) << 52) + m + up as u64);
+        if neg {
+            -v
+        } else {
+            v
+        }
+    }
 }
 
 /// `(x + y) / n` as CPython's `mean` converts it: an int when it divides.

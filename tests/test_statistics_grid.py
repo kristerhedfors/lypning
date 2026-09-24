@@ -13,16 +13,22 @@ FRESH temp cwd (invariant 4) and must end one of exactly two ways:
 capability calls the engine's own sort (NaN refuses as ``nan-order``, as
 ``sorted`` does) and its own ``+`` and ``/``: result types, float overflow to
 ``inf``, the ``str / int`` TypeError and the wide-int refusal are inherited, not
-reimplemented. ``mean`` is served over ``int`` and ``bool`` ONLY, as an exact
-integer sum: an int when the total divides, otherwise the engine's correctly
-rounded ``int / int``, which is what CPython's ``float(Fraction(total, n))`` is.
+reimplemented. ``mean`` is EXACT, as CPython's is: over ints and bools an int
+when the total divides, otherwise the correctly rounded ``int / int``; with a
+float anywhere, ``float(Fraction(total, n))`` from an exact fixed-point sum
+rounded once — ``mean([0.1, 0.2, 0.3])`` is ``0.2``, where a float sum gives
+``0.20000000000000004`` and even ``fsum/n`` rounds twice. A non-numeric element
+raises ``_exact_ratio``'s own TypeError, and a median whose first pair (timsort
+compares ``data[1] < data[0]`` first) has no order raises ``<``'s own.
 
-**What is refused.** ``mean`` over a float — CPython sums floats as exact
-fractions and rounds once, so ``mean([0.1, 0.2, 0.3])`` is ``0.2`` where a
-float sum gives ``0.20000000000000004`` and even ``fsum/n`` rounds twice. Empty
-data (a ``StatisticsError`` this engine has no class for), a non-numeric
-element, keywords and a wrong argument count. Every other name on the module
-refuses as ``module-attr`` out of ``route::MODULE_ATTRS``, in the CORE's walk.
+**What is refused.** Empty data (a ``StatisticsError`` this engine has no class
+for), a set holding a non-numeric item, a float next to an int past 64 bits,
+keywords and a wrong argument count. Every other name on the module refuses as
+``module-attr`` out of ``route::MODULE_ATTRS``, in the CORE's walk.
+
+A runtime refusal is not free: past ``io::COMMIT_THRESHOLD`` of output it
+cannot be routed onward and the run ends at exit 1 where CPython answers.
+``test_a_float_mean_after_a_flush_answers`` is that program.
 
 ``test_the_fuzz_agrees_with_cpython`` is the large differential run: seeded
 random lists through every served function, each call run on its own.
@@ -30,6 +36,7 @@ random lists through every served function, each call run on its own.
 
 from __future__ import annotations
 
+import os
 import random
 import subprocess
 import sys
@@ -125,13 +132,6 @@ SERVED = [
 #: CPython answers each of these (or raises a class this engine cannot name),
 #: and the capability declines: exit 90, empty stdout, one stderr line.
 REFUSED = [
-    # mean over a float: CPython rounds an exact rational sum once
-    S + "print(statistics.mean([0.1,0.2,0.3]), statistics.mean([1e308,1e308]), "
-        "statistics.mean([1e50,1,-1e50]))",
-    S + "print(statistics.mean([-0.0]), statistics.mean([1.0,3.0]), statistics.mean([1,2.0,3]))",
-    S + "print(statistics.mean([float('inf'),1]), statistics.mean([float('inf'),float('-inf')]), "
-        "statistics.mean([float('nan'),2]))",
-    S + "print('x')\nprint(statistics.mean([1, 2, 3.5]))",
     # empty data is a StatisticsError
     S + "try: statistics.median([])\nexcept statistics.StatisticsError as e: print('SE', e)",
     S + "try: statistics.mean([])\nexcept ValueError as e: print(type(e).__name__, e)",
@@ -139,11 +139,10 @@ REFUSED = [
     S + "print(statistics.median_low(x for x in []))",
     S + "print(statistics.median_high({}))",
     S + "print(statistics.mean(range(0)))",
-    # non-numeric data in mean
-    S + "print(statistics.mean([1,'a']))",
-    S + "print(statistics.mean('abc'))",
-    S + "print(statistics.mean([1, None]))",
-    S + "print(statistics.mean([[1], [2]]))",
+    # a set holding a non-numeric item: WHICH one raises first is set order's
+    S + "print(statistics.mean({1, 'a'}))",
+    # a float next to an int past 64 bits
+    S + "print(statistics.mean([1.5, 2**64]))",
     # NaN in a sort: the result is timsort's, and the engine's sort refuses
     S + "print(statistics.median([float('nan'),1,2]))",
     # a wide total whose division is not exact
@@ -162,6 +161,46 @@ REFUSED = [
     "from statistics import StatisticsError\nprint(1)",
     "import statistics as st\nprint(st.quantiles([1, 2, 3, 4]))",
 ]
+
+#: Exact CPython 3.14.5 answers (stdout, exit, last stderr line), measured
+#: 2026-09-25, for what used to refuse at runtime: a float `mean`, a non-numeric
+#: item in `mean`, and a median whose FIRST timsort pair has no order.
+EXACT = {
+    S + "print(statistics.mean([0.1,0.2,0.3]), statistics.mean([1e308,1e308]), "
+        "statistics.mean([1e50,1,-1e50]))": ("0.2 1e+308 0.3333333333333333\n", 0, ""),
+    S + "print(statistics.mean([-0.0]), statistics.mean([1.0,3.0]), statistics.mean([1,2.0,3]))":
+        ("0.0 2.0 2.0\n", 0, ""),
+    S + "print(statistics.mean([float('inf'),1]), statistics.mean([float('inf'),float('-inf')]), "
+        "statistics.mean([float('nan'),2]))": ("inf nan nan\n", 0, ""),
+    S + "print('x')\nprint(statistics.mean([1, 2, 3.5]))": ("x\n2.1666666666666665\n", 0, ""),
+    S + "print(repr(statistics.mean([-5e-324, 0])), repr(statistics.mean([5e-324, 0])), "
+        "repr(statistics.mean([5e-324, 5e-324, 5e-324, 0])))": ("-0.0 0.0 5e-324\n", 0, ""),
+    S + "print(statistics.mean([2**62, 2**62, 0.5]), statistics.mean([True, 0.5]), "
+        "statistics.mean({1.5: 0, 2.25: 1}), statistics.mean({0.1, 0.2, 0.3}))":
+        ("3.0744573456182584e+18 0.75 1.875 0.2\n", 0, ""),
+    S + "print(statistics.mean(x / 3 for x in range(10)), "
+        "statistics.mean([1.7976931348623157e308] * 3), statistics.mean([2.5e-308, -1e-320]))":
+        ("1.5 1.7976931348623157e+308 1.2499999999994996e-308\n", 0, ""),
+    S + "print(statistics.mean([1,'a']))":
+        ("", 1, "TypeError: can't convert type 'str' to numerator/denominator"),
+    S + "print('a')\nprint(statistics.mean('abc'))":
+        ("a\n", 1, "TypeError: can't convert type 'str' to numerator/denominator"),
+    S + "print(statistics.mean([1.5, None]))":
+        ("", 1, "TypeError: can't convert type 'NoneType' to numerator/denominator"),
+    S + "try: statistics.mean([[1], [2]])\nexcept TypeError as e: print(e)":
+        ("can't convert type 'list' to numerator/denominator\n", 0, ""),
+    S + "print(statistics.median([1, 'a']))":
+        ("", 1, "TypeError: '<' not supported between instances of 'str' and 'int'"),
+    S + "print(statistics.median_low(['a', 1.5]))":
+        ("", 1, "TypeError: '<' not supported between instances of 'float' and 'str'"),
+    S + "try: statistics.median_high([None, None])\nexcept TypeError as e: print(e)":
+        ("'<' not supported between instances of 'NoneType' and 'NoneType'\n", 0, ""),
+    S + "try: statistics.median([(1,), [1], 3])\nexcept TypeError as e: print(e)":
+        ("'<' not supported between instances of 'list' and 'tuple'\n", 0, ""),
+    S + "print(statistics.median(x for x in [b'a', 'a']))":
+        ("", 1, "TypeError: '<' not supported between instances of 'str' and 'bytes'"),
+}
+
 
 #: The medians over items `<` does not TOTALLY order refuse (`Shape` in
 #: statistics.rs): the engine's merge sort asks its comparisons in a different
@@ -194,7 +233,7 @@ UNORDERED_MEDIANS = {
     S + "try: statistics.median_low({1, None})\nexcept TypeError as e: print('E', e)":
         ("E '<' not supported between instances of 'int' and 'NoneType'\n", 0),
     S + "print(statistics.median({(1,2),(1,None)}))": ("", 1),
-    S + "print(statistics.median([1, 'a']))": ("", 1),
+    S + "print(statistics.median([2, 1, 'a']))": ("", 1),
 }
 REFUSED += list(UNORDERED_MEDIANS)
 
@@ -459,3 +498,50 @@ def test_mean_over_a_huge_range_answers_without_materializing_it() -> None:
     capability used to collect 10**10 values and die at exit 137."""
     got = _run([str(BINARY)], S + "print(statistics.mean(range(10**10)))")
     assert (got.stdout, got.returncode) == ("4999999999.5\n", 0)
+
+
+def _last(err: str) -> str:
+    lines = err.strip().splitlines()
+    return lines[-1] if lines else ""
+
+
+@pytest.mark.skipif(sys.version_info[:3] != (3, 14, 5), reason="pinned to CPython 3.14.5")
+@pytest.mark.parametrize("program", list(EXACT), ids=range(len(EXACT)))
+def test_the_exact_rows_are_pinned_to_cpython(program: str) -> None:
+    ref = _run([sys.executable], program)
+    assert (ref.stdout, ref.returncode, _last(ref.stderr)) == EXACT[program]
+
+
+@needs_l
+@pytest.mark.parametrize("program", list(EXACT), ids=range(len(EXACT)))
+def test_the_exact_rows_answer_byte_for_byte(program: str) -> None:
+    got = _run([str(BINARY)], program)
+    assert (got.stdout, got.returncode, _last(got.stderr)) == EXACT[program], got.stderr[-300:]
+
+
+#: Past `io::COMMIT_THRESHOLD` (8 MiB) of stdout a runtime refusal can no
+#: longer be routed onward: it ends at exit 1 where CPython answers. These used
+#: to be exactly that, through lypning-l and through the chain alike.
+FLUSHED = 90_000  # lines of 101 bytes: 9,090,000 B, past the threshold
+
+
+@needs_l
+@pytest.mark.parametrize("tail,want,code,err", [
+    ("print(statistics.mean([0.5, 1]))", "0.75\n", 0, ""),
+    ("print(statistics.median([1, 'a']))", "", 1,
+     "TypeError: '<' not supported between instances of 'str' and 'int'"),
+    ("print(statistics.mean([2, 'a']))", "", 1,
+     "TypeError: can't convert type 'str' to numerator/denominator"),
+])
+def test_a_float_mean_after_a_flush_answers(tail: str, want: str, code: int, err: str) -> None:
+    program = S + "for i in range(%d): print('x' * 100)\n" % FLUSHED + tail
+    head = ("x" * 100 + "\n") * FLUSHED
+    src = str(Path(engines.__file__).resolve().parents[1])
+    env = dict(os.environ, PYTHONPATH=src)
+    for argv in ([str(BINARY)], [sys.executable, "-m", "lypning", "run"]):
+        with tempfile.TemporaryDirectory() as d:
+            got = subprocess.run(argv + ["-c", program], capture_output=True, text=True,
+                                 cwd=d, timeout=300, env=env)
+        assert (got.returncode, _last(got.stderr)) == (code, err), (argv, got.stderr[-300:])
+        assert got.stdout == head + want, (argv, len(got.stdout), got.stdout[-60:])
+
