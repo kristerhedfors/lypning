@@ -63,6 +63,7 @@ pub const SPECTRUM: &[Variant] = &[
             "cap-hashlib",
             "cap-pathlib",
             "cap-re",
+            "cap-textwrap",
         ],
     },
 ];
@@ -145,6 +146,12 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// STATICALLY, before the program starts, and the kind is in
 /// [`ONLY_CPYTHON_KINDS`] because no reimplementation can reproduce
 /// `os.scandir` order, so no sibling could answer it either.
+///
+/// `cap-textwrap` serves the `textwrap` MODULE — five functions, and only the
+/// names [`MODULE_ATTRS`] lists (`TextWrapper` is not one) — and answers no
+/// runtime kind. Its runtime refusals (`textwrap:`) are a computed argument of
+/// the wrong type or a non-ASCII character the hyphen regex would have to
+/// classify, and there is no rung above `lypning-l` to carry either to.
 pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-base64", &["base64"], &[]),
     ("cap-bigint", &[], &["bigint", "int-div-precision"]),
@@ -154,6 +161,7 @@ pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-hashlib", &["hashlib"], &[]),
     ("cap-pathlib", &["pathlib"], &[]),
     ("cap-re", &["re"], &[]),
+    ("cap-textwrap", &["textwrap"], &[]),
 ];
 
 /// The module attributes a capability answers, for the modules whose surface is
@@ -207,7 +215,37 @@ pub const MODULE_ATTRS: &[(&str, &[&str])] = &[
     // `sha3_*`, `sha224`, `sha384`, `pbkdf2_hmac`, `scrypt`, `file_digest` —
     // is blocked HERE, in the core's walk, and never reaches the variant.
     ("hashlib", &["md5", "sha1", "sha256", "sha512"]),
+    // Held to `textwrap.rs` by
+    // `textwrap::tests::the_route_table_names_exactly_what_is_served`.
+    // `TextWrapper`, `__file__` and every private name are blocked HERE, in
+    // the core's walk.
+    ("textwrap", TEXTWRAP_SERVED),
 ];
+
+/// The `textwrap` functions lypning-l serves, and therefore the only ones ANY
+/// rung answers — `route.rs`'s own table and not a copy of `textwrap.rs`'s, for
+/// the reason [`BASE64_SERVED`] gives: the binary that routes has no
+/// `textwrap.rs` compiled into it.
+pub const TEXTWRAP_SERVED: &[&str] = &["dedent", "fill", "indent", "shorten", "wrap"];
+
+/// The keyword arguments each served `textwrap` function takes here. `wrap` and
+/// `fill` take the five the corpus uses; `shorten` takes `width` and
+/// `placeholder`; `dedent` and `indent` take none (`indent`'s `predicate=` is
+/// a callable this engine would have to call per line, and is refused).
+/// `TextWrapper`'s other knobs — `max_lines`, `expand_tabs`, `tabsize`,
+/// `replace_whitespace`, `drop_whitespace`, `fix_sentence_endings` — are not
+/// served, and neither is a keyword `text=`.
+#[cfg(feature = "cap-textwrap")]
+fn textwrap_kw_served(name: &str, k: &str) -> bool {
+    match name {
+        "wrap" | "fill" => matches!(
+            k,
+            "width" | "initial_indent" | "subsequent_indent" | "break_long_words" | "break_on_hyphens"
+        ),
+        "shorten" => matches!(k, "width" | "placeholder"),
+        _ => false,
+    }
+}
 
 /// Does some variant on the spectrum answer `module.name`, as far as
 /// [`MODULE_ATTRS`] can say? `true` for every module the table does not list —
@@ -340,6 +378,13 @@ fn served_module(v: &Variant, m: &str) -> bool {
 /// down rather than closed by a rule that costs three matches.
 #[cfg(feature = "cap-hashlib")]
 fn admitted_by_a_capability(req: &Requirements) -> bool {
+    // `textwrap` joins it for the same reason: its results are `str` and
+    // `list`, so a method outside `known_method` on one is a method nothing on
+    // the spectrum has.
+    #[cfg(feature = "cap-textwrap")]
+    if req.imports.contains("textwrap") {
+        return true;
+    }
     req.imports.contains("hashlib")
 }
 
@@ -917,6 +962,12 @@ struct Requirements {
     /// and lypning-l then refuses statically for the cost of one parse.
     #[cfg(feature = "cap-base64")]
     base64_stop: Option<(String, String)>,
+    /// `from textwrap import fill [as f]` — the bound name of a served
+    /// `textwrap` function, so a bare `f(...)` is decided by the same walk
+    /// that decides `textwrap.fill(...)`. Not scoped: a later rebinding of
+    /// the name leaves it here, which can only over-refuse.
+    #[cfg(feature = "cap-textwrap")]
+    textwrap_names: Vec<(String, String)>,
     /// `from glob import glob [as g]` — the bound name of a glob FUNCTION, so
     /// that a bare `g(...)` is seen as the call it is. Without it the order
     /// blocker below would miss the one spelling that hides the module name.
@@ -1252,6 +1303,19 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                         match crate::hashlib::SERVED.iter().copied().find(|x| *x == n.as_ref()) {
                             Some(c) => req.bind_pattern(bind, Some(PatLit::HashCtor(c))),
                             None => req.stop_only("module-attr", format!("hashlib.{n}")),
+                        }
+                    }
+                }
+                // `from textwrap import …`: a served name binds a function
+                // whose calls this walk still decides; an unserved one is a
+                // stop, for the run, beside the blocker the arm below records.
+                #[cfg(feature = "cap-textwrap")]
+                "textwrap" => {
+                    for (n, bind) in names {
+                        if TEXTWRAP_SERVED.contains(&n.as_ref()) {
+                            req.textwrap_names.push((bind.to_string(), n.to_string()));
+                        } else {
+                            req.stop_only("module-attr", format!("textwrap.{n}"));
                         }
                     }
                 }
@@ -2552,6 +2616,100 @@ fn hash_call_block(
     req.stop("hashlib", detail);
 }
 
+/// Does `b` name the `textwrap` module — `textwrap.…` or `t.…` after
+/// `import textwrap as t`? Only for a program that imports it.
+#[cfg(feature = "cap-textwrap")]
+fn textwrap_module(b: &Expr, req: &Requirements) -> bool {
+    if !req.imports.contains("textwrap") {
+        return false;
+    }
+    let Expr::Name(base) = b else { return false };
+    let m = req
+        .aliases
+        .iter()
+        .find(|(a, _)| a == base.as_ref())
+        .map(|(_, p)| p.as_str())
+        .unwrap_or(base.as_ref());
+    m == "textwrap"
+}
+
+/// Which served `textwrap` function this callee names, if any.
+#[cfg(feature = "cap-textwrap")]
+fn textwrap_func(func: &Expr, req: &Requirements) -> Option<&'static str> {
+    let n: &str = match func {
+        Expr::Attr(b, n) if textwrap_module(b, req) => n.as_ref(),
+        Expr::Name(n) => req
+            .textwrap_names
+            .iter()
+            .rev()
+            .find(|(bound, _)| bound == n.as_ref())
+            .map(|(_, f)| f.as_str())?,
+        _ => return None,
+    };
+    TEXTWRAP_SERVED.iter().copied().find(|x| *x == n)
+}
+
+/// Everything about a served `textwrap` call that a walk can decide, decided
+/// here rather than one statement into a program that may already have
+/// written a file: a keyword outside [`textwrap_kw_served`], a `*`/`**`
+/// splice, a positional count the function does not take, `width` given
+/// twice, and an argument whose LITERAL type is not the one served. What is
+/// left for `textwrap::call` is a value the walk cannot see.
+#[cfg(feature = "cap-textwrap")]
+fn textwrap_call_block(
+    req: &mut Requirements,
+    func: &Expr,
+    args: &[Expr],
+    kwargs: &[(std::rc::Rc<str>, Expr)],
+    star: &[usize],
+    dstar: &[Expr],
+) {
+    let Some(name) = textwrap_func(func, req) else { return };
+    let (lo, hi) = match name {
+        "dedent" => (1, 1),
+        "indent" => (2, 2),
+        _ => (1, 2),
+    };
+    let width_kw = kwargs.iter().any(|(k, _)| k.as_ref() == "width");
+    let want = |i: usize| -> &'static str {
+        match (name, i) {
+            ("wrap" | "fill" | "shorten", 1) => "int",
+            _ => "str",
+        }
+    };
+    let bad_literal = args.iter().enumerate().find_map(|(i, e)| {
+        let t = literal_type(e)?;
+        (t != want(i)).then(|| format!("textwrap.{name}() with a {t} literal as argument {}", i + 1))
+    });
+    let bad_kw_literal = kwargs.iter().find_map(|(k, e)| {
+        let t = literal_type(e)?;
+        let want = match k.as_ref() {
+            "width" => "int",
+            "break_long_words" | "break_on_hyphens" => "bool",
+            _ => "str",
+        };
+        (t != want).then(|| format!("textwrap.{name}({k}=…) with a {t} literal"))
+    });
+    let detail = if !dstar.is_empty() {
+        format!("textwrap.{name}(**…), whose keywords a walk cannot read")
+    } else if !star.is_empty() {
+        format!("textwrap.{name}(*…), whose arguments a walk cannot count")
+    } else if let Some((k, _)) = kwargs.iter().find(|(k, _)| !textwrap_kw_served(name, k)) {
+        format!("textwrap.{name}({k}=…)")
+    } else if args.len() < lo || args.len() > hi {
+        format!("textwrap.{name}() with {} positional arguments", args.len())
+    } else if width_kw && args.len() > 1 {
+        format!("textwrap.{name}() with width given twice")
+    } else if name == "shorten" && args.len() < 2 && !width_kw {
+        "textwrap.shorten() without a width".to_string()
+    } else if let Some(d) = bad_literal.or(bad_kw_literal) {
+        d
+    } else {
+        return;
+    };
+    req.stop("textwrap", detail);
+}
+
 /// The call's arguments with every `*`/`**` spliced in, as
 /// `(positionals, keywords)` — or `None` when one of them holds a value only
 /// the run can see.
@@ -2705,7 +2863,11 @@ fn glob_bless(
 /// substring guard above means a program that never mentions either name pays
 /// nothing.
 pub fn static_stop_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
-    if !src.contains("glob") && !src.contains("hashlib") {
+    let mentioned = src.contains("glob") || src.contains("hashlib");
+    // Behind the feature, so the frozen core's guard is the bytes it was.
+    #[cfg(feature = "cap-textwrap")]
+    let mentioned = mentioned || src.contains("textwrap");
+    if !mentioned {
         return Ok(());
     }
     let mut req = Requirements {
@@ -2933,6 +3095,14 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                 req.stop("module-attr", format!("hashlib.{n}"));
                 return;
             }
+            // `textwrap.TextWrapper`, `textwrap.__file__`: the same stop, for
+            // the same reason — the core routes on `MODULE_ATTRS`, the run
+            // needs the stop.
+            #[cfg(feature = "cap-textwrap")]
+            if textwrap_module(b, req) && !TEXTWRAP_SERVED.contains(&n.as_ref()) {
+                req.stop("module-attr", format!("textwrap.{n}"));
+                return;
+            }
             // Every OTHER `glob.<n>`, decided from [`GLOB_SERVED`]: `escape`
             // and `has_magic` are served in any position and stop the walk
             // here, and the rest are a `module-attr` refusal that no rung of
@@ -3044,6 +3214,8 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             // before the program starts (#51).
             #[cfg(feature = "cap-base64")]
             base64_call_block(req, func, args, kwargs, star, dstar);
+            #[cfg(feature = "cap-textwrap")]
+            textwrap_call_block(req, func, args, kwargs, star, dstar);
             // Is THIS a glob call, and did its parent bless it? A blessed call
             // is served and its callee is not walked; an unblessed one is the
             // blocker, whatever it was going to be handed to. `escape` and

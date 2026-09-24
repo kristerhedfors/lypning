@@ -145,6 +145,7 @@ larger one would answer. Everything not listed is `unsupported: module-attr:
 | `csv` | `DictReader` `QUOTE_ALL` `QUOTE_MINIMAL` `QUOTE_NONE` `QUOTE_NONNUMERIC` `reader` | `route.rs:MODULE_ATTRS` — the writers are CPython's |
 | `glob` | `escape` `glob` `has_magic` `iglob` | `route.rs:GLOB_SERVED` |
 | `hashlib` | `md5` `sha1` `sha256` `sha512` | `hashlib.rs:SERVED` — `new`, the SHA-3 family and the KDFs are CPython's |
+| `textwrap` | `dedent` `fill` `indent` `shorten` `wrap` | `route.rs:TEXTWRAP_SERVED` — `TextWrapper`, `max_lines`, `indent`'s `predicate` and the other `TextWrapper` keywords are CPython's |
 
 `collections` serves `Counter` and `defaultdict`; `pathlib` serves `Path`. Both
 are whole-module claims in `route.rs:CAPS`, so an attribute neither serves —
@@ -167,6 +168,7 @@ either binary):
 | `cap-hashlib` | the `hashlib` module — four constructors | `hashlib.rs` |
 | `cap-pathlib` | the `pathlib` module — `Path` | `pathlib.rs` |
 | `cap-re` | the `re` module and its matcher | `re.rs` |
+| `cap-textwrap` | the `textwrap` module — five functions of it | `textwrap.rs` |
 
 `cap-re` serves a **slice** of the pattern language, and the rest of it is
 refusals rather than a best effort: non-ASCII group names, backreferences, lookaround,

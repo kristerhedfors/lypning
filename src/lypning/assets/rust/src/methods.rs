@@ -201,7 +201,7 @@ fn one_ascii_byte(needle: &str) -> Option<u8> {
 ///     `White_Space` — `int('\x1c5')` is a ValueError in CPython — so
 ///     `builtins.rs`'s `trim()` is right and must stay a `trim()`.
 #[inline]
-fn py_space(c: char) -> bool {
+pub(crate) fn py_space(c: char) -> bool {
     matches!(c, '\u{1c}'..='\u{1f}') || c.is_whitespace()
 }
 
