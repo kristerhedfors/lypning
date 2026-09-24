@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-24** — Keep verifier pool hosts alive across SFT's training gaps (#TBD)
+**2026-09-24** — Keep verifier pool hosts alive across SFT's training gaps ([#124](https://github.com/kristerhedfors/lypning/pull/124))
 
 - Both seed-1111 arm-A attempts (HF jobs `6ab4a05a52d0dbd7f1d8909d` and
   `6ab4d66d6b030d633f68d8d7`) died in an SFT evaluation on sandbox 503s, the
