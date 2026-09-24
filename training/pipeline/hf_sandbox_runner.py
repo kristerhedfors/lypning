@@ -60,13 +60,32 @@ IDLE_TIMEOUT = "10m"
 #: the standard system trees, and a top-level /runner is not one of them.
 WORKER = "/usr/local/lib/lypning-verifier/container_worker.py"
 #: A transport failure that may not recur — a Hub 5xx or 429, a dropped
-#: connection — is retried this many times with doubling backoff before the
-#: request is blocked; a 4xx is refused at once. Six tries wait 155 s in all,
-#: a fraction of a GPU hour. Identity drift is never retried (`_admit`): on
-#: 2026-09-16 one Hub 500 on a sandbox create ended a 55-minute run at its
-#: first eval request.
-TRANSPORT_ATTEMPTS = 6
+#: connection — is retried with doubling backoff, capped per wait, until the
+#: waits would exceed a TIME budget; a 4xx is refused at once. Identity drift
+#: is never retried (`_admit`). A retry cannot change a score: it only happens
+#: when the request produced no response at all. Why a time budget and not a
+#: count: on 2026-09-16 one Hub 500 ended a 55-minute run, and six tries (155 s)
+#: fixed that; on 2026-09-24 the sandbox API answered 503 for longer than 155 s
+#: during the step-350 evaluation and ended HF job 6ab4a05a52d0dbd7f1d8909d about
+#: 2.2 h into a ~9.5 h h200 run. Thirty minutes of waiting costs about $2.50 of
+#: h200; losing the run costs the run.
 TRANSPORT_BACKOFF_S = 5.0
+TRANSPORT_BACKOFF_CAP_S = 120.0
+TRANSPORT_BUDGET_S = 1800.0
+
+
+def backoff_schedule(first=TRANSPORT_BACKOFF_S, cap=TRANSPORT_BACKOFF_CAP_S,
+                     budget=TRANSPORT_BUDGET_S):
+    """Every wait a request may take before it is blocked, in order."""
+    waits, wait = [], first
+    while sum(waits) + wait <= budget:
+        waits.append(wait)
+        wait = min(wait * 2, cap)
+    return waits
+
+
+#: Tries a request gets: one more than the waits between them.
+TRANSPORT_ATTEMPTS = len(backoff_schedule()) + 1
 
 
 #: The five fields the bundle records, plus the worker file this tree ships.
@@ -270,7 +289,7 @@ class HfSandboxPoolRunner:
                     if attempt > 1:
                         reason += " (after %d attempts)" % attempt
                     raise VerificationBlocked(reason) from exc
-                self._sleep(TRANSPORT_BACKOFF_S * 2 ** (attempt - 1))
+                self._sleep(backoff_schedule()[attempt - 1])
         if code != 0:
             raise VerificationBlocked("sandbox worker failed; exit %s" % code)
         try:

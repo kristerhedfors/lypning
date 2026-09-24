@@ -14,6 +14,19 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-24** — Ride out a sandbox API outage; keep case ids out of `training-prepare`'s output (#TBD)
+
+- The seed-1111 arm-A pilot (HF job `6ab4a05a52d0dbd7f1d8909d`, Actions
+  `35953660170`) ended about 2.2 h in, during the step-350 evaluation, when
+  the sandbox API answered 503 for longer than the 155 s of retries. Transport
+  retries are now time-budgeted: doubling from 5 s, each wait capped at 120 s,
+  up to 30 min in all (19 attempts). Only a request that produced no response is
+  retried, so no score can change. `verifier_sha256` moves, so bundles re-prepare.
+- `training-prepare` printed every reference's case id and refusal detail,
+  for the eval-2 benchmark too, into the GPU job's public log (four round-02
+  runs since 2026-09-17). It now prints digests, split counts and a status
+  histogram; the detail stays in the private `bundle.json`.
+
 **2026-09-24** — Score each evaluation chunk while the next one generates ([#122](https://github.com/kristerhedfors/lypning/pull/122))
 
 - `verified_evaluation.ScoringStage`: chunk i is scored on the verifier pool

@@ -139,8 +139,12 @@ def test_a_transient_hub_failure_is_retried_with_backoff_and_a_persistent_one_bl
     with pytest.raises(VerificationBlocked, match=r"HubError: Server error '503'.*after %d attempts" % n):
         r("pass")
     waits = [e[1] for e in log if e[0] == "sleep"]
-    assert waits == [b * 2 ** i for i in range(n - 1)], "bounded: one wait fewer than tries"
-    assert sum(waits) < 300, "an outage costs minutes of a GPU hour, never the run"
+    assert waits == hf_sandbox_runner.backoff_schedule(), "bounded: one wait fewer than tries"
+    assert waits[:5] == [b * 2 ** i for i in range(5)], "doubling from the first wait"
+    assert max(waits) == hf_sandbox_runner.TRANSPORT_BACKOFF_CAP_S, "each wait is capped"
+    # 2026-09-24: a 503 outage longer than 155 s ended a ~9.5 h h200 run 2.2 h in.
+    # The budget rides out a half-hour outage and still ends, never hangs.
+    assert 1500 < sum(waits) <= hf_sandbox_runner.TRANSPORT_BUDGET_S
 
 
 def test_a_client_error_is_refused_at_once():

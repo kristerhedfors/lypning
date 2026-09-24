@@ -498,3 +498,32 @@ def test_there_is_one_stripping_mechanism():
 @pytest.mark.parametrize("path", ROUND_SCRIPTS, ids=lambda p: p.name)
 def test_round_scripts_still_parse(path):
     assert subprocess.run(["bash", "-n", str(path)]).returncode == 0
+
+
+def test_training_prepare_prints_aggregates_never_case_ids(monkeypatch, capsys, tmp_path):
+    """It runs inside the GPU job, whose log is streamed into a public Actions log.
+
+    Until 2026-09-24 it printed every reference's case id and refusal detail,
+    for the eval-2 benchmark too; those stay in the private bundle.json.
+    """
+    from types import SimpleNamespace
+    from pipeline import cli, training
+    bundle = {"digest": "d" * 64, "cases": [
+        {"case_id": "v3-secretcase001", "split": "train", "family": "f1"},
+        {"case_id": "v3-secretcase002", "split": "dev", "family": "f2"}],
+        "reference_scores": {
+            "v3-secretcase001": {"status": "correct-native", "refusals": []},
+            "v3-secretcase002": {"status": "correct-control",
+                                 "refusals": [[0, "lypning-l: unsupported: module-attr: base64.b32encode"]]}}}
+    monkeypatch.setattr(training, "prepare", lambda *a, **k: bundle)
+    monkeypatch.setattr("pipeline.jsonio.read_jsonl", lambda path: [])
+    args = SimpleNamespace(starter=False, cases=str(tmp_path / "c.jsonl"), purpose="pilot", engine="e",
+                           output=str(tmp_path / "out"), seed=1111, score_workers=1, timeout=5,
+                           memory_mb=256, execution_image=None, review=None, execution_kind=None,
+                           execution_revision=None)
+    assert cli.cmd_training_prepare(args) == 0
+    out = capsys.readouterr().out
+    assert "secretcase" not in out and "base64" not in out and "reference_scores" not in out
+    printed = json.loads(out)
+    assert printed["reference_statuses"] == {"correct-control": 1, "correct-native": 1}
+    assert printed["cases"] == {"train": 1, "dev": 1, "test": 0}
