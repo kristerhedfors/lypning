@@ -110,7 +110,16 @@ SERVED = [
     # A TypeError CPython raises and this engine raises identically: exit 1,
     # and stdout up to that point.
     S + "print('a')\nprint(statistics.median(['a', 'b']))",
-    S + "print(statistics.median([1, 'a']))",
+    # mean over a range is `(first + last) / 2`, never a loop; over anything
+    # else it streams (one running total, as CPython's `_sum` does)
+    S + "print(statistics.mean(range(10**6, -5, -3)), statistics.mean(range(1, 2)), "
+        "statistics.mean(range(0, 10, 3)), statistics.mean(range(-2**63, 2**63-1, 2**62)))",
+    S + "print(statistics.mean(range(2**62, 2**63-1, 2**61)), statistics.mean(range(9, 0, -1)))",
+    S + "print(statistics.mean(x for x in range(10**5)), statistics.mean(iter(range(7))))",
+    # a total order the merge sort and timsort agree on: one kind per column
+    S + "print(statistics.median([(1,'a'),(1,'b'),(0,'z')]), "
+        "statistics.median_low([[1,2],[1],[0,5,6]]), statistics.median([1,2.5,True]))",
+    S + "print(statistics.median([None]), statistics.median_low([2**53, 2.0**53, 1.5]))",
 ]
 
 #: CPython answers each of these (or raises a class this engine cannot name),
@@ -153,6 +162,49 @@ REFUSED = [
     "from statistics import StatisticsError\nprint(1)",
     "import statistics as st\nprint(st.quantiles([1, 2, 3, 4]))",
 ]
+
+#: The medians over items `<` does not TOTALLY order refuse (`Shape` in
+#: statistics.rs): the engine's merge sort asks its comparisons in a different
+#: order from timsort, so a TypeError names a different pair; a NaN at depth
+#: two or more makes `<` no order at all; and the core compares an int past
+#: 2**53 with a float through f64. Each row is pinned to CPython 3.14.5's exact
+#: stdout and exit code (measured 2026-09-24), and each was a wrong answer or
+#: a wrong TypeError on lypning-l before the check.
+UNORDERED_MEDIANS = {
+    S + "print(repr(statistics.median_low([9007199254740993, 9007199254740992.0])))":
+        ("9007199254740992.0\n", 0),
+    S + "print(repr(statistics.median_high([9007199254740993, 9007199254740992.0])))":
+        ("9007199254740993\n", 0),
+    S + "print(repr(statistics.median_low([9.223372036854776e18, 2**63-1])))":
+        ("9223372036854775807\n", 0),
+    S + "print(repr(statistics.median([2**53+1, 2**53+1.0, 2**53])))":
+        ("9007199254740992\n", 0),
+    S + "print(repr(statistics.median_low([(9007199254740993,), (9007199254740992.0,)])))":
+        ("(9007199254740992.0,)\n", 0),
+    S + "print(repr(statistics.median_low([10**16+1, 2**53-1, 1e16, 1e16])))":
+        ("1e+16\n", 0),
+    S + "n=float('nan')\nprint(statistics.median_low([[[3]],[[1]],[[n]],[[2]]]))":
+        ("[[nan]]\n", 0),
+    S + "n=float('nan')\nprint(statistics.median_high([(0,(3,)),(0,(1,)),(0,(n,)),(0,(2,))]))":
+        ("(0, (2,))\n", 0),
+    S + "n=float('nan')\nprint(statistics.median([[[3]],[[1]],[[n]],[[2]],[[0]]]))":
+        ("[[nan]]\n", 0),
+    S + "try: statistics.median([3, 1, None, 2])\nexcept TypeError as e: print('E', e)":
+        ("E '<' not supported between instances of 'NoneType' and 'int'\n", 0),
+    S + "try: statistics.median_low({1, None})\nexcept TypeError as e: print('E', e)":
+        ("E '<' not supported between instances of 'int' and 'NoneType'\n", 0),
+    S + "print(statistics.median({(1,2),(1,None)}))": ("", 1),
+    S + "print(statistics.median([1, 'a']))": ("", 1),
+}
+REFUSED += list(UNORDERED_MEDIANS)
+
+
+@pytest.mark.skipif(sys.version_info[:3] != (3, 14, 5), reason="pinned to CPython 3.14.5")
+@pytest.mark.parametrize("program", list(UNORDERED_MEDIANS), ids=range(len(UNORDERED_MEDIANS)))
+def test_the_unordered_median_rows_are_pinned_to_cpython(program: str) -> None:
+    ref = _run([sys.executable], program)
+    assert (ref.stdout, ref.returncode) == UNORDERED_MEDIANS[program]
+
 
 #: A median over sets. CPython orders sets by SUBSET, a partial order the
 #: engine's sort does not implement, so the medians refuse any set-like element
@@ -398,3 +450,12 @@ def test_the_fuzz_agrees_with_cpython(seed: int) -> None:
         assert (got.stdout, got.returncode) == (line + "\n", 0), (
             "lypning-l disagrees with CPython on %s: %r vs %r" % (call, got.stdout, line))
     assert served >= len(calls) // 2, "only %d of %d fuzz calls were served" % (served, len(calls))
+
+
+@needs_l
+def test_mean_over_a_huge_range_answers_without_materializing_it() -> None:
+    """CPython streams `mean(range(10**10))` through `_sum` for about twelve
+    minutes and prints `4999999999.5` (= float(Fraction(10**10 - 1, 2))); the
+    capability used to collect 10**10 values and die at exit 137."""
+    got = _run([str(BINARY)], S + "print(statistics.mean(range(10**10)))")
+    assert (got.stdout, got.returncode) == ("4999999999.5\n", 0)

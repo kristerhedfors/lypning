@@ -145,7 +145,7 @@ larger one would answer. Everything not listed is `unsupported: module-attr:
 | `csv` | `DictReader` `QUOTE_ALL` `QUOTE_MINIMAL` `QUOTE_NONE` `QUOTE_NONNUMERIC` `reader` | `route.rs:MODULE_ATTRS` — the writers are CPython's |
 | `glob` | `escape` `glob` `has_magic` `iglob` | `route.rs:GLOB_SERVED` |
 | `hashlib` | `md5` `sha1` `sha256` `sha512` | `hashlib.rs:SERVED` — `new`, the SHA-3 family and the KDFs are CPython's |
-| `statistics` | `mean` `median` `median_high` `median_low` | `statistics.rs:SERVED` — `mean` over ints and bools only; a float `mean`, empty data, a median over sets and the spread functions are CPython's |
+| `statistics` | `mean` `median` `median_high` `median_low` | `statistics.rs:SERVED` — `mean` over ints and bools only; a float `mean`, empty data, a median over items `<` does not totally order (mixed kinds, a nested NaN, a set, an int past 2**53 beside a float) and the spread functions are CPython's |
 
 `collections` serves `Counter` and `defaultdict`; `pathlib` serves `Path`. Both
 are whole-module claims in `route.rs:CAPS`, so an attribute neither serves —

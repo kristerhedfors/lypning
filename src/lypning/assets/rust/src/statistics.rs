@@ -30,8 +30,9 @@
 //! to this list. At runtime (kind `statistics`): empty data, which CPython
 //! answers with a `StatisticsError` this engine has no class for; a float or
 //! non-numeric element in `mean`; keywords and a wrong argument count, whose
-//! TypeError wording is CPython's; and a set-like element in a median, which
-//! CPython sorts by the subset partial order and the engine's sort does not.
+//! TypeError wording is CPython's; and a median over items `<` does not
+//! totally order (mixed kinds, a NaN at any depth, a set, a wide int next to a
+//! float — [`Shape`]), where the engine's sort would not give timsort's answer.
 
 use crate::args::Args;
 use crate::ast::BinOp;
@@ -69,27 +70,28 @@ pub fn call(
         return Err(refuse(&format!("statistics.{name}() with other than one positional argument")));
     }
     let data = args.take(0);
-    // A set is fine here: every served function either sorts or sums exact
-    // integers, so the engine's own iteration order never shows.
-    let mut items = it.collect_unordered(data)?;
     if name == "mean" {
-        return mean(it, &items);
+        return mean(it, data);
     }
-    // A set is ordered by SUBSET in CPython — a partial order the engine's sort
-    // does not implement (`sorted([{2}, {1, 2}])` is `[{2}, {1, 2}]` there and a
-    // TypeError here). The medians would expose that, so a set, a frozenset or
-    // a set-like dict view anywhere an element's comparison can reach refuses.
-    if items.iter().any(|x| set_like(x, 0)) {
-        return Err(refuse(&format!(
-            "statistics.{name}() over sets, which CPython orders by subset"
-        )));
-    }
-    let mut keys = items.clone();
-    crate::ops::sort_values(&mut items, &mut keys, false)?;
+    // A set is fine here: the medians sort, and a total order with a stable
+    // sort makes the input order invisible — which is what `comparable` below
+    // guarantees before the sort runs.
+    let mut items = it.collect_unordered(data)?;
     let n = items.len();
     if n == 0 {
         return Err(refuse("no median for empty data (a StatisticsError)"));
     }
+    // One element is returned without a comparison, in CPython and here.
+    if n > 1 {
+        let mut shape = Shape::Unset;
+        if !items.iter().all(|x| shape.admit(x, 0)) || !shape.exact() {
+            return Err(refuse(&format!(
+                "statistics.{name}() over items the engine's sort cannot order as timsort does"
+            )));
+        }
+    }
+    let mut keys = items.clone();
+    crate::ops::sort_values(&mut items, &mut keys, false)?;
     Ok(match name {
         "median" if n % 2 == 0 => {
             let s = it.binop(BinOp::Add, &items[n / 2 - 1], &items[n / 2])?;
@@ -100,29 +102,126 @@ pub fn call(
     })
 }
 
-/// Whether comparing `v` can reach a set-like value: a set, a frozenset or a
-/// dict view, directly or through the tuples and lists that compare
-/// element-wise. Past a nesting depth of 32 (a list that contains itself) the
-/// answer is yes, which refuses rather than recurses.
-fn set_like(v: &Value, depth: u32) -> bool {
-    if depth > 32 {
-        return true;
+/// What every item a median sorts must share, position by position, for the
+/// engine's merge sort to give timsort's permutation and raise nothing.
+///
+/// The sort is only interchangeable with CPython's when `<` is a TOTAL order on
+/// the items: then a stable sort has one answer, whatever order it asks its
+/// comparisons in and whatever order a set iterates in. Anything else shows —
+/// a TypeError between two kinds names the first pair asked, and the engine
+/// asks in a different order from timsort; a NaN (at any depth) makes `<` no
+/// order at all; a set is ordered by subset; and an int past 2**53 next to a
+/// float is compared through `f64` by the core, so `2**53 + 1 == 2.0**53`
+/// there. So the items must be all numbers, all `str` or all `bytes`, or all
+/// tuples (or all lists) whose elements obey the same rule at each index; a
+/// number column that holds a float holds no int outside ±2**53. Past a
+/// nesting depth of 32 (a list that contains itself) the answer is no.
+enum Shape {
+    Unset,
+    Num { float: bool, wide: bool },
+    Str,
+    Bytes,
+    Seq { list: bool, at: Vec<Shape> },
+}
+
+impl Shape {
+    fn admit(&mut self, v: &Value, depth: u32) -> bool {
+        if depth > 32 {
+            return false;
+        }
+        const EXACT: u64 = 1 << 53;
+        let (float, wide) = match v {
+            Value::Bool(_) => (false, false),
+            Value::Int(i) => (false, !matches!(i.small(), Some(x) if x.unsigned_abs() <= EXACT)),
+            Value::Float(f) if !f.is_nan() => (true, false),
+            Value::Str(_) => return self.is(Shape::Str),
+            Value::Bytes(_) => return self.is(Shape::Bytes),
+            Value::Tuple(t) => return self.seq(false, &t[..], depth),
+            Value::List(l) => return self.seq(true, &l.borrow()[..], depth),
+            _ => return false,
+        };
+        match self {
+            Shape::Unset => *self = Shape::Num { float, wide },
+            Shape::Num { float: f, wide: w } => {
+                *f |= float;
+                *w |= wide;
+            }
+            _ => return false,
+        }
+        true
     }
-    match v {
-        Value::Set(_) | Value::DictView(..) => true,
-        Value::Tuple(t) => t.iter().any(|x| set_like(x, depth + 1)),
-        Value::List(l) => l.borrow().iter().any(|x| set_like(x, depth + 1)),
-        _ => false,
+
+    fn is(&mut self, want: Shape) -> bool {
+        match (&*self, &want) {
+            (Shape::Unset, _) => {
+                *self = want;
+                true
+            }
+            (Shape::Str, Shape::Str) | (Shape::Bytes, Shape::Bytes) => true,
+            _ => false,
+        }
+    }
+
+    fn seq(&mut self, list: bool, xs: &[Value], depth: u32) -> bool {
+        if let Shape::Unset = self {
+            *self = Shape::Seq { list, at: Vec::new() };
+        }
+        let Shape::Seq { list: l, at } = self else { return false };
+        if *l != list {
+            return false;
+        }
+        for (i, x) in xs.iter().enumerate() {
+            if i == at.len() {
+                at.push(Shape::Unset);
+            }
+            if !at[i].admit(x, depth + 1) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// No number column mixes a float with an int the core compares inexactly.
+    fn exact(&self) -> bool {
+        match self {
+            Shape::Num { float, wide } => !(*float && *wide),
+            Shape::Seq { at, .. } => at.iter().all(Shape::exact),
+            _ => true,
+        }
     }
 }
 
 /// The exact integer mean: `total // n` when it divides, else the engine's
-/// correctly rounded `total / n`.
-fn mean(it: &mut crate::eval::Interp, items: &[Value]) -> R<Value> {
+/// correctly rounded `total / n`. It STREAMS, as CPython's does: `mean` over a
+/// generator of 10**10 items holds one running total, never 10**10 values. A
+/// `range` needs no loop at all — its mean is `(first + last) / 2` exactly,
+/// the same rational CPython's `Fraction(total, n)` reduces to.
+fn mean(it: &mut crate::eval::Interp, data: Value) -> R<Value> {
+    if let Value::Range(a, b, st) = data {
+        let n = if st > 0 {
+            (b as i128 - a as i128 + st as i128 - 1) / st as i128
+        } else {
+            (a as i128 - b as i128 - st as i128 - 1) / -(st as i128)
+        };
+        if n <= 0 {
+            return Err(refuse("mean requires at least one data point (a StatisticsError)"));
+        }
+        let last = a as i128 + (n - 1) * st as i128;
+        return exact_div(it, &ival(a), &ival(last as i64), 2);
+    }
+    let mut it_ = match data {
+        // A set's order never shows in an exact integer sum.
+        Value::Set(_) => {
+            let items = it.collect_unordered(data)?;
+            crate::iter::Iter::Tuple(Rc::new(items), 0)
+        }
+        other => it.make_iter(other)?,
+    };
     let mut total = ival(0);
-    for x in items {
-        match x {
-            Value::Int(_) | Value::Bool(_) => total = it.binop(BinOp::Add, &total, x)?,
+    let mut n: i64 = 0;
+    while let Some(x) = it.iter_next(&mut it_)? {
+        match &x {
+            Value::Int(_) | Value::Bool(_) => total = it.binop(BinOp::Add, &total, &x)?,
             Value::Float(_) => {
                 return Err(refuse(
                     "mean() over a float, which CPython sums as an exact fraction and rounds once",
@@ -135,11 +234,18 @@ fn mean(it: &mut crate::eval::Interp, items: &[Value]) -> R<Value> {
                 )))
             }
         }
+        n += 1;
     }
-    if items.is_empty() {
+    if n == 0 {
         return Err(refuse("mean requires at least one data point (a StatisticsError)"));
     }
-    let n = ival(items.len() as i64);
+    exact_div(it, &total, &ival(0), n)
+}
+
+/// `(x + y) / n` as CPython's `mean` converts it: an int when it divides.
+fn exact_div(it: &mut crate::eval::Interp, x: &Value, y: &Value, n: i64) -> R<Value> {
+    let total = it.binop(BinOp::Add, x, y)?;
+    let n = ival(n);
     let rem = it.binop(BinOp::Mod, &total, &n)?;
     let exact = matches!(&rem, Value::Int(i) if i.small() == Some(0));
     it.binop(if exact { BinOp::FloorDiv } else { BinOp::Div }, &total, &n)
