@@ -1,12 +1,15 @@
 """Submit a round-02 stage to Hugging Face Jobs and follow it. Runs on the operator's machine.
 
-Four stages: `smoke` (round02_smoke.sh, the plumbing on the starter), `pilot`
+Five stages: `smoke` (round02_smoke.sh, the plumbing on the starter), `pilot`
 (round02_pilot.sh, the first real round on reviewed banks), `hwsmoke`
 (round02_hwsmoke.sh, the pilot's generation and SFT step measured on the
-pilot's GPU, no bank) and `eval2` (round02_eval2.sh, the eval-2 benchmark of a
-completed pilot job that ran with --eval2 separate, named by --eval2-of). A
-pilot names the bank with --bank-path, a directory in the private --work-repo
-that holds eval2.jsonl, train.jsonl and the evidence-*/ snapshots they cite;
+pilot's GPU, no bank), `eval2` (round02_eval2.sh, the eval-2 benchmark of a
+completed pilot job that ran with --eval2 separate, named by --eval2-of) and
+`finish` (round02_finish.sh, the test split and eval-2 of a pilot job that
+completed SFT and then died, from its saved adapter at --sft-step, named by
+--finish-of). A pilot names the bank with --bank-path, a directory in the
+private --work-repo that holds eval2.jsonl, train.jsonl and the evidence-*/
+snapshots they cite;
 --steps, --eval-draws, --eval-every, --seed and --split-seed travel to the job
 as environment, as the bank path does.
 
@@ -33,19 +36,20 @@ import time
 BASE_IMAGE = "python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea"
 REPO_URL = "https://github.com/kristerhedfors/lypning"
 STAGES = {"smoke": "training/hf/round02_smoke.sh", "pilot": "training/hf/round02_pilot.sh",
-          "hwsmoke": "training/hf/round02_hwsmoke.sh", "eval2": "training/hf/round02_eval2.sh"}
+          "hwsmoke": "training/hf/round02_hwsmoke.sh", "eval2": "training/hf/round02_eval2.sh",
+          "finish": "training/hf/round02_finish.sh"}
 #: The stages that read reviewed banks from the private dataset repo (--bank-path).
 BANKED = ("pilot",)
 #: The stages that score through the verifier pool and so carry its knobs,
 #: its density ceiling and the pre-registered seeds into the job.
-POOLED = ("pilot", "eval2")
+POOLED = ("pilot", "eval2", "finish")
 DEFAULT_STEPS, DEFAULT_EVAL_DRAWS, DEFAULT_SEED = 250, 16, 1111
 #: SFT dev-evaluation cadence. 50 is what the job script hard-coded until
 #: 2026-09-23; round02.yml chooses the arm's value (PILOT_EVAL_EVERY).
 DEFAULT_EVAL_EVERY = 50
 #: Where a pilot's eval-2 runs: in the pilot job, or in a second `eval2` job.
 EVAL2_MODES = ("same-job", "separate")
-#: An HF job id, the only thing --eval2-of may name.
+#: An HF job id, the only thing --eval2-of and --finish-of may name.
 JOB_ID = re.compile(r"[0-9a-f]{24}")
 #: No GRPO unless asked for. The only dose this launcher ever defaulted to --
 #: 20 steps at 4 generations -- is the one PLAN.md retired with seed 1111's
@@ -93,6 +97,7 @@ HWSMOKE_TIMEOUT = "90m"
 STAGE_LIMITS = {"smoke": (SMOKE_FLAVOR, SMOKE_TIMEOUT, None),
                 "pilot": (BANKED_FLAVOR, BANKED_TIMEOUT, BANKED_TIMEOUT),
                 "eval2": (BANKED_FLAVOR, BANKED_TIMEOUT, BANKED_TIMEOUT),
+                "finish": (BANKED_FLAVOR, BANKED_TIMEOUT, BANKED_TIMEOUT),
                 "hwsmoke": (BANKED_FLAVOR, HWSMOKE_TIMEOUT, HWSMOKE_TIMEOUT)}
 # 12 scorers, not 16: the default pool is 4 x 4 = 16 slots, and 16 scorers in
 # 16 slots is the exact-fit shape that has no room for a sandbox winding down.
@@ -163,6 +168,15 @@ def job_env(args):
                     "SCORE_WORKERS": str(args.score_workers),
                     "NTX_POOL_SANDBOXES_PER_HOST": str(args.pool_sandboxes_per_host),
                     "NTX_POOL_MAX_HOSTS": str(args.pool_max_hosts)})
+    if args.stage == "finish":
+        # The pilot job and the one checkpoint; every arm field is refused in
+        # the job unless it is that pilot job's (`finish_lineage.py`).
+        env.update({"FINISH_OF": args.finish_of, "SFT_STEP": str(args.sft_step),
+                    "EVAL_DRAWS": str(args.eval_draws), "SEED": str(args.seed),
+                    "SPLIT_SEED": str(args.split_seed), "EVAL_SEQUENCES": str(args.eval_sequences),
+                    "SCORE_WORKERS": str(args.score_workers),
+                    "NTX_POOL_SANDBOXES_PER_HOST": str(args.pool_sandboxes_per_host),
+                    "NTX_POOL_MAX_HOSTS": str(args.pool_max_hosts)})
     if args.stage in BANKED:
         env.update({"BANK_PATH": args.bank_path, "STEPS": str(args.steps),
                     "GRPO_STEPS": str(args.grpo_steps),
@@ -228,6 +242,12 @@ def main(argv=None):
                    help="pilot: run eval-2 in this job, or defer it to an `eval2` job")
     p.add_argument("--eval2-of", default="",
                    help="eval2: the completed pilot job (24-hex HF job id) whose eval-2 this runs")
+    p.add_argument("--finish-of", default="",
+                   help="finish: the pilot job (24-hex HF job id) that completed SFT and whose test "
+                        "split and eval-2 this runs from its saved adapter")
+    p.add_argument("--sft-step", type=int, default=0,
+                   help="finish: the SFT checkpoint to evaluate; a step other than the pilot's "
+                        "rule-selected one must be registered in finish_lineage.OVERRIDES")
     p.add_argument("--eval-sequences", type=int, default=DEFAULT_EVAL_SEQUENCES,
                    help="pilot: sequences per generate call in evaluation")
     p.add_argument("--score-workers", type=int, default=DEFAULT_SCORE_WORKERS,
@@ -247,9 +267,9 @@ def main(argv=None):
     p.add_argument("--split-seed", type=int, default=DEFAULT_SPLIT_SEED,
                    help="pilot: review and preparation seed, i.e. the train/dev/test split "
                         "(default %d for every training seed)" % DEFAULT_SPLIT_SEED)
-    p.add_argument("--flavor", help="default %s for pilot, eval2 and hwsmoke, %s for the smoke"
+    p.add_argument("--flavor", help="default %s for pilot, eval2, finish and hwsmoke, %s for the smoke"
                    % (BANKED_FLAVOR, SMOKE_FLAVOR))
-    p.add_argument("--timeout", help="default and maximum %s for pilot and eval2, %s for hwsmoke; "
+    p.add_argument("--timeout", help="default and maximum %s for pilot, eval2 and finish, %s for hwsmoke; "
                    "%s for the smoke" % (BANKED_TIMEOUT, HWSMOKE_TIMEOUT, SMOKE_TIMEOUT))
     p.add_argument("--yes", action="store_true", help="actually submit (billed)")
     p.add_argument("--follow", action="store_true", help="stream logs until the job ends")
@@ -289,6 +309,16 @@ def main(argv=None):
         return 2
     if args.stage != "eval2" and args.eval2_of:
         print("--eval2-of is only for the eval2 stage", file=sys.stderr)
+        return 2
+    if args.stage == "finish" and not JOB_ID.fullmatch(args.finish_of or ""):
+        print("finish needs --finish-of: the pilot job that completed SFT, 24 lower-case hex "
+              "characters", file=sys.stderr)
+        return 2
+    if args.stage == "finish" and args.sft_step <= 0:
+        print("finish needs --sft-step: a positive SFT checkpoint step", file=sys.stderr)
+        return 2
+    if args.stage != "finish" and (args.finish_of or args.sft_step):
+        print("--finish-of and --sft-step are only for the finish stage", file=sys.stderr)
         return 2
     if args.stage == "pilot" and args.eval2 == "separate" and args.grpo_steps:
         print("--eval2 separate carries the base and SFT arms only; it needs --grpo-steps 0",
@@ -385,6 +415,12 @@ def main(argv=None):
                      "sft_target_run": args.sft_target_run or None})
     if args.stage == "eval2":
         plan.update({"eval2_of": args.eval2_of, "eval_draws": args.eval_draws, "seed": args.seed,
+                     "eval_sequences": args.eval_sequences, "score_workers": args.score_workers,
+                     "pool_sandboxes_per_host": args.pool_sandboxes_per_host,
+                     "pool_max_hosts": args.pool_max_hosts})
+    if args.stage == "finish":
+        plan.update({"finish_of": args.finish_of, "sft_step": args.sft_step,
+                     "eval_draws": args.eval_draws, "seed": args.seed, "split_seed": args.split_seed,
                      "eval_sequences": args.eval_sequences, "score_workers": args.score_workers,
                      "pool_sandboxes_per_host": args.pool_sandboxes_per_host,
                      "pool_max_hosts": args.pool_max_hosts})

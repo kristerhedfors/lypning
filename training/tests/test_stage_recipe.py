@@ -153,8 +153,8 @@ def test_sft_steps_the_declared_optimizer_and_logs_its_gradient_norm(tmp_path):
     assert row["grad_norm"] == 0.25 and row["step"] == 1
 
 
-def _grpo(tmp_path, monkeypatch, callback_steps, smoke=True):
-    module = stages()
+def _grpo(tmp_path, monkeypatch, callback_steps, smoke=True, verifier=None, rewarded=None, module=None):
+    module = module or stages()
     observed = {}
 
     class CapturingReward(module.Reward):
@@ -173,6 +173,10 @@ def _grpo(tmp_path, monkeypatch, callback_steps, smoke=True):
             callback = observed["callbacks"][0]
             control = SimpleNamespace()
             callback.on_pre_optimizer_step(None, SimpleNamespace(global_step=1), control)
+            if rewarded is not None:
+                cid = observed["train_dataset"][0]["case_id"]
+                observed["rewards"] = observed["reward_funcs"](
+                    list(rewarded), [cid] * len(rewarded), completion_ids=[[1, 99]] * len(rewarded))
             for step, logs in callback_steps:
                 callback.on_log(None, SimpleNamespace(global_step=step), control, logs=logs)
 
@@ -188,11 +192,80 @@ def _grpo(tmp_path, monkeypatch, callback_steps, smoke=True):
                            smoke=smoke, score_workers=2)
     model = SimpleNamespace(device=SimpleNamespace(type="cpu"), parameters=lambda: [])
     tok = SimpleNamespace(eos_token_id=99, apply_chat_template=lambda msgs, **kwargs: msgs[-1]["content"])
-    verifier = SimpleNamespace(score=lambda c, p: Score(1, "correct-native", 3, 3))
+    verifier = verifier or SimpleNamespace(score=lambda c, p: Score(1, "correct-native", 3, 3))
     module.train_grpo(model, tok, args, {"cases": [case]}, [case], verifier,
         {"steps": 2, "eval_every": 50, "max_tokens": 32, "learning_rate": 1e-5}, decoding(32),
         lambda step: None)
     return observed
+
+
+def test_a_short_grpo_run_is_over_the_bound_at_its_first_mismatch(tmp_path, monkeypatch):
+    """Two steps of four prompts of eight: 64 planned draws, 1% of which is 0.64.
+
+    So the FIRST mismatch is over the bound. The bound is on the run's
+    registered draws, and a short run is held to it as strictly as a long
+    one; its witness is kept before the run ends.
+    """
+    from pipeline.training_types import ENGINE_MISMATCH, VerificationBlocked
+    from pipeline.mismatch_policy import EngineMismatchBound
+
+    def score(case, program):
+        if "mismatch" in program:
+            raise VerificationBlocked(ENGINE_MISMATCH, {"case_id": case["case_id"], "test": 0,
+                                                        "observed": [1, "", "boom", False, False, False, False]})
+        return Score(1, "correct-native", 3, 3)
+
+    with pytest.raises(EngineMismatchBound, match="^engine-mismatch draws 1 of 64 exceed the 1% bound$"):
+        _grpo(tmp_path, monkeypatch, [], verifier=SimpleNamespace(score=score),
+              rewarded=["```python\nmismatch()\n```"] + ["```python\nok()\n```"] * 7)
+    kept = [json.loads(line) for line in (tmp_path / "engine-mismatches.jsonl").read_text().splitlines()]
+    assert [w["program"] for w in kept] == ["mismatch()"] and kept[0]["witness"]["test"] == 0
+
+
+def test_a_long_grpo_run_absorbs_a_mismatch_as_a_zero_reward(tmp_path, monkeypatch):
+    """The reward never sees the block: 0, a rollout row, a private witness, a count."""
+    from pipeline.training_types import ENGINE_MISMATCH, VerificationBlocked
+    module = stages()
+    real = module.MismatchScoring
+
+    def planned_long(verifier, path, planned):
+        assert planned == 2 * 4 * 8, "steps x prompts x generations"
+        return real(verifier, path, planned=6400)
+    monkeypatch.setattr(module, "MismatchScoring", planned_long)
+
+    def score(case, program):
+        if "mismatch" in program:
+            raise VerificationBlocked(ENGINE_MISMATCH, {"case_id": case["case_id"], "test": 0,
+                                                        "observed": [1, "", "boom", False, False, False, False]})
+        return Score(1, "correct-native", 3, 3)
+
+    observed = _grpo(tmp_path, monkeypatch, [(1, {"loss": 0.5})], verifier=SimpleNamespace(score=score),
+                     rewarded=["```python\nmismatch()\n```"] + ["```python\nok()\n```"] * 7,
+                     module=module)
+    assert observed["rewards"] == [0.0] + [1] * 7
+    rollouts = [json.loads(line) for line in (tmp_path / "rollouts.jsonl").read_text().splitlines()]
+    assert [r["status"] for r in rollouts][0] == "engine-mismatch"
+    assert not (tmp_path / "blocked-witnesses.jsonl").exists(), "not an abort, so no abort witness"
+    assert len((tmp_path / "engine-mismatches.jsonl").read_text().splitlines()) == 1
+    assert json.loads((tmp_path / "loss.jsonl").read_text())["engine_mismatches"] == 1
+
+
+@pytest.mark.parametrize("kind, witness", [
+    ("harness", {"harness_error": "x"}),
+    ("engine mismatch", {"observed": [None, "", "", True, False, False, False]}),   # T4: a native timeout
+])
+def test_every_other_block_still_aborts_grpo(tmp_path, monkeypatch, kind, witness):
+    from pipeline.training_types import VerificationBlocked
+
+    def score(case, program):
+        raise VerificationBlocked(kind, witness)
+
+    with pytest.raises(VerificationBlocked) as caught:
+        _grpo(tmp_path, monkeypatch, [], verifier=SimpleNamespace(score=score),
+              rewarded=["```python\nok()\n```"] * 8)
+    assert caught.value.kind == kind
+    assert (tmp_path / "blocked-witnesses.jsonl").exists()
+    assert not (tmp_path / "engine-mismatches.jsonl").exists()
 
 
 def test_a_grpo_step_is_four_prompts_of_eight_with_an_explicit_clip(tmp_path, monkeypatch):
@@ -222,9 +295,10 @@ def test_grpo_writes_its_log_history_to_loss_jsonl(tmp_path, monkeypatch):
         (2, {"train_loss": 0.45, "train_runtime": 12.0, "epoch": 1.0}),
     ])
     rows = [json.loads(line) for line in (tmp_path / "loss.jsonl").read_text().splitlines()]
-    assert rows == [{"clip_ratio/region_mean": 0.0, "frac_reward_zero_std": 0.25, "grad_norm": 0.1,
-                     "learning_rate": 1e-5, "loss": 0.5, "step": 1},
-                    {"loss": 0.4, "step": 2}]
+    # `engine_mismatches` is the run's cumulative count (2026-09-24), zero included.
+    assert rows == [{"clip_ratio/region_mean": 0.0, "engine_mismatches": 0, "frac_reward_zero_std": 0.25,
+                     "grad_norm": 0.1, "learning_rate": 1e-5, "loss": 0.5, "step": 1},
+                    {"engine_mismatches": 0, "loss": 0.4, "step": 2}]
 
 
 def test_grpo_never_hands_reward_an_abort_limit(tmp_path, monkeypatch):

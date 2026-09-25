@@ -18,6 +18,14 @@ And a Space name is not an immutable image: the Hub SDK offers no revision or
 digest on `hf.co/spaces/<owner>/<name>`, so the string resolves to whatever the
 Space last built. The 40-character commit printed here is the pin, and the
 runner refuses to touch a host unless the Space's current head still equals it.
+
+HOLD (`SPACE_HOLD=1`, set by `round02.yml` for a `finish` dispatch) writes
+nothing to the Space. A finish runs at the revision an EARLIER job pinned, and
+the pool serves only the head: an upload here that is not byte-identical -- a
+runner image with a newer rustc is enough -- would commit, move the head past
+that revision, and no later dispatch could ever finish that pilot again. So a
+hold only reads the head, wakes a sleeping Space, and waits for RUNNING; the
+finish preflight then refuses, for free, a head that is not the pilot's.
 """
 from __future__ import annotations
 
@@ -62,11 +70,26 @@ def out(**kw):
                 fh.write("%s=%s\n" % (key, value))
 
 
+def hold(api, repo_id):
+    """Read the head without writing a byte; the caller then waits for RUNNING."""
+    info = api.repo_info(repo_id, repo_type="space")
+    if not info.private:
+        raise SystemExit("refusing: %s exists and is not private" % repo_id)
+    head = info.sha
+    print("== hold: %s is NOT rebuilt; its head %s is what this run pins" % (repo_id, head))
+    if not head or len(head) != 40:
+        raise SystemExit("the Space head is not a 40-character commit: %r" % head)
+    return head
+
+
 def main() -> int:
     token = os.environ["HF_TOKEN"]
     api = HfApi(token=token)
     owner = api.whoami()["name"]
     repo_id = "%s/%s" % (owner, os.environ.get("SPACE_REPO_NAME", "lypning-round02-verifier"))
+    if os.environ.get("SPACE_HOLD") == "1":
+        hold(api, repo_id)
+        return wait_and_pin(api, repo_id, owner)
     engine = Path(os.environ["LYPNING_HOME"]) / "bin" / "lypning-l"
     if not engine.is_file():
         raise SystemExit("not a file: %s — build the engine before the Space" % engine)
@@ -123,7 +146,10 @@ def main() -> int:
     print("   commit %s" % head)
     if not head or len(head) != 40:
         raise SystemExit("the Space head is not a 40-character commit: %r" % head)
+    return wait_and_pin(api, repo_id, owner)
 
+
+def wait_and_pin(api, repo_id, owner):
     print("== wait for the build (a Space name is not an image; the commit is the pin)")
     deadline = time.time() + 20 * 60
     last = ""

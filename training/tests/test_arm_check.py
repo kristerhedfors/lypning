@@ -201,3 +201,56 @@ def test_a_split_pair_that_disagrees_is_named_and_not_evidence():
         pair, _ = arm.joined([deferred(), follower(**{field: value})])
         assert pair[0]["status"] == "split-mismatch" and pair[0]["split_mismatch"] == [field], field
         assert pair[0]["status"] not in arm.OK
+
+
+# --- a pilot finished from its saved adapter (2026-09-25) ---------------------
+
+def died_after_sft(job="p1", **over):
+    """Seed 1111's arm A as it ended: SFT done, then dead in its base test arm."""
+    return arm_a(job=job, eval_every=350, eval2_mode="separate", eval2_deferred=False,
+                 status="failed", last_stage="test", sft_selected_step=350, **over)
+
+
+def finisher(of="p1", job="f1", status="complete", **over):
+    base = follower(of=of, job=job, status=status)
+    del base["eval2_of"]
+    base.update(kind="finish", stage="finish", finish_of=of, selected_step=1050, rule_selected_step=350,
+                selection_override={"step": 1050, "date": "2026-09-25",
+                                    "amendment": "training/EVAL2.md section 4"}, commit="d" * 40)
+    base.update(over)
+    return base
+
+
+def test_a_finished_pilot_is_one_seed_and_carries_the_step_it_was_measured_at():
+    arm = load()
+    pair, orphans = arm.joined([died_after_sft(), finisher()])
+    assert orphans == [] and len(pair) == 1, "the finish job is never a seed of its own"
+    seed = pair[0]
+    assert seed["status"] == "complete" and seed["status"] in arm.OK
+    assert (seed["finish_job"], seed["sft_selected_step"], seed["rule_selected_step"]) == ("f1", 1050, 350)
+    assert seed["selection_override"]["date"] == "2026-09-25"
+    # A finished seed and a later same-job seed of the arm are replicates of one arm.
+    later = arm_a(seed=2222, job="p2", eval_every=350, eval2_mode="same-job")
+    seeds, _ = arm.joined([died_after_sft(), finisher(), later])
+    assert arm.differences(seeds) == {}, "how a seed was finished is not the arm"
+
+
+def test_a_died_pilot_without_a_completed_finish_is_not_evidence():
+    arm = load()
+    alone, _ = arm.joined([died_after_sft()])
+    assert alone[0]["status"] == "failed"
+    for finishers in ([finisher(status="failed")], [finisher(status="failed"), finisher(job="f2", status="failed")]):
+        pair, _ = arm.joined([died_after_sft()] + finishers)
+        assert pair[0]["status"] == "finish-pending" and pair[0]["status"] not in arm.OK
+    _, orphans = arm.joined([finisher(of="gone")])
+    assert [o["job"] for o in orphans] == ["f1"]
+
+
+def test_a_finish_that_disagrees_with_its_pilot_is_named_and_not_evidence():
+    arm = load()
+    for field, value in (("seed", 2222), ("split_seed", 2222), ("eval_draws", 4),
+                         ("eval_sequences", 256), ("space_revision", "d" * 40), ("qwen_revision", "e" * 40),
+                         ("pool_sandboxes_per_host", 2), ("bank_path", "banks/other")):
+        pair, _ = arm.joined([died_after_sft(), finisher(**{field: value})])
+        assert pair[0]["status"] == "finish-mismatch" and pair[0]["finish_mismatch"] == [field], field
+        assert pair[0]["status"] not in arm.OK

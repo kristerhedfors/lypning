@@ -33,8 +33,9 @@ from pipeline.training_metrics import BENCHMARK_MIN_FAMILY_CASES, CheckpointGate
 from pipeline.evaluation_reuse import fresh_lora_is_noop, reuse_evaluation, reuse_step_zero
 from pipeline.training import (ISOLATED_KINDS, TrainingError, Verifier,
     assistant_turn, chat_prompt_token_ids, execution_runner, load_bundle, messages,
-    program_from_completion)
+    program_from_completion, release_runner)
 
+from pipeline.mismatch_policy import ENGINE_MISMATCH_FILE
 from pipeline.training_types import case_ref
 from pipeline.training_contract import (BASE_MODEL, CONTRACT_VERSION, MIN_SUPERVISED_TOKENS,
     MIN_TRAIN_CASES, PROTOCOL_EVAL_DRAWS, PROTOCOL_TRAIN_SEEDS,
@@ -526,6 +527,16 @@ def load_tokenizer(revision):
     return tok
 
 
+def tokenizer_sha256(tok):
+    """The tokenizer half of an adapter's runtime contract (`experiment.json`).
+
+    One function, because `finish_lineage.py` compares it with a saved
+    adapter's BEFORE the 55 GB weight pull, and a second spelling of the digest
+    there could drift from this one into a false refusal."""
+    return sha256_of({"vocab": tok.get_vocab(), "template": tok.chat_template,
+                      "special_tokens": tok.special_tokens_map})
+
+
 def download_base(revision):
     """The pinned checkpoint's local snapshot directory (the 55 GB pull)."""
     from huggingface_hub import snapshot_download
@@ -584,6 +595,16 @@ def run(args, bundle, adapter_info):
     verifier = Verifier(args.engine, **bundle["limits"], identity=bundle["identity"],
                         runner=execution_runner(bundle["execution"], bundle["identity"],
                                                 stage="grpo"))
+    # The stage's verifier pool is closed on every exit, success or failure:
+    # its hosts idle out only after `hf_sandbox_runner.HOST_IDLE_TIMEOUT` (3 h),
+    # so a stage that never closed them would bill them that long after it ended.
+    try:
+        return _run(args, bundle, adapter_info, verifier)
+    finally:
+        release_runner(verifier.runner)
+
+
+def _run(args, bundle, adapter_info, verifier):
     versions = runtime_versions()
     effective = schedule(args)
     kernels = block_fused_kernels()
@@ -668,8 +689,7 @@ def run(args, bundle, adapter_info):
                 "enable_thinking": False, "presence_penalty": 0.0,
                 "eos_token_id": tok.eos_token_id,
                 "decoding": decoding(schedule(args)["max_tokens"], greedy=args.greedy),
-                "tokenizer_sha256": sha256_of({"vocab": tok.get_vocab(), "template": tok.chat_template,
-                    "special_tokens": tok.special_tokens_map}),
+                "tokenizer_sha256": tokenizer_sha256(tok),
                 "model_config_sha256": model_config_identity(model.config.to_dict()),
                 "hardware": {"device": device, "dtype": str(dtype), "cuda": torch.version.cuda,
                     "gpu": torch.cuda.get_device_name() if device == "cuda" else None},
@@ -716,6 +736,7 @@ def run(args, bundle, adapter_info):
             args.output / "probe-rollouts.jsonl", 0, torch,
             seed=args.seed, draws=args.generations, return_records=True,
             witness_path=args.output / "eval-blocked-witnesses.jsonl",
+            mismatch_path=args.output / ENGINE_MISMATCH_FILE,
             sequences_per_call=args.eval_sequences, score_workers=args.score_workers,
             overlapped=not args.serial_scoring)
         contract = probe_contract(bundle, args.revision, adapter_info, policy,
@@ -728,6 +749,7 @@ def run(args, bundle, adapter_info):
                         args.output / "evaluations.jsonl", step, torch,
                         seed=args.seed, draws=1 if args.greedy else args.eval_draws,
                         witness_path=args.output / "eval-blocked-witnesses.jsonl",
+                        mismatch_path=args.output / ENGINE_MISMATCH_FILE,
                         sequences_per_call=args.eval_sequences, score_workers=args.score_workers,
                         overlapped=not args.serial_scoring, **metric_policy(bundle))
     if args.reuse_evaluation is not None and reuse_evaluation(
@@ -746,6 +768,12 @@ def run(args, bundle, adapter_info):
         baseline = measure(0)
     if args.stage == "eval":
         write_json(args.output / "metrics.json", baseline)
+        # Counts only (this log is public): which draws is in the stage's
+        # private engine-mismatches.jsonl. Over every draw, from the unfiltered
+        # population slices: the top level covers primary families only.
+        slices = baseline["by_population"].values()
+        core.log("eval draws=%d engine_mismatches=%d"
+                 % (sum(s["draws"] for s in slices), sum(s["engine_mismatches"] for s in slices)))
         return
 
     # Save every candidate separately; 'best.json' selects one without deleting

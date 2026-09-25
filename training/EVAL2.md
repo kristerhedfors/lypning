@@ -138,6 +138,116 @@ Real source-group dependence can be stronger: the production comparison keeps
 the full source/family-component bootstrap rather than adopting this simulation's
 independent-case assumption. No candidate outcomes chose the floor.
 
+### Amendment, 2026-09-24 — an engine-mismatch draw is a counted draw
+
+The seed-1111 arm-A pilot (HF job `6ab52a686b030d633f68e503`, Actions
+`36008052722`) finished SFT, then aborted in its base test arm on one
+base-model draw whose native run disagreed with a clean CPython oracle. That
+is a `lypning-l` bug; its fix waits in draft PR #118 because the engine is
+frozen for arm A. Such draws will recur, and every arm of an eval-2 run would
+meet the same abort. From this date the rule below applies to every arm alike,
+base and candidate, in every evaluation that scores draws: dev, test and eval-2.
+
+- **Counted.** Such a draw has status `engine-mismatch` and reward 0. It is
+  neither correct nor native and stays in the denominator. It counts against
+  the arm that drew it, in the primary metric and in gates A–C. This is the
+  conservative choice: a mismatch never helps an arm.
+- **Witnessed privately.** The program, the case, its tests and the verifier's
+  detail go to the stage's `engine-mismatches.jsonl`. That file is uploaded to
+  the private work repository only, and the bug is filed from it (root
+  `CLAUDE.md` invariant 1). Counting the draw does not excuse the bug.
+- **Always reported.** `summarize` reports `engine_mismatches` in every slice,
+  zero included, and the status appears in `statuses`.
+- **Bounded.** An evaluation fails once such draws exceed 1% of its planned
+  draws. It fails with `EngineMismatchBound`, a `VerificationBlocked` whose
+  message is two counts. Past that point the rows describe the engine, not the
+  model. The Step 2 grade has used the same bound since 2026-09-23 (#117), and
+  both read it from `pipeline/mismatch_policy.py`.
+- **Not changed.** Every other block still aborts: harness, runner, refusal
+  protocol, transport and identity drift. So does a native timeout after a
+  correct oracle. Ledger row T4 (`ORCHESTRATION.md`, 2026-09-17) kept that a
+  hard abort, because scoring it would make the endpoint depend on host load.
+
+Two arms with different counts carry that difference as a correctness
+difference. The bound limits it to 1% of each arm's draws, so both arms'
+counts stand beside every paired delta: `training_report` writes them over
+every draw, and the round scripts print them on each `== report` line. The
+change moves `code_sha256`, so an evaluation from an earlier commit is not
+reusable. It does not move `verifier_sha256`: no verifier module changed, so
+bundles prepared at the parent commit still load. Arm A seed 1111 is re-run
+under this rule. Its saved SFT adapters cannot be carried over: nothing in the
+tree resumes a pilot from them, and `split_eval2` refuses an adapter whose
+`code_sha256` differs. An evaluation that completed under the old rule held no
+mismatch, so its rows are the same under either rule.
+
+### Amendment, 2026-09-25 — seed 1111 is evaluated at step 1,050, and new selections are case-weighted
+
+Seed 1111's arm-A pilot (HF job `6ab52a686b030d633f68e503`, Actions
+`36008052722`) selected SFT step 350 under the dev selector then in force. That
+selector, rule v1 (`coverage-family-macro/1`), ranks checkpoints on the
+coverage slice's family macro. Every family weighs the same in it, whatever
+its size, and the dev split has seven families, some of them small. On pooled
+dev evidence over base, correct-and-native was +1.9, +2.6 and +3.1pp at steps
+350, 700 and 1,050. Correctness moved −0.9, 0.0 and +0.6pp. These are the
+operator's reading of that job's `sft/best.json` and base-dev on 2026-09-25.
+The macro ranked the checkpoints on its small families, and the pooled
+evidence ranks them the other way.
+
+- **The override.** The operator chose, on 2026-09-25, to evaluate step 1,050
+  on the test split and on eval-2 at k = 16, with the adapter the pilot saved,
+  in a `finish` job (`training/hf/round02_finish.sh`). Seed 1111 is not
+  re-trained. This replaces the last sentences of the 2026-09-24 amendment
+  above ("re-run … cannot be carried over"). The override is recorded here
+  before any test or eval-2 draw of that adapter exists. It is also registered
+  in code, in `training/hf/finish_lineage.py` (`OVERRIDES`). A finish job
+  refuses any step other than the rule's unless it is registered there, so a
+  dispatch input cannot choose a checkpoint.
+- **What the finish records.** Its `job-manifest.json` carries
+  `selected_step` (1,050), `rule_selected_step` (350), `selection_override`
+  (reason, date and this amendment) and `finish_lineage`. `finish_lineage`
+  holds both `code_sha256` digests, the files that moved and every commit
+  between the pilot's code and the finish's. The finish runs newer evaluation
+  code on purpose: #126 counts an engine-mismatch draw. Every other identity
+  field must be the pilot's, or the job refuses before a weight load and names
+  the field. That covers the bundles and their digests, `verifier_sha256`, the
+  engine, the Space revision, the Qwen revision, the seeds, the draws, the
+  chunking and the density. `arm_check` reads the pilot and its finish as one
+  seed.
+- **How to read seed 1111.** Its result is override-selected. The step was
+  chosen by the operator from the dev evidence of all three checkpoints, not
+  by the rule, and its report says so. The finish also re-reads the pilot's
+  own dev evaluations under the corrected rule below (`reselection` in the
+  manifest), so a reader can see whether the override and the corrected rule
+  agree. No test or eval-2 draw of any SFT checkpoint existed when the choice
+  was made; the pilot died in its base test arm, before any adapter was
+  evaluated there.
+- **Seeds 2222 and 3333 use a corrected selector.** Rule v2
+  (`coverage-case-weighted/2`) is `training_metrics.SELECTION_RULE`, the
+  default for every new selection. It ranks the coverage slice's
+  case-weighted correct-and-native rate: the mean of per-case rates, every
+  case one unit. The margin is the same 1.2816 case-clustered standard errors,
+  here of the paired per-case delta (`paired_case_standard_error`). Gate A and
+  retention are unchanged. `best.json` records `rule.version`, and the pilot's
+  manifest records `sft_selection_rule`.
+- **Its null half.** In `training/tests/test_gate_admission.py`'s simulation
+  (4,000 trials, seed 7, measured 2026-09-25), v2 admitted a checkpoint that is
+  base 10.50% of the time at κ = 2 and 9.18% at κ = 20. v1 admitted 10.53% and
+  9.23% on the same trials. Both are inside that test's bound of 10% plus three
+  Monte Carlo standard errors. That split's families are near-equal in size.
+  Add one two-case coverage family, the shape this amendment is about, and v1
+  over-admits: 12.9% at κ = 2 and 15.3% at κ = 20, against 8.9% and 9.2% for
+  v2 (4,000 trials at each of seeds 11, 12 and 13, measured 2026-09-25; the
+  test asserts v2 inside the bound and v1 beyond it). In the same test, on a
+  fixture shaped like seed 1111 (seven families, one of them two cases,
+  k = 16), v1 selects 350 and v2 selects 1,050. The default covers GRPO's
+  checkpoint selection too: it reads the same dev split.
+- **Not chosen: the five-case floor on the dev macro.** It would drop the
+  smallest families from selection, and a five-case family would still weigh
+  the same as a 45-case one. The primary eval-2 metric is unchanged: the family
+  macro under the 2026-09-22 floor. The selector reads dev only.
+- **What v2 gives up.** A gain concentrated in one small family counts for
+  that family's share of the cases, not for one family's share of the macro.
+
 ## 5. Decoding contract
 
 Every eval-2 draw uses `pipeline.training_contract.decoding` verbatim:

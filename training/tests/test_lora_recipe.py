@@ -138,7 +138,7 @@ def test_lora_init_is_reseeded_immediately_before_attach_lora():
     assert ast.unparse(body[0]) == "set_seed(seed)", ast.unparse(body[0])
     assert "core.attach_lora(" in ast.unparse(body[1]) and len(body) == 2
     # And `run` reaches it with the training seed, and attaches no other way.
-    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "run")
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_run")
     run = ast.unparse(fn)
     assert "attach_fresh_lora(model, args.rank, args.seed, core)" in run
     assert "core.attach_lora(" not in run, "run() attaches a LoRA without the reseed"

@@ -14,6 +14,84 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-25** — Finish a pilot from its saved SFT adapter, and select new checkpoints case-weighted ([#127](https://github.com/kristerhedfors/lypning/pull/127))
+
+- A `finish` stage (`launch.py finish`, `round02.yml` `stage: finish` with
+  `finish_of` and `sft_step`, h200 at 720m, billed only on `SUBMIT`) runs
+  `training/hf/round02_finish.sh`. It evaluates the test split and eval-2 of
+  a pilot that completed SFT and then died, using that pilot's saved adapter.
+  The steps are the pilot's 7f and 7g, command for command, with a checkpoint
+  upload after every stage.
+- `finish_lineage.py` refuses before any weight load and names the field. It
+  checks the pilot's SFT completion, the seal, both bundle digests,
+  `verifier_sha256`, the engine, the pilot's Space revision (fetched, never
+  the head), Qwen, the seeds, the draws, the chunking and the density.
+  `code_sha256` may differ; both digests and the commits between them are
+  recorded as `finish_lineage`. It also compares the pinned tokenizer with
+  the adapter's, before the weight pull. `finish_preflight.py` checks, for
+  free before submit, the Space revision, the dispatch's arm fields, both
+  bundles, `verifier_sha256`, the engine and the adapter's experiment.
+- A `finish` dispatch holds the verifier Space (`SPACE_HOLD`): bootstrap
+  reads and wakes it and uploads nothing, so a rebuild cannot move the head
+  past the pilot's revision.
+- A step other than the pilot rule's needs a dated entry in
+  `finish_lineage.OVERRIDES`. Seed 1111 (HF job `6ab52a686b030d633f68e503`) is
+  registered at step 1,050, where its rule chose 350. `arm_check` joins a
+  pilot and its finish as one seed. Recorded in `training/EVAL2.md` §4
+  (amendment of 2026-09-25) and `training/PLAN.md` Step 4.
+- `CheckpointGate` rules are versioned. The default for new selections is now
+  `coverage-case-weighted/2`: case-weighted coverage correct-and-native, with
+  the same paired margin. `best.json` records the version. Its null admission
+  stays at the stated 10% in `test_gate_admission.py`, including on a split
+  with a two-case family where v1 over-admits, and on a fixture shaped like
+  seed 1111 it picks step 1,050 where v1 picks 350. `code_sha256` moves;
+  `verifier_sha256` does not.
+- `projection.py --finish` prices the job at 445.2 of 648 minutes (re-run
+  2026-09-25, at the ~65 draws/min of the pilot's base-dev).
+
+**2026-09-24** — Count an engine-mismatch draw in GPU evaluation and GRPO instead of aborting the arm ([#126](https://github.com/kristerhedfors/lypning/pull/126))
+
+- The seed-1111 arm-A pilot (HF job `6ab52a686b030d633f68e503`, Actions
+  `36008052722`) completed SFT, then aborted in its base test arm on one
+  base-model draw that reached a `lypning-l` bug. That bug's fix is held while
+  the engine is frozen. Evaluation now scores such a draw as `engine-mismatch`,
+  reward 0, not correct and not native, and writes its witness to the stage's
+  private `engine-mismatches.jsonl` in (case, draw) order. The arm fails only
+  once such draws exceed 1% of its planned draws. The overlapped and serial
+  modes still write identical bytes.
+- GRPO scores such a completion 0 and counts it, with the same bound per run.
+  `summarize` reports `engine_mismatches` in every slice, zero included.
+- Every other block still aborts, and so does a native timeout after a correct
+  oracle (ledger row T4). The bound now lives in one module,
+  `pipeline/mismatch_policy.py`, which the Step 2 grade also reads. Recorded as
+  an amendment to `training/EVAL2.md` §4 and in `training/PLAN.md` Step 4.
+- `training_report` writes each arm's count over every draw, and the round
+  scripts print both counts on each `== report` line. An evaluation with no
+  private mismatch file counts nothing and aborts as before.
+- `code_sha256` moves. `verifier_sha256` does not, so prepared bundles still
+  load. Arm A seed 1111 is re-run under this rule; its saved adapters cannot be
+  carried over, because `split_eval2` refuses a changed `code_sha256`.
+
+**2026-09-24** — A free readout of any pilot job's SFT selection ([#125](https://github.com/kristerhedfors/lypning/pull/125))
+
+- `pilot-readout.yml` prints a job's selected SFT step, selection rule, every
+  observation and the base-dev and selected headline metrics, by named
+  aggregate keys only and through `public_view`.
+
+**2026-09-24** — Keep verifier pool hosts alive across SFT's training gaps ([#124](https://github.com/kristerhedfors/lypning/pull/124))
+
+- Both seed-1111 arm-A attempts (HF jobs `6ab4a05a52d0dbd7f1d8909d` and
+  `6ab4d66d6b030d633f68d8d7`) died in an SFT evaluation on sandbox 503s, the
+  second after 30 minutes of retries. The cause was not an outage: pool hosts
+  shut down after 600 s without a sandbox, SFT trains 25–40 minutes between
+  evaluations, and huggingface_hub 1.31.0 re-raises for a host it has already
+  used instead of replacing it. Hosts now idle out after 3 h, and
+  `train_verified.run` closes its verifier pool on every exit so they do not
+  bill that long after a stage. A pool rebuild was tried and withdrawn in review:
+  closing a pool under in-flight scorers is itself a way to lose a run.
+- A sandbox-server 4xx (`SandboxError.status_code`) is refused at once instead
+  of being retried for the whole budget.
+
 **2026-09-24** — Ride out a sandbox API outage; keep case ids out of `training-prepare`'s output ([#123](https://github.com/kristerhedfors/lypning/pull/123))
 
 - The seed-1111 arm-A pilot (HF job `6ab4a05a52d0dbd7f1d8909d`, Actions

@@ -77,6 +77,27 @@ PLAN = {"dev_cases": 306, "dev_draws": 16, "sft_steps": 1050, "eval_every": 350,
         "eval2_cases": 803, "eval2_draws": 16, "arms": 2, "eval_sequences": 256,
         "score_workers": 48, "grpo_steps": 0, "reuse_step0": 1}
 
+#: Before a finish job's first GPU stage (`round02_finish.sh`): deps, the
+#: pilot's engine, its two bundles and one adapter; no review, no preparation,
+#: no training. Stated, not measured, like `EVAL2_PREP_MINUTES`.
+FINISH_PREP_MINUTES = 10.0
+#: The seed-1111 finish (2026-09-25): the pilot's step 7f -- the 315-case test
+#: split at the 4 draws `round02_pilot.sh` runs it at (no --eval-draws, so
+#: `train_verified`'s default) -- and step 7g, the 803-case eval-2 bundle at
+#: 16, each for two arms (base and the SFT adapter). No SFT, no dev pass.
+FINISH_PLAN = {"test_cases": 315, "test_draws": 4, "eval2_cases": 803, "eval2_draws": 16,
+               "arms": 2, "eval_sequences": 256, "score_workers": 48}
+#: The end-to-end evaluation rate a finish is priced at: about 65 draws a
+#: minute, scoring included, read by the operator from base-dev of the pilot
+#: it finishes (HF job 6ab52a686b030d633f68e503, Actions 36008052722,
+#: 2026-09-24: 306 dev cases x 16 draws at 256 sequences a call). One stage of
+#: one job; a test call at 4 draws holds 64 prompts where a dev call held 16,
+#: so the rate is carried over, not re-measured.
+FINISH_DRAWS_PER_MINUTE = 65.0
+#: Load and download of the h200 hardware smoke (HF job 6ab4582d6b030d633f68c90e,
+#: 2026-09-24; `tests/test_hwsmoke.py` pins them): 8.6 s and 34.8 s.
+SMOKE_LOAD_SECONDS, SMOKE_DOWNLOAD_SECONDS = 8.6, 34.8
+
 #: The realistic reading's assumptions. STATED CONSTANTS, each from one read:
 #: the per-draw probability that a draw runs to max_new_tokens, seed 1111's
 #: base dev truncation rate 0.0016 (`reports/2026-09-21-codex-step0-aggregates.json`,
@@ -368,6 +389,55 @@ def project(batch_seconds, sft_seconds_per_step, load_minutes, download_minutes,
                            else "overlapped with the next call's generation")}
 
 
+def project_finish(batch_seconds, load_minutes, download_minutes, plan=None, *,
+                   score_worker_seconds=0.0, prep_minutes=FINISH_PREP_MINUTES,
+                   ceiling_minutes=JOB_CEILING_MINUTES, margin=DEFAULT_MARGIN, serial=False):
+    """Minutes per stage of one finish job (`round02_finish.sh`), and whether it fits.
+
+    Four GPU stages, each its own process and model load, as the job runs
+    them: base-test, sft-test, base-eval2, sft-eval2 (a trained adapter is not
+    policy-equivalent to base, so `--reuse-evaluation` copies nothing). With
+    `flat_rate` leave `score_worker_seconds` at 0: that rate includes scoring.
+    `break_even_draws_per_minute` is the flat rate at which the job would
+    exactly reach its budget, for reading a projection against a slower one.
+    """
+    plan = dict(FINISH_PLAN, **(plan or {}))
+    seq, workers = plan["eval_sequences"], plan["score_workers"]
+
+    def evaluation(cases, draws):
+        return evaluation_minutes(cases, draws, seq, batch_seconds, score_worker_seconds, workers,
+                                  serial=serial)
+    stages = [{"stage": "prep", "minutes": prep_minutes + download_minutes, "draws": 0}]
+    for split in ("test", "eval2"):
+        cases, draws = plan[split + "_cases"], plan[split + "_draws"]
+        for arm in ("base", "sft")[:plan["arms"]]:
+            stages.append({"stage": "%s-%s" % (arm, split), "minutes": load_minutes + evaluation(cases, draws),
+                           "draws": cases * draws})
+    for stage in stages:
+        stage["minutes"] = round(stage["minutes"], 1)
+    total = sum(s["minutes"] for s in stages)
+    budget = ceiling_minutes * (1 - margin)
+    draws = sum(s["draws"] for s in stages)
+    fixed = prep_minutes + download_minutes + load_minutes * (len(stages) - 1)
+    return {"stages": stages, "plan": plan, "draws": draws, "minutes": round(total, 1),
+            "ceiling_minutes": ceiling_minutes, "margin": margin, "budget_minutes": round(budget, 1),
+            "fits": total <= budget, "spare_minutes": round(budget - total, 1),
+            "break_even_draws_per_minute": (round(draws / (budget - fixed), 1)
+                                            if budget > fixed else None),
+            "load_minutes": round(load_minutes, 2), "download_minutes": round(download_minutes, 2),
+            "assumes": "prep %.0f min is a stated constant; four model loads; no evaluation reuse "
+                       "(the adapter is trained, not base-equivalent)" % prep_minutes}
+
+
+def finish_from_rate(draws_per_minute=FINISH_DRAWS_PER_MINUTE, load_seconds=SMOKE_LOAD_SECONDS,
+                     download_seconds=SMOKE_DOWNLOAD_SECONDS, plan=None, **kw):
+    """`project_finish` at a flat end-to-end rate, scoring included."""
+    got = project_finish(flat_rate(draws_per_minute), load_seconds / 60.0, download_seconds / 60.0,
+                         plan, **kw)
+    got["draws_per_minute"] = draws_per_minute
+    return got
+
+
 #: The three readings of one smoke. `measured`: the pilot-decoding calls and the
 #: max-length SFT rows. `upper`: every `generate` call lasts as long as the
 #: forced full-length 256 call (`generation_full_length`), because a call ends
@@ -455,9 +525,13 @@ def readings(report, plan=None, **kw):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    p.add_argument("--hwsmoke", required=True, help="hwsmoke.json written by training/hf/hwsmoke.py")
+    p.add_argument("--hwsmoke", help="hwsmoke.json written by training/hf/hwsmoke.py "
+                                     "(required but for --finish, where it only supplies load and download)")
     p.add_argument("--draws-per-minute", type=float,
-                   help="replace the generation measurement with a flat rate that includes scoring")
+                   help="replace the generation measurement with a flat rate that includes scoring; "
+                        "--finish defaults to %.0f" % FINISH_DRAWS_PER_MINUTE)
+    p.add_argument("--finish", action="store_true",
+                   help="project a finish job (round02_finish.sh): test and eval-2, two arms, at a flat rate")
     for key, value in PLAN.items():
         p.add_argument("--" + key.replace("_", "-"), type=int, default=value)
     p.add_argument("--margin", type=float, default=DEFAULT_MARGIN)
@@ -472,6 +546,24 @@ def main(argv=None):
                    help="price generate-then-score, as `train_verified --serial-scoring` runs "
                         "it and as the smoke itself projected; default: overlapped")
     args = p.parse_args(argv)
+    if args.finish:
+        timing = {}
+        if args.hwsmoke:
+            with open(args.hwsmoke, encoding="utf-8") as fh:
+                report = json.load(fh)
+            timing = {"load_seconds": report.get("load_seconds") or 0,
+                      "download_seconds": report.get("download_seconds") or 0}
+        plan = {key: getattr(args, key) for key in FINISH_PLAN if key in PLAN}
+        try:
+            got = finish_from_rate(args.draws_per_minute or FINISH_DRAWS_PER_MINUTE, plan=plan,
+                                   margin=args.margin, **timing)
+        except ValueError as exc:
+            print("projection: %s" % exc, file=sys.stderr)
+            return 1
+        print(json.dumps(got, indent=2))
+        return 0
+    if not args.hwsmoke:
+        p.error("--hwsmoke is required unless --finish")
     with open(args.hwsmoke, encoding="utf-8") as fh:
         report = json.load(fh)
     plan = {key: getattr(args, key) for key in PLAN}
