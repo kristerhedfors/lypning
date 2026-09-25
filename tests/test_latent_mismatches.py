@@ -478,3 +478,27 @@ def test_sys_platform_is_the_hosts(engine: str, binary: Path) -> None:
         pytest.skip("sys.platform refuses on %s" % sys.platform)
     got = _run([str(binary)], "import sys\nprint(sys.platform)")
     assert (got.stdout, got.returncode) == (sys.platform + "\n", 0), got.stderr
+
+
+#: Annotations are evaluated and stored at module level before 3.14 and lazy
+#: from 3.14 (PEP 649). An engine built against a reference before 3.14
+#: refuses these; one built against 3.14 answers them. Either way it never
+#: answers differently from the reference (py-89dc25c534dc, py-df146431ddfa,
+#: py-e91023747147 — CI's 3.11 leg of the 2026-09-25 harvest).
+ANNOTATIONS = [
+    "x: Undefined = 1\nprint(x)",
+    "x: int = 1\nprint(__annotations__)",
+    "print(__annotations__)",
+    "def f():\n    y: Undefined = 1\n    return y\nprint(f())",
+]
+
+
+@pytest.mark.parametrize("engine,binary", BUILT)
+@pytest.mark.parametrize("program", ANNOTATIONS, ids=range(len(ANNOTATIONS)))
+def test_annotations_are_the_references_or_refused(engine: str, binary: Path, program: str) -> None:
+    got = _run([str(binary)], program)
+    if got.returncode == engines.UNSUPPORTED_EXIT:
+        assert _refusal_problem(engine, got) is None, got.stderr
+        return
+    ref = _run([sys.executable], program)
+    assert (got.stdout, got.returncode) == (ref.stdout, ref.returncode), (program, got.stderr)

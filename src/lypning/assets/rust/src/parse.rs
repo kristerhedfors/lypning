@@ -921,6 +921,11 @@ impl Parser {
         if self.is_op(":") {
             // Annotated assignment: `x: int = 1`. The annotation itself is
             // parsed and dropped: a 3.14 reference evaluates none of them here.
+            // Before 3.14 one at module level is EVALUATED and stored, so
+            // `x: Undefined = 1` is a NameError there — refused.
+            if crate::err::REF_PY_MINOR < 14 && !self.scope.fun {
+                return Err(unsupported("annotation", "a module-level annotation before 3.14"));
+            }
             self.bump();
             self.expr()?;
             let value = if self.eat_op("=") { Some(self.value_list()?) } else { None };
@@ -1643,6 +1648,12 @@ impl Parser {
                     "False" => {
                         self.bump();
                         return Ok(Expr::False);
+                    }
+                    // Before 3.14 the module's annotations are a real dict the
+                    // program can read; from 3.14 (PEP 649) they are lazy. A
+                    // compile-time constant, so a 3.14 build carries none of it.
+                    "__annotations__" if crate::err::REF_PY_MINOR < 14 => {
+                        return Err(unsupported("annotation", "__annotations__ before 3.14"));
                     }
                     _ => {}
                 }
