@@ -117,25 +117,24 @@ a served `from __future__` head (held from the first statement), and
 when evaluated) — the points at which the core, running the same program,
 refuses. Those programs went to CPython before the capability existed. The
 spectrum router's own verdict, computed inside `lypning-l` before the first
-statement (`route.rs:hint_held`), decides the rest. When the CHAIN routed the
-program there (both dispatchers set `LYPNING_ROUTED=1` for a Rust rung,
-`route.rs:arm_hold`), the run is held from its first statement, so an error
-raised before the import runs, or under one that never runs, still refuses and
-the chain prints CPython's hint. Run directly (`lypning-l -c`, a pinned engine,
-the per-engine arm of `lypning conformance`) the run is only *armed*: output
-past 8 MiB is still held back, so a capability that runs later finds a run it
-can refuse, and until one runs the program is answered byte for byte as
-`lypning` answers it — as is any program the core routes to itself, whatever
-its comments, strings or variable names say (invariant 10,
+statement (`route.rs:hint_held`), only *arms* such a run (`route.rs:arm_hold`):
+output past 8 MiB is still held back, so a capability that runs later finds a
+run it can refuse, and until one runs the program is answered byte for byte as
+`lypning` answers it — directly or through either dispatcher, which set no
+variable in the program's environment — as is any program the core routes to
+itself, whatever its comments, strings or variable names say (invariant 10,
 `tests/test_hold_monotone.py`). No other `Did you mean` hint is written.
 
-Behind such a capability — any program the core routes past itself — a
-compile-time `SyntaxError` the parser lets through (a duplicate parameter,
-`break` outside a loop, `0777`, a bare `except:` before another clause, a
-second starred target) is decided before anything runs
-(`future.rs:past_the_core`): run directly it is CPython's `SyntaxError` (exit 1,
-empty stdout), and routed it refuses, so the chain prints CPython's own line. A
-program the core routes to itself keeps the core's parse.
+Every compile-time `SyntaxError` CPython raises that the parser used to let
+through — a duplicate parameter, `break` outside a loop, `0777`, a bare
+`except:` before another clause, a lone or second starred target, a bare or
+repeated `/`, a name assigned, used or a parameter before its `global`, a tab
+and space mix CPython calls a `TabError` — is the lexer's or parser's own
+`SyntaxError` in every variant (`parse.rs:parse`): exit 1 and empty stdout run
+directly, and routed to CPython as `syntax`, whose message the caller reads. A
+non-ASCII identifier or whitespace character refuses as `token` (CPython
+NFKC-folds identifiers and admits only XID characters; the tables are not
+carried), and so does any `__debug__` (`builtin`).
 
 The methods on the types that do exist are a larger surface with the same rule:
 a method CPython has and the engine lacks refuses as `<type>-method` or

@@ -188,7 +188,7 @@ fn execute_inner(src: &str, report_refusal: bool, kind: &mut String, detail: &mu
     // itself starts where the capability runs (`io::hold`), which for a
     // served `__future__` head is before the first statement.
     #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
-    route::arm_hold(&body, src, route::routed());
+    route::arm_hold(&body, src);
     let mut interp = eval::Interp::new();
     let r = interp.run(&body);
     finish(r, report_refusal, kind, detail)
@@ -595,13 +595,6 @@ fn exec_engine(
         }
     };
     let mut cmd = std::process::Command::new(&bin);
-    // The rung was ROUTED here (`route::arm_hold`); CPython, and anything it
-    // spawns, is not told so.
-    if bin == engine_path_named(route::CPYTHON_NAME) {
-        cmd.env_remove(route::ROUTED_ENV);
-    } else {
-        cmd.env(route::ROUTED_ENV, "1");
-    }
     match is_file {
         Some(p) => {
             cmd.arg(p);

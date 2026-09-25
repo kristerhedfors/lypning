@@ -240,7 +240,8 @@ def test_a_stream_with_no_end_refuses_rather_than_hangs(lypning_bin, engine, pro
     r = engines.run(engine, program, timeout=20)
     assert not r.timed_out, "the read never came back"
     assert r.returncode == UNSUPPORTED_EXIT, r.stderr
-    assert "open-special" in r.stderr
+    # `os.rename` of anything but a regular file refuses before it reads.
+    assert ("rename" if "os.rename" in program else "open-special") in r.stderr
 
 
 def test_a_regular_file_is_untouched_by_the_bound(lypning_bin, tmp_path) -> None:

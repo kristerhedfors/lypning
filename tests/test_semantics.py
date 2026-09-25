@@ -735,10 +735,16 @@ POSSIBLE_ANYWAY = [
     ('print("$p ? `x`")', "$p ? `x`\n"),
     ("# $ ? `\nprint(1)", "1\n"),
     ("print(1 != 2)", "True\n"),
-    # Python 3 identifiers may be Unicode, so a non-ASCII byte is NOT an
-    # impossible one and must keep its refusal rather than joining the list.
-    ("\u03c0 = 1\nprint(\u03c0)", "1\n"),
 ]
+
+
+def test_a_non_ascii_identifier_refuses_rather_than_errs(lypning_bin):
+    # Python 3 identifiers may be Unicode, so a non-ASCII byte is NOT an
+    # impossible one: it refuses (the lexer carries no XID or NFKC tables) and
+    # CPython answers, rather than joining the SyntaxError list above.
+    r = engines.run(engines.LYPNING, "\u03c0 = 1\nprint(\u03c0)", binary=lypning_bin)
+    assert r.returncode == UNSUPPORTED_EXIT and r.stdout == "", r.stderr
+    assert ": unsupported: token: " in r.stderr
 
 
 @pytest.mark.parametrize("program", IMPOSSIBLE_BYTES)

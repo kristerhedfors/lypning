@@ -365,14 +365,12 @@ impl Interp {
 
     pub fn run(&mut self, body: &[Stmt]) -> R<()> {
         collect_fn_locals(body, &mut self.fn_locals);
-        let flow = self.exec_block(body);
         // An UNCAUGHT NameError or AttributeError in a run a capability the
         // core lacks has run in refuses at the exit path
-        // (`err::forgot_import`, behind `io::hold`), not here.
-        match flow? {
-            Flow::Normal => Ok(()),
-            _ => Err(LypningError::syntax(0, "'return'/'break' outside a block")),
-        }
+        // (`err::forgot_import`, behind `io::hold`), not here. No flow but
+        // Normal reaches the module: `return`, `break` and `continue` outside
+        // what takes them are the parser's SyntaxError.
+        self.exec_block(body).map(drop)
     }
 
     pub fn exec_block(&mut self, body: &[Stmt]) -> R<Flow> {

@@ -301,14 +301,6 @@ def _run(argv: list[str], program: str) -> subprocess.CompletedProcess:
                               cwd=d, timeout=120)
 
 
-def _routed(argv: list[str], program: str) -> subprocess.CompletedProcess:
-    """As the CHAIN runs a rung it routed to (`engines.ROUTED_ENV`)."""
-    env = dict(os.environ, **{engines.ROUTED_ENV: "1"})
-    with tempfile.TemporaryDirectory() as d:
-        return subprocess.run(argv + ["-c", program], capture_output=True, text=True,
-                              cwd=d, timeout=120, env=env)
-
-
 def _refusal_problem(got: subprocess.CompletedProcess) -> str | None:
     if got.returncode != engines.UNSUPPORTED_EXIT:
         return "exit %d, not %d" % (got.returncode, engines.UNSUPPORTED_EXIT)
@@ -582,9 +574,8 @@ REFUSED_3 = [
 ]
 
 
-#: An error before the import runs: the core answers it, run directly, and so
-#: does lypning-l; ROUTED, the chain went past the core and lypning-l refuses,
-#: so CPython prints its `Did you mean` (`route::arm_hold`).
+#: An error before the import runs: the core answers it, and so does
+#: lypning-l, however it was reached (`route::arm_hold`).
 BEFORE_THE_IMPORT_3 = [
     "x = [1]; x.apend(2)\nimport itertools",
     "print(nope)\nimport difflib",
@@ -593,9 +584,7 @@ BEFORE_THE_IMPORT_3 = [
 
 @needs_core
 @pytest.mark.parametrize("program", BEFORE_THE_IMPORT_3, ids=range(len(BEFORE_THE_IMPORT_3)))
-def test_an_error_before_the_import_refuses_only_when_routed(program: str) -> None:
-    problem = _refusal_problem(_routed([str(BINARY)], program))
-    assert problem is None, "routed, this program must refuse: %s\n  program: %r" % (problem, program)
+def test_an_error_before_the_import_is_the_cores(program: str) -> None:
     core, larger = _run([str(CORE)], program), _run([str(BINARY)], program)
     assert (larger.returncode, larger.stdout, larger.stderr) == (core.returncode, core.stdout, core.stderr)
 

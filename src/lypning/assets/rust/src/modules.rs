@@ -633,6 +633,18 @@ pub fn call_module_method(
         }
         ("os", "rename" | "replace") => {
             let (a, b) = (s(0)?, s(1)?);
+            // A directory or a symbolic link, at either end, is refused and
+            // not served. The kernel MOVES those — a whole tree, or the link
+            // itself — where this arm copies one file's bytes into the
+            // barrier, and a moved tree cannot be staged: every path under it
+            // changes spelling, and `rewind` would have to move it back. The
+            // commit barrier stays exactly what it is; CPython answers,
+            // `ENOTEMPTY` and `EISDIR` included.
+            for p in [&a, &b] {
+                if std::fs::symlink_metadata(p).is_ok_and(|m| !m.is_file()) {
+                    return Err(unsupported("rename", &format!("os.{name}() of '{p}', which is not a regular file")));
+                }
+            }
             let content = match mio::effective_content(&a)? {
                 Some(c) => c,
                 None => {

@@ -206,7 +206,9 @@ file is written twice, or half. So a lypning run is transactional
 
 - stdout and stderr accumulate in memory and are written once, at a successful
   exit;
-- file writes accumulate per path, and deletes and renames are staged;
+- file writes accumulate per path, and deletes and renames are staged (a
+  rename of a directory or a link, at either end, is `unsupported: rename`:
+  the kernel moves a tree the overlay cannot stage);
 - a directory is made for **real** and recorded in an undo log;
 - exit 90 undoes all of it, so the program is observably a no-op.
 

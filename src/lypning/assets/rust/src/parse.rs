@@ -22,8 +22,9 @@ pub struct Parser {
     /// What CPython's symbol table would know about annotations in the scope
     /// being parsed. See [`AnnScope`]; a def swaps its own in and back out.
     scope: AnnScope,
-    /// `for`/`while` bodies enclosing this point in the current function.
-    #[cfg(feature = "cap-future")]
+    /// `for`/`while` bodies enclosing this point in the current function:
+    /// `break` and `continue` outside one are CPython's compile-time
+    /// `SyntaxError`, and were run here until they were reached.
     loops: u32,
 }
 
@@ -41,10 +42,6 @@ struct AnnScope {
     /// is never bound by it, and a nested scope reading it must fail rather
     /// than find a global.
     bare: Vec<Rc<str>>,
-    /// The token this scope starts at — a def's `(` — so a `global` can ask
-    /// whether its name was spelled before it ([`Parser::lax`]).
-    #[cfg(feature = "cap-future")]
-    from: usize,
 }
 
 /// The nesting a program is allowed, and it is a measurement rather than a
@@ -82,49 +79,43 @@ pub const MAX_PARSE_DEPTH: u32 = 64;
 /// gets its answer from CPython.
 pub const MAX_CHAIN_OPS: u32 = 1000;
 
-#[cfg(feature = "cap-future")]
-thread_local! {
-    static LAX: std::cell::Cell<Option<(&'static str, u32)>> = const { std::cell::Cell::new(None) };
-}
-
-/// Note the first construct the lexer or this parser ACCEPTS that CPython's
-/// compiler rejects with a `SyntaxError` before anything runs — a duplicate
-/// parameter, `break` outside a loop, `0777`, a bare `except:` before another
-/// clause — with its line. Only noted, and only where `cap-future` is built:
-/// `future.rs` answers it with CPython's `SyntaxError` for a program the core
-/// routes past itself (a `__future__` head, or any capability the core
-/// lacks), because every such program went to CPython before and got that
-/// answer. A program the core routes to itself keeps the core's parse, and
-/// the core's answer.
-#[cfg(feature = "cap-future")]
-pub fn note_lax(why: &'static str, line: u32) {
-    LAX.with(|l| {
-        if l.get().is_none() {
-            l.set(Some((why, line)));
-        }
-    });
-}
-
+/// Every compile-time `SyntaxError` CPython raises is one here too, raised
+/// by the lexer or this parser before anything runs — in every variant, so
+/// the core and its supersets agree by construction — and the router sends
+/// it to CPython as `syntax`, whose message the caller reads. A construct
+/// accepted here that CPython's compiler rejects is not lax: it RUNS, and
+/// answers a program CPython never starts (`def f(a, a)`, `0777`, `break` at
+/// module level, `*a = [1]`, a tab/space mix CPython calls a `TabError`).
 pub fn parse(src: &str) -> R<Vec<Stmt>> {
-    #[cfg(feature = "cap-future")]
-    LAX.with(|l| l.set(None));
     let mut p = Parser {
         t: tokenize(src)?,
         i: 0,
         depth: 0,
         chain_ops: 0,
         scope: AnnScope::default(),
-        #[cfg(feature = "cap-future")]
         loops: 0,
     };
+    // `__debug__` is a constant this engine has no value for, and CPython
+    // rejects every binding of it at compile time; either way the answer is
+    // the reference's, and before anything runs.
+    if p.t.iter().any(|t| matches!(&t.tok, Tok::Name(n) if n == "__debug__")) {
+        return Err(unsupported("builtin", "__debug__"));
+    }
     let body = p.module();
     // `from __future__ import …` is a compiler directive, decided over the
     // whole parse before anything runs; `future.rs` is the whole of it. It is
     // handed the RESULT, error and all, because `barry_as_FLUFL` changes the
     // grammar and must refuse whether or not this parser read what follows.
     #[cfg(feature = "cap-future")]
-    let body = crate::future::pass(body, &p.t, LAX.with(|l| l.take()), src);
-    body
+    let body = crate::future::pass(body, &p.t);
+    let _ = src;
+    let body = body?;
+    // After the pass, which clears the annotations a head defers: CPython's
+    // symbol table does not count those as uses either.
+    if let Some(g) = p.t.iter().find(|t| matches!(&t.tok, Tok::Name(n) if n == "global")) {
+        globals_in(&body, &[]).map_err(|m| LypningError::syntax(g.line, &m))?;
+    }
+    Ok(body)
 }
 
 /// Does a nested scope in these function-body tokens spell one of `bare`? A
@@ -174,24 +165,17 @@ fn bare_read_nested(toks: &[Token], bare: &[Rc<str>]) -> bool {
 }
 
 impl Parser {
-    /// Note a compile-time `SyntaxError` CPython raises that this parser
-    /// lets through; see the field.
-    #[cfg(feature = "cap-future")]
-    fn lax(&mut self, why: &'static str) {
-        note_lax(why, self.line());
+    /// A compile-time `SyntaxError`, at the current line.
+    fn reject(&self, why: &str) -> LypningError {
+        LypningError::syntax(self.line(), why)
     }
 
     /// `body` parsed as a loop body: `break` and `continue` are legal in it.
     fn loop_block(&mut self) -> R<Vec<Stmt>> {
-        #[cfg(feature = "cap-future")]
-        {
-            self.loops += 1;
-            let b = self.block();
-            self.loops -= 1;
-            b
-        }
-        #[cfg(not(feature = "cap-future"))]
-        self.block()
+        self.loops += 1;
+        let b = self.block();
+        self.loops -= 1;
+        b
     }
 
     fn module(&mut self) -> R<Vec<Stmt>> {
@@ -428,8 +412,6 @@ impl Parser {
         }
         if self.eat_kw("def") {
             let name = self.ident()?;
-            #[cfg(feature = "cap-future")]
-            let from = self.i;
             let mut params = self.params()?;
             if self.eat_op("->") {
                 // The return annotation evaluates AFTER the parameters', which
@@ -442,18 +424,12 @@ impl Parser {
                 &mut self.scope,
                 AnnScope {
                     fun: true,
-                    #[cfg(feature = "cap-future")]
-                    from,
                     ..AnnScope::default()
                 },
             );
-            #[cfg(feature = "cap-future")]
             let loops = std::mem::replace(&mut self.loops, 0);
             let body = self.block();
-            #[cfg(feature = "cap-future")]
-            {
-                self.loops = loops;
-            }
+            self.loops = loops;
             let body = body?;
             let inner = std::mem::replace(&mut self.scope, outer);
             // A bare `x: int` makes `x` local and leaves it unbound, so a
@@ -509,9 +485,8 @@ impl Parser {
             let body = self.block()?;
             let mut handlers = Vec::new();
             while self.is_kw("except") {
-                #[cfg(feature = "cap-future")]
                 if handlers.last().is_some_and(|h: &Handler| h.kinds.is_empty()) {
-                    self.lax("default 'except:' must be last");
+                    return Err(self.reject("default 'except:' must be last"));
                 }
                 self.bump();
                 if self.is_op("*") {
@@ -671,6 +646,17 @@ impl Parser {
                 return Err(LypningError::syntax(self.line(), "* argument may appear only once"));
             }
             if self.eat_op("/") {
+                // CPython's three, word for word; each was accepted and the
+                // marker ignored.
+                if p.names.is_empty() {
+                    return Err(self.reject("at least one argument must precede /"));
+                }
+                if p.posonly > 0 {
+                    return Err(self.reject("/ may appear only once"));
+                }
+                if p.star.is_some() {
+                    return Err(self.reject("/ must be ahead of *"));
+                }
                 // Positional-only marker. The names before it may not be given
                 // by keyword, which is `posonly`; before that field existed the
                 // marker was accepted and IGNORED, so `def f(x, /, y)` called
@@ -735,16 +721,13 @@ impl Parser {
                 break;
             }
         }
-        #[cfg(feature = "cap-future")]
-        {
-            let n = p.names.len();
-            if (0..n).any(|i| p.names[..i].contains(&p.names[i])) {
-                self.lax("duplicate argument in function definition");
-            }
-            let end = p.star.or(p.dstar).unwrap_or(n);
-            if (1..end).any(|j| p.defaults[j].is_none() && p.defaults[..j].iter().any(|d| d.is_some())) {
-                self.lax("parameter without a default follows parameter with a default");
-            }
+        let n = p.names.len();
+        if (0..n).any(|i| p.names[..i].contains(&p.names[i])) {
+            return Err(self.reject("duplicate argument in function definition"));
+        }
+        let end = p.star.or(p.dstar).unwrap_or(n);
+        if (1..end).any(|j| p.defaults[j].is_none() && p.defaults[j - 1].is_some()) {
+            return Err(self.reject("parameter without a default follows parameter with a default"));
         }
         Ok(p)
     }
@@ -774,39 +757,24 @@ impl Parser {
             return Ok(Stmt::Pass);
         }
         if self.eat_kw("break") {
-            #[cfg(feature = "cap-future")]
             if self.loops == 0 {
-                self.lax("'break' outside loop");
+                return Err(self.reject("'break' outside loop"));
             }
             return Ok(Stmt::Break);
         }
         if self.eat_kw("continue") {
-            #[cfg(feature = "cap-future")]
             if self.loops == 0 {
-                self.lax("'continue' not properly in loop");
+                return Err(self.reject("'continue' not properly in loop"));
             }
             return Ok(Stmt::Continue);
         }
         if self.is_kw("nonlocal") {
             return Err(unsupported("nonlocal", "nonlocal declaration"));
         }
-        #[cfg(feature = "cap-future")]
-        let at = self.i;
         if self.eat_kw("global") {
             let mut names = vec![self.ident()?];
             while self.eat_op(",") {
                 names.push(self.ident()?);
-            }
-            // A name spelled anywhere in the scope before its `global` — a
-            // parameter, an assignment, a use — is CPython's SyntaxError. A
-            // token match over-counts (an attribute, a nested scope), which
-            // costs a spawn and never an answer.
-            #[cfg(feature = "cap-future")]
-            if self.t[self.scope.from..at]
-                .iter()
-                .any(|t| matches!(&t.tok, Tok::Name(n) if names.iter().any(|m| m.as_ref() == n.as_str())))
-            {
-                self.lax("a name spelled before its global declaration");
             }
             if names.iter().any(|n| self.scope.annotated.contains(n)) {
                 return Err(annotated_global());
@@ -815,9 +783,8 @@ impl Parser {
             return Ok(Stmt::Global(names));
         }
         if self.eat_kw("return") {
-            #[cfg(feature = "cap-future")]
             if !self.scope.fun {
-                self.lax("'return' outside function");
+                return Err(self.reject("'return' outside function"));
             }
             if matches!(self.peek(), Tok::Newline | Tok::Eof) || self.is_op(";") {
                 return Ok(Stmt::Return(None));
@@ -920,6 +887,9 @@ impl Parser {
         ];
         for (op, b) in AUG {
             if self.is_op(op) {
+                if matches!(first, Expr::Tuple(_) | Expr::List(_) | Expr::Starred(_)) {
+                    return Err(self.reject("illegal expression for augmented assignment"));
+                }
                 self.bump();
                 let value = self.value_list()?;
                 return Ok(Stmt::AugAssign {
@@ -990,7 +960,7 @@ impl Parser {
                         }),
                     });
                 }
-                Expr::Tuple(v) if !paren && matches!(v[..], [Expr::Starred(_)]) => "invalid syntax",
+                Expr::Starred(_) if !paren => "invalid syntax",
                 Expr::Tuple(_) => "only single target (not tuple) can be annotated",
                 Expr::List(_) => "only single target (not list) can be annotated",
                 _ => "illegal target for annotation",
@@ -1065,9 +1035,9 @@ impl Parser {
                 break;
             }
         }
-        #[cfg(feature = "cap-future")]
-        if items.iter().filter(|t| matches!(t, Target::Star(_))).count() > 1 {
-            note_lax("multiple starred expressions in assignment", self.line());
+        let alone = items.len() == 1 && !saw_comma;
+        if let Some(m) = stars(items.iter().filter(|t| matches!(t, Target::Star(_))).count(), alone) {
+            return Err(self.reject(m));
         }
         Ok(if items.len() == 1 && !saw_comma {
             items.pop().unwrap()
@@ -1079,15 +1049,19 @@ impl Parser {
     fn target_from_expr(&self, e: Expr) -> R<Target> {
         Ok(match e {
             Expr::Name(name) => Target::Name(name),
-            Expr::Starred(inner) => Target::Star(Box::new(self.target_from_expr(*inner)?)),
+            // Only an element of a tuple or list target may be starred
+            // (below); `*a = [1]` alone is CPython's SyntaxError.
+            Expr::Starred(_) => return Err(self.reject(LONE_STAR)),
             Expr::Tuple(v) | Expr::List(v) => {
-                #[cfg(feature = "cap-future")]
-                if v.iter().filter(|x| matches!(x, Expr::Starred(_))).count() > 1 {
-                    note_lax("multiple starred expressions in assignment", self.line());
+                if let Some(m) = stars(v.iter().filter(|x| matches!(x, Expr::Starred(_))).count(), false) {
+                    return Err(self.reject(m));
                 }
                 let mut out = Vec::with_capacity(v.len());
                 for x in v {
-                    out.push(self.target_from_expr(x)?);
+                    out.push(match x {
+                        Expr::Starred(inner) => Target::Star(Box::new(self.target_from_expr(*inner)?)),
+                        x => self.target_from_expr(x)?,
+                    });
                 }
                 Target::Tuple(out)
             }
@@ -1119,8 +1093,13 @@ impl Parser {
         // left operand.
         if self.is_op("*") {
             self.bump();
-            let e = self.expr()?;
-            let mut items = vec![Expr::Starred(Box::new(e))];
+            let e = Expr::Starred(Box::new(self.expr()?));
+            // `*a` with no comma is not a tuple: `*a = [1]` is CPython's
+            // SyntaxError where `*a, = [1]` is an unpacking.
+            if !self.is_op(",") {
+                return Ok(e);
+            }
+            let mut items = vec![e];
             while self.eat_op(",") {
                 if matches!(self.peek(), Tok::Newline | Tok::Eof) || self.is_op("=") {
                     break;
@@ -1432,20 +1411,24 @@ impl Parser {
         let mut kwargs = Vec::new();
         let mut dstar = Vec::new();
         let mut dstar_at = Vec::new();
-        #[cfg(feature = "cap-future")]
         let mut bare_gen = false;
         loop {
             if self.is_op(")") {
                 break;
             }
-            #[cfg(feature = "cap-future")]
+            // CPython's order rules, decided before anything runs: nothing
+            // positional after `**`, no plain positional after a keyword.
             if !self.is_op("**") && !(matches!(self.peek(), Tok::Name(n) if !is_keyword(n))
                 && matches!(self.peek_at(1), Tok::Op("=")))
             {
                 if !dstar.is_empty() {
-                    self.lax("an argument after keyword argument unpacking");
+                    return Err(self.reject(if self.is_op("*") {
+                        "iterable argument unpacking follows keyword argument unpacking"
+                    } else {
+                        "positional argument follows keyword argument unpacking"
+                    }));
                 } else if !kwargs.is_empty() && !self.is_op("*") {
-                    self.lax("positional argument follows keyword argument");
+                    return Err(self.reject("positional argument follows keyword argument"));
                 }
             }
             if self.eat_op("**") {
@@ -1473,13 +1456,10 @@ impl Parser {
                 let e = self.expr()?;
                 // A bare generator argument: `sum(x for x in y)`
                 if self.is_kw("for") {
-                    #[cfg(feature = "cap-future")]
-                    {
-                        if !args.is_empty() || !kwargs.is_empty() || !dstar.is_empty() {
-                            self.lax("Generator expression must be parenthesized");
-                        }
-                        bare_gen = true;
+                    if !args.is_empty() || !kwargs.is_empty() || !dstar.is_empty() {
+                        return Err(self.reject(BARE_GEN));
                     }
+                    bare_gen = true;
                     let clauses = self.comp_clauses()?;
                     args.push(Expr::Comp {
                         kind: CompKind::Gen,
@@ -1494,9 +1474,8 @@ impl Parser {
             if !self.eat_op(",") {
                 break;
             }
-            #[cfg(feature = "cap-future")]
             if bare_gen {
-                self.lax("Generator expression must be parenthesized");
+                return Err(self.reject(BARE_GEN));
             }
         }
         self.expect_op(")")?;
@@ -1907,9 +1886,8 @@ fn parse_fstring(raw: &str, raw_prefix: bool) -> R<Vec<FPart>> {
                     lit.clear();
                 }
                 let (expr_src, conv, spec_src, next) = split_field(raw, i + 1)?;
-                #[cfg(feature = "cap-future")]
                 if conv.is_some_and(|c| !matches!(c, 's' | 'r' | 'a')) {
-                    note_lax("f-string: invalid conversion character", 0);
+                    return Err(LypningError::syntax(0, "f-string: invalid conversion character"));
                 }
                 i = next;
                 if expr_src.trim_end().ends_with('=') && !expr_src.trim_end().ends_with("==") {
@@ -1921,7 +1899,6 @@ fn parse_fstring(raw: &str, raw_prefix: bool) -> R<Vec<FPart>> {
                     depth: 0,
                     chain_ops: 0,
                     scope: AnnScope::default(),
-                    #[cfg(feature = "cap-future")]
                     loops: 0,
                 };
                 let e = p.expr_list()?;
@@ -2039,8 +2016,207 @@ fn split_field(raw: &str, start: usize) -> R<(String, Option<char>, Option<Strin
 /// splice for a tuple display — the parenthesized spelling already refuses —
 /// and reached `can't use starred expression here` at exit 1 instead. A
 /// target list keeps its star: this runs only on what is left as a value.
+const BARE_GEN: &str = "Generator expression must be parenthesized";
+
+/// A name's uses in one scope so far, as CPython's symbol table flags them.
+const PARAM: u8 = 1;
+const USE: u8 = 2;
+const LOCAL: u8 = 4;
+
+type Seen<'a> = Vec<(&'a str, u8)>;
+
+/// CPython's rule for `global` (`symtable.c`, `Global_kind`), over one scope's
+/// statements in source order: a name already a PARAMETER of the scope, USED
+/// in it, or ASSIGNED in it (a target, a `def`, `del`, `except … as`) is a
+/// compile-time `SyntaxError`. An import is not an assignment; a nested
+/// scope's own names (a lambda's or def's parameters and body, a
+/// comprehension past its first iterable) and keyword or attribute names are
+/// not the scope's at all. `Err` is CPython's message.
+fn globals_in(body: &[Stmt], params: &[Rc<str>]) -> Result<(), String> {
+    let mut seen: Seen = params.iter().map(|n| (&**n, PARAM)).collect();
+    g_stmts(body, &mut seen)
+}
+
+fn g_stmts<'a>(body: &'a [Stmt], s: &mut Seen<'a>) -> Result<(), String> {
+    body.iter().try_for_each(|st| g_stmt(st, s))
+}
+
+fn g_stmt<'a>(st: &'a Stmt, s: &mut Seen<'a>) -> Result<(), String> {
+    match st {
+        Stmt::Expr(e) | Stmt::Return(Some(e)) | Stmt::Raise { exc: Some(e) } => g_expr(e, s),
+        Stmt::Assign { targets, value } => {
+            targets.iter().for_each(|t| g_target(t, s));
+            g_expr(value, s);
+        }
+        Stmt::AugAssign { target, value, .. } => {
+            g_target(target, s);
+            g_expr(value, s);
+        }
+        Stmt::Assert { test, msg } => {
+            g_expr(test, s);
+            msg.iter().for_each(|m| g_expr(m, s));
+        }
+        Stmt::If { arms, els } => {
+            for (c, b) in arms {
+                g_expr(c, s);
+                g_stmts(b, s)?;
+            }
+            g_stmts(els, s)?;
+        }
+        Stmt::For { target, iter, body, els } => {
+            g_target(target, s);
+            g_expr(iter, s);
+            g_stmts(body, s)?;
+            g_stmts(els, s)?;
+        }
+        Stmt::While { cond, body, els } => {
+            g_expr(cond, s);
+            g_stmts(body, s)?;
+            g_stmts(els, s)?;
+        }
+        Stmt::Def { name, params, body } => {
+            s.push((name, LOCAL));
+            g_params(params, s);
+            globals_in(body, &params.names)?;
+        }
+        Stmt::Try { body, handlers, els, finally } => {
+            g_stmts(body, s)?;
+            for h in handlers {
+                for k in &h.kinds {
+                    s.push((k.split('.').next().unwrap_or(""), USE));
+                }
+                if let Some(n) = &h.name {
+                    s.push((n, LOCAL));
+                }
+                g_stmts(&h.body, s)?;
+            }
+            g_stmts(els, s)?;
+            g_stmts(finally, s)?;
+        }
+        Stmt::With { items, body } => {
+            for (e, t) in items {
+                g_expr(e, s);
+                t.iter().for_each(|t| g_target(t, s));
+            }
+            g_stmts(body, s)?;
+        }
+        Stmt::Del(ts) => ts.iter().for_each(|t| g_target(t, s)),
+        Stmt::Global(names) => {
+            for n in names {
+                let f = s.iter().filter(|(m, _)| *m == &**n).fold(0, |a, (_, f)| a | f);
+                let why = if f & PARAM != 0 {
+                    "is parameter and global"
+                } else if f & USE != 0 {
+                    "is used prior to global declaration"
+                } else if f & LOCAL != 0 {
+                    "is assigned to before global declaration"
+                } else {
+                    continue;
+                };
+                return Err(format!("name '{n}' {why}"));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// What a `def` or `lambda` evaluates in the ENCLOSING scope: its defaults,
+/// and (a `def`'s) annotations while the reference evaluates them there —
+/// before 3.14, and not under a head that deferred them (already cleared).
+fn g_params<'a>(p: &'a Params, s: &mut Seen<'a>) {
+    p.defaults.iter().flatten().for_each(|d| g_expr(d, s));
+    if crate::err::REF_PY_MINOR < 14 {
+        p.anns.iter().for_each(|a| g_expr(a, s));
+    }
+}
+
+fn g_target<'a>(t: &'a Target, s: &mut Seen<'a>) {
+    match t {
+        Target::Name(n) => s.push((n, LOCAL)),
+        Target::Tuple(v) => v.iter().for_each(|t| g_target(t, s)),
+        Target::Star(t) => g_target(t, s),
+        Target::Attr(e, _) => g_expr(e, s),
+        Target::Index(a, b) => {
+            g_expr(a, s);
+            g_expr(b, s);
+        }
+        Target::Slice { base, lo, hi } => {
+            g_expr(base, s);
+            lo.iter().chain(hi).for_each(|e| g_expr(e, s));
+        }
+    }
+}
+
+fn g_expr<'a>(e: &'a Expr, s: &mut Seen<'a>) {
+    fn each<'a>(v: &'a [Expr], s: &mut Seen<'a>) {
+        v.iter().for_each(|e| g_expr(e, s))
+    }
+    match e {
+        Expr::Name(n) => s.push((n, USE)),
+        Expr::Tuple(v) | Expr::List(v) | Expr::Set(v) | Expr::BoolAnd(v) | Expr::BoolOr(v) => each(v, s),
+        Expr::Dict(v) => v.iter().for_each(|(k, x)| {
+            g_expr(k, s);
+            g_expr(x, s);
+        }),
+        Expr::DictUnpack(v) => v.iter().for_each(|d| match d {
+            DictItem::Pair(k, x) => {
+                g_expr(k, s);
+                g_expr(x, s);
+            }
+            DictItem::Unpack(x) => g_expr(x, s),
+        }),
+        Expr::Bin(_, a, b) | Expr::Index(a, b) => {
+            g_expr(a, s);
+            g_expr(b, s);
+        }
+        Expr::Un(_, a) | Expr::Starred(a) | Expr::Attr(a, _) => g_expr(a, s),
+        Expr::Compare { first, rest } => {
+            g_expr(first, s);
+            rest.iter().for_each(|(_, x)| g_expr(x, s));
+        }
+        Expr::Cond { cond, then, els } => {
+            g_expr(cond, s);
+            g_expr(then, s);
+            g_expr(els, s);
+        }
+        Expr::Slice { base, lo, hi, step } => {
+            g_expr(base, s);
+            lo.iter().chain(hi).chain(step).for_each(|x| g_expr(x, s));
+        }
+        Expr::Call { func, args, kwargs, dstar, .. } => {
+            g_expr(func, s);
+            each(args, s);
+            kwargs.iter().for_each(|(_, x)| g_expr(x, s));
+            each(dstar, s);
+        }
+        // Only the first iterable is evaluated in this scope.
+        Expr::Comp { clauses, .. } => clauses.iter().take(1).for_each(|c| g_expr(&c.iter, s)),
+        Expr::FString(parts) => parts.iter().for_each(|p| {
+            if let FPart::Expr { expr, spec, .. } = p {
+                g_expr(expr, s);
+                spec.iter().for_each(|x| g_expr(x, s));
+            }
+        }),
+        Expr::Lambda { params, .. } => params.defaults.iter().flatten().for_each(|d| g_expr(d, s)),
+        _ => {}
+    }
+}
+
+/// CPython's two errors for a starred target: a second star in one tuple or
+/// list, and a star that is the whole target.
+fn stars(n: usize, alone: bool) -> Option<&'static str> {
+    match n {
+        0 => None,
+        1 => alone.then_some(LONE_STAR),
+        _ => Some("multiple starred expressions in assignment"),
+    }
+}
+
+const LONE_STAR: &str = "starred assignment target must be in a list or tuple";
+
 fn no_star(e: Expr) -> R<Expr> {
-    if matches!(&e, Expr::Tuple(v) if v.iter().any(|x| matches!(x, Expr::Starred(_)))) {
+    if matches!(&e, Expr::Starred(_)) || matches!(&e, Expr::Tuple(v) if v.iter().any(|x| matches!(x, Expr::Starred(_)))) {
         return Err(unsupported("unpack", "* in a tuple display"));
     }
     Ok(e)

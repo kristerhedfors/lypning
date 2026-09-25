@@ -531,15 +531,6 @@ def absolute_env_value(value: str) -> str:
         for part in value.split(os.pathsep))
 
 
-#: Set to ``1`` in the environment of a Rust rung the chain ROUTED to, by both
-#: dispatchers (:func:`dispatch`, ``main.rs::exec_engine``; the name is
-#: ``route::ROUTED_ENV``). ``lypning-l`` then holds a program only a capability
-#: admits from its first statement, so its uncaught error still refuses and
-#: the chain prints CPython's ``Did you mean``; run directly it answers what
-#: the core answers until the capability runs (``route::arm_hold``).
-ROUTED_ENV = "LYPNING_ROUTED"
-
-
 def child_env(env: dict[str, str] | None = None) -> dict[str, str]:
     """The environment every child of this package runs under. Built in ONE place.
 
@@ -556,9 +547,6 @@ def child_env(env: dict[str, str] | None = None) -> dict[str, str]:
     """
     full = dict(os.environ)
     full["LYPNING_CAPTURE"] = "0"
-    # Only a dispatcher says a rung was routed (:data:`ROUTED_ENV`); a child
-    # inherits no such claim from whatever ran this process.
-    full.pop(ROUTED_ENV, None)
     if env:
         full.update(env)
     for name in PATH_LIKE_ENV:
@@ -1051,9 +1039,8 @@ def dispatch(
         engine, remaining = remaining[0], remaining[1:]
         if find(engine) is None:
             continue
-        rung_env = env if engine == CPYTHON else {**(env or {}), ROUTED_ENV: "1"}
         res = run(engine, program, argv_tail=argv_tail, stdin=stdin, cwd=cwd,
-                  timeout=timeout, env=rung_env)
+                  timeout=timeout, env=env)
         last = res
         if not res.refused:
             return Dispatch(res, r, attempts)

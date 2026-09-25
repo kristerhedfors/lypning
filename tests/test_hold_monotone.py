@@ -22,7 +22,9 @@ each must come out of `lypning -c` and `lypning-l -c` byte for byte the same.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -104,12 +106,27 @@ ARMED = [
     "try:\n    print(1)\nexcept binascii.Error:\n    pass",
     "time = 1\ntry:\n    print(1)\nexcept time.error:\n    pass",
     "try:\n    print(1)\nexcept ValueError:\n    pass\nexcept (glob.X, time.Y):\n    pass",
+    # The final verification of 979b527: an import that never runs, and a
+    # construct the parser let through or refused by the name before `global`.
+    "if 0:\n    import binascii\nprint(1)\nimport os\nglobal os",
+    "if 0:\n    import binascii\nprint(1)\nf = lambda x: 0\nglobal x",
+    "if 0:\n    import binascii\nprint([x for x in []])\nglobal x",
+    "if 0:\n    import binascii\nprint(1)\ndef g(x): pass\nglobal x",
+    "if 0:\n    import binascii\nprint(1)\nprint(dict(y=1))\nglobal y",
+    "if 0:\n    import binascii\nprint(0777)",
+    "def g():\n    import binascii\nprint(1)\nbreak",
+    "if 0:\n    import binascii\ndef f(a, a): pass\nprint(1)",
+    "if 0:\n    import binascii\nprint(1)\nprint(x=1, 2)",
+    "if 0:\n    import binascii\nx = 1\nglobal x\nprint(x)",
+    "if 0:\n    import binascii\nprint(1)\nreturn 1",
 ]
 
-#: What the parser lets through and CPython's compiler rejects. Behind a
-#: capability the core lacks, each went to CPython before, and lypning-l now
-#: answers CPython's answer: exit 1, nothing on stdout, a SyntaxError.
-LAX = [
+#: What CPython's compiler rejects before anything runs, which the parser used
+#: to let through (the core ran it; lypning-l, behind a capability, emulated
+#: CPython's SyntaxError). It is the PARSER's SyntaxError now, in every
+#: variant, with or without a head: exit 1, nothing on stdout, routed to
+#: CPython as `syntax`.
+REJECTED = [
     "def f(a, a): pass",
     "f = lambda a, a: 1",
     "def f(a, *a): pass",
@@ -118,20 +135,31 @@ LAX = [
     "def f():\n    x = 1\n    global x",
     "def g(x):\n    global x",
     "x = 2\ndef f():\n    print(x)\n    global x",
+    "x = 1\nglobal x",
     "print(1)\ncontinue",
     "print(1)\nbreak",
     "print(1)\nreturn 5",
     "print(0777)",
     "print(1__0)",
     "print(1_)",
+    "print(1_e5)",
     "print(1)\ntry:\n    pass\nexcept:\n    pass\nexcept ValueError:\n    pass",
     "print(sum(x for x in [1], 2))",
     "print(f'{1!x}')",
     "print(1)\na, *b, *c = [1, 2, 3]",
+    "print(1)\n*a = [1]\nprint(a)",
+    "for *x in []: pass",
+    "print([x for *x in []])",
+    "print(1)\ndef f(/, a): pass",
+    "print(1)\ndef f(a, /, /): pass",
+    "print(1)\nif 1:\n\tx = 1\n        y = 2",
+    "print(1)\na, b += 1",
 ]
 
-#: A prefix that makes each of those a program only a capability admits.
-LAX_HEADS = [
+#: The heads: none (the core's own program), a capability that runs, one that
+#: never runs, and a served `__future__` head.
+REJECTED_HEADS = [
+    "",
     "import statistics\n",
     "import itertools\n",
     "import random\nr = random.Random(1)\n",
@@ -139,6 +167,11 @@ LAX_HEADS = [
     "from __future__ import annotations\n",
     "if False:\n    import time\n",
 ]
+
+#: Characters CPython rejects in or as an identifier or whitespace, and one it
+#: accepts: all refuse (`token`), so CPython answers each.
+NON_ASCII = ["print(1)\n\u20ac = 1", "print(1)\n\xa0x = 1", "print(1)\nx\u200b = 1",
+             "print(1)\n\u0661 = 1", "print(1)\n\u3000x = 1", "\u03c0 = 1\nprint(\u03c0)"]
 
 
 def _spectrum(binary: Path) -> dict | None:
@@ -227,46 +260,92 @@ def test_a_capability_that_never_runs_holds_nothing(program: str) -> None:
         % (program, core.returncode, core.stderr[-200:], larger.returncode, larger.stderr[-200:]))
 
 
-LAX_PROGRAMS = [h + b for h in LAX_HEADS for b in LAX]
+REJECTED_PROGRAMS = [h + b for h in REJECTED_HEADS for b in REJECTED]
 
 
 @needs_both
-@pytest.mark.parametrize("program", LAX_PROGRAMS, ids=range(len(LAX_PROGRAMS)))
-def test_a_syntax_error_behind_a_capability_is_cpythons(program: str) -> None:
+@pytest.mark.parametrize("program", REJECTED_PROGRAMS, ids=range(len(REJECTED_PROGRAMS)))
+def test_a_compile_time_error_is_the_parsers_in_both(program: str) -> None:
     with pytest.raises(SyntaxError):
         compile(program, "<string>", "exec")
-    got = _run(LARGER, program)
-    assert (got.returncode, got.stdout) == (1, b""), (program, got.returncode, got.stdout, got.stderr)
-    assert got.stderr.decode().strip().splitlines()[-1].startswith("SyntaxError: "), got.stderr
-
-
-def test_no_child_inherits_the_routed_claim(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Only a dispatcher says a rung was routed; a battery run from inside a chain does not."""
-    monkeypatch.setenv(engines.ROUTED_ENV, "1")
-    assert engines.ROUTED_ENV not in engines.child_env()
-    assert engines.child_env({engines.ROUTED_ENV: "1"})[engines.ROUTED_ENV] == "1"
-
-
-#: Held only when ROUTED: the chain went past the core, and CPython's hint is
-#: its answer; run directly, lypning-l answered what the core answers above.
-ROUTED_HELD = "if False:\n    import time\nprnt(1)"
+    core, larger = _run(CORE, program), _run(LARGER, program)
+    assert (larger.returncode, larger.stdout, larger.stderr) == \
+        (core.returncode, core.stdout, core.stderr), program
+    assert (core.returncode, core.stdout) == (1, b""), (program, core.returncode, core.stdout, core.stderr)
+    assert core.stderr.decode().strip().splitlines()[-1].startswith("SyntaxError: "), core.stderr
+    for binary in (CORE, LARGER):
+        assert engines.route(program, binary=binary).kind == "syntax", program
 
 
 @needs_both
-def test_both_dispatchers_route_the_hold() -> None:
+@pytest.mark.parametrize("program", NON_ASCII, ids=range(len(NON_ASCII)))
+def test_a_non_ascii_identifier_refuses_in_both(program: str) -> None:
+    for binary in (CORE, LARGER):
+        got = _run(binary, program)
+        assert got.returncode == engines.UNSUPPORTED_EXIT and got.stdout == b"", got
+        assert b": unsupported: token: " in got.stderr
+
+
+#: No dispatcher adds, removes or overwrites a variable in what a program, or
+#: anything it spawns, sees — whichever rung answers.
+ENV_PROBES = [
+    "import itertools, os\nprint(os.environ.get('LYPNING_ROUTED'), os.getenv('LYPNING_ROUTED'))",
+    "import os\nprint(os.environ.get('LYPNING_ROUTED'))",
+    "import subprocess\nimport os\nprint(os.environ.get('LYPNING_ROUTED'))",
+]
+
+
+@needs_both
+@pytest.mark.parametrize("value", [None, "0", "1"])
+@pytest.mark.parametrize("program", ENV_PROBES, ids=range(len(ENV_PROBES)))
+def test_the_environment_is_the_callers(program: str, value: str | None) -> None:
     import os
-    import sys
-    direct = _run(LARGER, ROUTED_HELD)
-    assert direct.returncode == 1, direct.stderr
-    env = dict(os.environ, **{engines.ROUTED_ENV: "1"})
+    env = {k: v for k, v in os.environ.items() if k != "LYPNING_ROUTED"}
+    if value is not None:
+        env["LYPNING_ROUTED"] = value
+    want = "%s\n" % value if "getenv" not in program else "%s %s\n" % (value, value)
     with tempfile.TemporaryDirectory() as d:
-        routed = subprocess.run([str(LARGER), "-c", ROUTED_HELD], capture_output=True,
-                                cwd=d, timeout=120, env=env)
-    assert routed.returncode == engines.UNSUPPORTED_EXIT, routed.stderr
-    assert routed.stderr.decode().startswith("%s: unsupported: name-hint: " % engines.LYPNING_L)
-    if sys.version_info[:2] < (3, 10):
-        return
-    for d in (engines.dispatch(ROUTED_HELD, ledger=False).result,
-              engines.run(engines.LYPNING, ROUTED_HELD, binary=CORE, prefix=("run",))):
-        assert d.returncode == 1, d.stderr
-        assert "Did you mean" in d.stderr.strip().splitlines()[-1], d.stderr
+        chain = subprocess.run([str(CORE), "run", "-c", program], capture_output=True,
+                               text=True, cwd=d, timeout=120,
+                               env=dict(env, LYPNING_L_BIN=str(LARGER)))
+    assert (chain.returncode, chain.stdout) == (0, want), chain.stderr
+    saved = dict(os.environ)
+    try:
+        os.environ.clear()
+        os.environ.update(env)
+        got = engines.dispatch(program, ledger=False).result
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+    assert (got.returncode, got.stdout) == (0, want), got.stderr
+
+
+#: `os.rename`/`os.replace` of a directory, or onto one: the kernel moves a
+#: tree the barrier cannot stage, so every variant refuses and CPython answers.
+RENAME = [
+    "import os\nos.mkdir('pre')\nos.rename('pre', 'pre2')\nprint(os.path.isdir('pre2'))",
+    "import os\nos.mkdir('pre')\nos.replace('pre', 'pre3')\nprint(os.path.isdir('pre3'))",
+    "import itertools, os\nos.mkdir('a')\nos.mkdir('b')\nos.rename('a', 'b')\nprint(os.path.isdir('b'))",
+    "import os\nos.mkdir('a')\nos.mkdir('b')\nopen('b/f', 'w').close()\nos.replace('a', 'b')",
+    "import os\nopen('f', 'w').close()\nos.mkdir('d')\nos.rename('f', 'd')",
+    "import os\nos.mkdir('d')\nopen('f', 'w').close()\nos.rename('d', 'f')",
+]
+
+
+@needs_both
+@pytest.mark.parametrize("program", RENAME, ids=range(len(RENAME)))
+def test_renaming_a_directory_refuses_and_the_chain_answers(program: str) -> None:
+    for binary in (CORE, LARGER):
+        with tempfile.TemporaryDirectory() as d:
+            got = subprocess.run([str(binary), "-c", program], capture_output=True, cwd=d, timeout=120)
+            assert got.returncode == engines.UNSUPPORTED_EXIT and got.stdout == b"", got
+            if binary == LARGER or "itertools" not in program:
+                assert b": unsupported: rename: " in got.stderr
+            assert os.listdir(d) == [], "the refusal left the run's directories behind"
+    with tempfile.TemporaryDirectory() as d:
+        ref = subprocess.run([sys.executable, "-c", program], capture_output=True, cwd=d, timeout=120)
+    with tempfile.TemporaryDirectory() as d:
+        chain = subprocess.run([str(CORE), "run", "-c", program], capture_output=True, cwd=d,
+                               timeout=120, env=dict(os.environ, LYPNING_L_BIN=str(LARGER),
+                                                     LYPNING_CPYTHON=sys.executable))
+    assert (chain.returncode, chain.stdout) == (ref.returncode, ref.stdout), chain.stderr

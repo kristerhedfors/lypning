@@ -430,23 +430,11 @@ pub fn future_imported(toks: &[crate::lex::Token]) -> bool {
     })
 }
 
-/// The refusals a program with a `__future__` NAME in it gets from its TOKENS
-/// alone: `barry_as_FLUFL` (a grammar), and any non-ASCII identifier or
-/// f-string text, which CPython NFKC-folds and this lexer does not, so the
-/// name counts in [`future_head`] would miss such a spelling.
+/// The refusal a program with a `__future__` NAME in it gets from its TOKENS
+/// alone: `barry_as_FLUFL`, a grammar. (A non-ASCII identifier, which CPython
+/// NFKC-folds — `ｂarry_as_FLUFL` — never reaches a token: the lexer refuses it.)
 pub fn future_token_block(toks: &[crate::lex::Token]) -> Option<&'static str> {
-    use crate::lex::Tok;
-    if future_names(toks, "barry_as_FLUFL") > 0 {
-        return Some("from __future__ import barry_as_FLUFL");
-    }
-    if toks.iter().any(|t| match &t.tok {
-        Tok::Name(n) => !n.is_ascii(),
-        Tok::FStr { raw, .. } => !raw.is_ascii(),
-        _ => false,
-    }) {
-        return Some("a non-ASCII identifier, which CPython NFKC-normalizes");
-    }
-    None
+    (future_names(toks, "barry_as_FLUFL") > 0).then_some("from __future__ import barry_as_FLUFL")
 }
 
 /// A program's head of `from __future__` imports, as `(start, end, names)`
@@ -3781,36 +3769,17 @@ pub fn hint_held(body: &[Stmt], src: &str) -> bool {
         .any(|c| HINT_HELD_CAPS.contains(c))
 }
 
-/// Set to `1` by both dispatchers (`main.rs::exec_engine`,
-/// `engines.dispatch`) in the environment of every Rust rung they run, and
-/// cleared for CPython and for every other child (`engines.child_env`).
-pub const ROUTED_ENV: &str = "LYPNING_ROUTED";
-
-/// Was this process ROUTED here by a dispatcher ([`ROUTED_ENV`])?
-pub fn routed() -> bool {
-    std::env::var_os(ROUTED_ENV).is_some_and(|v| v == "1")
-}
-
 /// Before the first statement, for a run [`hint_held`] says the core routes
-/// past itself.
-///
-/// ROUTED — the chain reached this binary because the router did not pick the
-/// core — the run is HELD from its first statement (`io::hold`): the core is
-/// not in the picture, the program went to CPython before its capability
-/// existed, and CPython's `Did you mean` is the answer the chain must still
-/// print, even for an error raised before the import runs or under one that
-/// never runs.
-///
-/// Run DIRECTLY (`lypning-l -c`, a pinned engine, the per-engine arm of
-/// `lypning conformance`) it is only ARMED (`io::arm`), and held where the
-/// capability runs — a served `__future__` head at once, since the core
+/// past itself: the run is ARMED (`io::arm`), and HELD where the capability
+/// runs (`io::hold`) — a served `__future__` head at once, since the core
 /// refuses it at its first statement. Until then it answers exactly as the
-/// core, run the same way, answers (invariant 10).
+/// core answers (invariant 10). A routed run and a direct one are the same
+/// run: nothing in the environment says which it is.
 #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
-pub fn arm_hold(body: &[Stmt], src: &str, routed: bool) {
+pub fn arm_hold(body: &[Stmt], src: &str) {
     if hint_held(body, src) {
         crate::io::arm();
-        if routed || has_future_head(src) {
+        if has_future_head(src) {
             crate::io::hold();
         }
     }

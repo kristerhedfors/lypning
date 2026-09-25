@@ -236,7 +236,7 @@ fn run_guarded(req: &Request) -> Outcome {
         #[cfg(feature = "cap-base64")]
         crate::route::base64_static_check(&body, &req.source)?;
         #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
-        crate::route::arm_hold(&body, &req.source, false);
+        crate::route::arm_hold(&body, &req.source);
         interp.run(&body)
     }));
 
