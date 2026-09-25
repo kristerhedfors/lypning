@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-26** — Draw an oversize evaluation chunk in parts, so eval-2 fits the h200 (PR link pending)
+**2026-09-26** — Draw an oversize evaluation chunk in parts, so eval-2 fits the h200 ([#130](https://github.com/kristerhedfors/lypning/pull/130))
 
 - The seed-1111 finish (HF job 6ab6a20c6b030d633f691a95) completed both test
   arms and then ran out of CUDA memory in base-eval2 chunk 26 of 51. One
