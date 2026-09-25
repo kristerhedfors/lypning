@@ -14,6 +14,20 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-25** — lypning-l: hold where the capability runs, one parse for every variant, refuse the staged moves the disk cannot see ([#128](https://github.com/kristerhedfors/lypning/pull/128))
+
+- The walk only arms a run. The hold starts where a capability the core
+  lacks runs, and a run whose capability never runs is answered as the core
+  answers it. `LYPNING_ROUTED` is gone.
+- Every compile-time SyntaxError the parser let through is the parser's own
+  in every variant, including a starred tuple closed by `;`.
+- `os.rename`/`os.replace` refuse unless both ends are files this run wrote.
+  `os.rmdir` over a staged entry, `os.remove`/`Path.unlink` of a directory
+  and `os.mkdir` under a staged file refuse too. Three of these used to lose
+  a file at exit 0.
+- Tests compare against the interpreter running the suite; the 3.14.5 bytes
+  are checked only on 3.14.
+
 **2026-09-25** — Finish a pilot from its saved SFT adapter, and select new checkpoints case-weighted ([#127](https://github.com/kristerhedfors/lypning/pull/127))
 
 - A `finish` stage (`launch.py finish`, `round02.yml` `stage: finish` with
