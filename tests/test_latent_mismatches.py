@@ -223,6 +223,13 @@ ANSWERED = [
     ("print(float(b'1'), float(b' 2.5 '), float(b'-inf'), float(b'1_0'))", "1.0 2.5 -inf 10.0\n", 0),
     ("try:\n    float(b'\\xff')\nexcept ValueError as e:\n    print(e)",
      "could not convert string to float: b'\\xff'\n", 0),
+    # --- 2026-09-25 harvest: an in-place operator MUTATES a mutable container,
+    # so another name bound to it sees the change (py-8fa45dec068a's shape) ----
+    ("a = {}\nb = a\na |= {'k': 1}\nprint(b, a is b)", "{'k': 1} True\n", 0),
+    ("s = {1, 2, 3}\nt = s\ns -= {1}\ns &= {2, 3}\ns ^= {3, 4}\ns |= {9}\nprint(sorted(t), s is t)",
+     "[2, 4, 9] True\n", 0),
+    ("l = [1]\nm = l\nl *= 2\nprint(m, m is l)", "[1, 1] True\n", 0),
+    ("a = {1: 2}\nb = a\na |= a\ns = {1}\ns |= s\nprint(b, s)", "{1: 2} {1}\n", 0),
     # --- round 2: annotations are lazy on 3.14 -------------------------------
     ("def f(a: print('ann'), *b: print('b'), **k: Undefined) -> print('r'):\n    pass\nprint('ok')",
      "ok\n", 0),
@@ -302,6 +309,9 @@ REFUSED = [
     "try:\n    open(\"no/x: 'y\")\nexcept OSError as e:\n    print(e.filename)",
     # an f-string field that reuses the f-string's own quote: 3.12+ (PEP 701)
     "d = {'k': 1}\nprint(f\"{d[\"k\"]}\")",
+    # `dict |= iterable` is dict.update(); the binary `|` takes only a dict
+    "x = {}\nx |= [(1, 2)]\nprint(x)",
+    "x = {}\nx |= [1]",
     "a=[1,2]\nprint([*a,])",
     "[a, *b] = [1,2,3]\nprint(a, b)",
     # an exception whose `args` the flat (kind, message) value cannot carry

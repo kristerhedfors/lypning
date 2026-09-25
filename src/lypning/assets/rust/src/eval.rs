@@ -437,6 +437,15 @@ impl Interp {
                     self.assign(target, cur)?;
                     return Ok(Flow::Normal);
                 }
+                // `dict |= x` is `dict.update(x)`: any mapping, or an iterable
+                // of pairs, where the binary `|` takes only a dict.
+                // And `os.environ |=` changes the process environment, which a
+                // mapping swapped in place here would not.
+                if let (BinOp::BitOr, Value::Dict(d)) = (op, &cur) {
+                    if !matches!(rhs, Value::Dict(_)) || d.borrow().environ {
+                        return Err(unsupported("aug-assign", "dict |= of a non-dict, or of os.environ"));
+                    }
+                }
                 // CPython names the IN-PLACE operator in this TypeError —
                 // `unsupported operand type(s) for +=: 'module' and 'int'` —
                 // and the binary operator printed `+` without the `=`.
@@ -455,6 +464,26 @@ impl Interp {
                             _ => return Err(e),
                         }
                     }
+                };
+                // A mutable container's in-place operator MUTATES it — `dict
+                // |=`, the four set ones, `list *=` — so every other name bound
+                // to it sees the change. Rebinding to the new value left them
+                // holding the old one: `b = a; a |= {'k': 1}` printed `{}` for
+                // `b` at exit 0. The result moves into the original container.
+                let nv = match (&cur, nv) {
+                    (Value::Dict(d), Value::Dict(n)) if !Rc::ptr_eq(d, &n) => {
+                        std::mem::swap(&mut *d.borrow_mut(), &mut *n.borrow_mut());
+                        cur.clone()
+                    }
+                    (Value::Set(d), Value::Set(n)) if !Rc::ptr_eq(d, &n) => {
+                        std::mem::swap(&mut *d.borrow_mut(), &mut *n.borrow_mut());
+                        cur.clone()
+                    }
+                    (Value::List(d), Value::List(n)) if !Rc::ptr_eq(d, &n) => {
+                        std::mem::swap(&mut *d.borrow_mut(), &mut *n.borrow_mut());
+                        cur.clone()
+                    }
+                    (_, nv) => nv,
                 };
                 self.assign(target, nv)?;
             }
