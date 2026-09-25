@@ -626,6 +626,12 @@ pub fn call_module_method(
         }
         ("os", "rename" | "replace") => {
             let (a, b) = (s(0)?, s(1)?);
+            // After a commit nothing below may refuse; the kernel's rename is
+            // CPython's (`io::flushed_after_commit`).
+            if mio::flushed_after_commit()? {
+                std::fs::rename(&a, &b).map_err(|e| mio::os_error_on(&format!("'{a}' -> '{b}'"), &e))?;
+                return Ok(Value::None);
+            }
             // A directory or a symbolic link, at either end, is refused and
             // not served. The kernel MOVES those — a whole tree, or the link
             // itself — where this arm copies one file's bytes into the

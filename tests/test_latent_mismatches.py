@@ -286,6 +286,10 @@ REFUSED = [
     # starred branch of `expr_list` stopped only at a newline or `=`, so this
     # was a SyntaxError at exit 1
     "a=[1,2];t=*a,;print(t)",
+    # CPython's TabError and IndentationError: subclasses whose names are the
+    # last stderr line, which the engine's SyntaxError printed instead
+    "if 1:\n\tx=1\n        y=2\nprint(1)",
+    "if 1:\n    x=1\n  y=2\nprint(1)",
     "a=[1,2]\nprint([*a,])",
     "[a, *b] = [1,2,3]\nprint(a, b)",
     # an exception whose `args` the flat (kind, message) value cannot carry

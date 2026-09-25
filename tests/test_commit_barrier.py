@@ -454,3 +454,45 @@ def test_a_missing_source_names_both_paths(lypning_bin, tmp_path) -> None:
     assert r.returncode == 1
     assert r.stderr.strip().splitlines()[-1] == \
         "FileNotFoundError: [Errno 2] No such file or directory: 'nope' -> 'b'"
+
+
+#: The same arms once the run has COMMITTED (a foreign `os.rmdir`). A refusal
+#: there cannot reach CPython — it would be exit 1, `cannot be routed onward` —
+#: so the arm flushes what is staged and makes the real kernel call.
+AFTER_COMMIT = [
+    ("mkdir e; echo x > f", "import os\nos.rmdir('e')\nos.rename('f', 'g')\nprint('done')",
+     "rename-of-a-file-on-disk"),
+    ("mkdir d e", "import os\nos.rmdir('e')\nos.rename('d', 'd2')\nprint(os.path.isdir('d2'))",
+     "rename-of-a-directory"),
+    ("mkdir e", "import os\nos.rmdir('e')\nopen('a','w').write('y')\nos.rename('a', 'a')\n"
+     "print(open('a').read())", "rename-onto-itself"),
+    ("echo hi > a; mkdir e", "import os\nos.rmdir('e')\ntry:\n    os.rename('a', 'nodir/b')\n"
+     "except OSError as x:\n    print(x.errno, x)\nprint(os.path.exists('a'))", "rename-into-a-missing-dir"),
+    ("mkdir d e", "import os\nos.rmdir('e')\ntry:\n    os.remove('d')\nexcept OSError as x:\n"
+     "    print(x.errno, x)", "remove-of-a-directory"),
+    ("mkdir e", "import os\nos.rmdir('e')\nopen('a','w').write('x')\ntry:\n    os.mkdir('a/b')\n"
+     "except OSError as x:\n    print(x.errno, x)", "mkdir-under-a-staged-file"),
+    ("mkdir e", "import os\nos.rmdir('e')\nos.mkdir('d')\nopen('d/f','w').write('x')\ntry:\n"
+     "    os.rmdir('d')\nexcept OSError as x:\n    print(x.errno, x)", "rmdir-over-a-staged-file"),
+]
+
+
+@pytest.mark.parametrize("setup, program, _why", AFTER_COMMIT, ids=[w for _s, _p, w in AFTER_COMMIT])
+def test_after_a_commit_the_fs_arms_do_the_real_thing(lypning_bin, tmp_path, setup, program, _why) -> None:
+    engine, alone = _fresh(tmp_path, "engine"), _fresh(tmp_path, "alone")
+    _setup(engine, setup)
+    _setup(alone, setup)
+    got = engines.run(engines.LYPNING, program, cwd=engine)
+    ref = engines.run(engines.CPYTHON, program, cwd=alone)
+    assert (got.returncode, got.stdout) == (ref.returncode, ref.stdout), got.stderr
+    assert _modes(engine) == _modes(alone)
+
+
+def test_a_delete_the_disk_never_saw_does_not_block_rmdir(lypning_bin, tmp_path) -> None:
+    """A staged delete of a file that was only ever staged leaves the disk's
+    directory empty, so `os.rmdir` is served, not refused."""
+    program = ("import os\nos.mkdir('tmp')\nopen('tmp/f','w').write('z')\nos.remove('tmp/f')\n"
+               "os.rmdir('tmp')\nprint('done')")
+    r = engines.run(engines.LYPNING, program, cwd=_fresh(tmp_path, "engine"))
+    assert (r.returncode, r.stdout) == (0, "done\n"), r.stderr
+    assert _tree(tmp_path / "engine") == []

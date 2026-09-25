@@ -235,7 +235,7 @@ impl<'a> Lexer<'a> {
                 }
                 let (cur, cur_alt) = *self.indents.last().unwrap();
                 if cur != col {
-                    return Err(LypningError::syntax(self.line, "unindent does not match any outer indentation level"));
+                    return Err(unindent_error(self.line));
                 }
                 if cur_alt != alt {
                     return Err(tab_error(self.line));
@@ -690,10 +690,22 @@ fn push_char(out: &mut Vec<u8>, v: u32, line: u32) -> Result<(), LypningError> {
     }
 }
 
-/// CPython's `TabError`, which is a `SyntaxError` subclass: exit 1, before
-/// anything runs. Its own type name is the reference's to print.
+/// CPython raises `TabError` here, and for a dedent that matches no level
+/// `IndentationError` — subclasses of `SyntaxError` whose names are the last
+/// stderr line, which this engine's `SyntaxError` cannot spell. Refused, as
+/// [`Lexer::unexpected_indent`] is: the reference interpreter raises its own.
 fn tab_error(line: u32) -> LypningError {
-    LypningError::syntax(line, "inconsistent use of tabs and spaces in indentation")
+    unsupported(
+        "indent",
+        &format!("line {line} mixes tabs and spaces inconsistently; CPython's TabError is the reference's to raise"),
+    )
+}
+
+fn unindent_error(line: u32) -> LypningError {
+    unsupported(
+        "indent",
+        &format!("line {line} dedents to no outer level; CPython's IndentationError is the reference's to raise"),
+    )
 }
 
 /// A run of digits and underscores CPython rejects: an underscore that does

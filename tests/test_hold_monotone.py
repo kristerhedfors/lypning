@@ -152,7 +152,6 @@ REJECTED = [
     "print([x for *x in []])",
     "print(1)\ndef f(/, a): pass",
     "print(1)\ndef f(a, /, /): pass",
-    "print(1)\nif 1:\n\tx = 1\n        y = 2",
     "print(1)\na, b += 1",
 ]
 
@@ -285,6 +284,26 @@ def test_a_non_ascii_identifier_refuses_in_both(program: str) -> None:
         assert got.returncode == engines.UNSUPPORTED_EXIT and got.stdout == b"", got
         assert b": unsupported: token: " in got.stderr
 
+
+
+#: CPython's `TabError` and `IndentationError`: `SyntaxError` subclasses whose
+#: names are the last stderr line. The engine refuses them (`indent`) in every
+#: variant and head, so CPython names its own.
+INDENT = [h + b for h in REJECTED_HEADS for b in (
+    "print(1)\nif 1:\n\tx = 1\n        y = 2",
+    "print(1)\nif 1:\n    x = 1\n  y = 2",
+)]
+
+
+@needs_both
+@pytest.mark.parametrize("program", INDENT, ids=range(len(INDENT)))
+def test_an_indentation_error_refuses_in_both(program: str) -> None:
+    with pytest.raises(SyntaxError):
+        compile(program, "<string>", "exec")
+    for binary in (CORE, LARGER):
+        got = _run(binary, program)
+        assert got.returncode == engines.UNSUPPORTED_EXIT and got.stdout == b"", got
+        assert b": unsupported: indent: " in got.stderr
 
 #: No dispatcher adds, removes or overwrites a variable in what a program, or
 #: anything it spawns, sees — whichever rung answers.

@@ -128,10 +128,12 @@ itself, whatever its comments, strings or variable names say (invariant 10,
 Every compile-time `SyntaxError` CPython raises that the parser used to let
 through — a duplicate parameter, `break` outside a loop, `0777`, a bare
 `except:` before another clause, a lone or second starred target, a bare or
-repeated `/`, a name assigned, used or a parameter before its `global`, a tab
-and space mix CPython calls a `TabError` — is the lexer's or parser's own
-`SyntaxError` in every variant (`parse.rs:parse`): exit 1 and empty stdout run
-directly, and routed to CPython as `syntax`, whose message the caller reads. A
+repeated `/`, a name assigned, used or a parameter before its `global` — is
+the lexer's or parser's own `SyntaxError` in every variant (`parse.rs:parse`):
+exit 1 and empty stdout run directly, and routed to CPython as `syntax`, whose
+message the caller reads. A tab and space mix CPython calls a `TabError`, and a
+dedent to no outer level (`IndentationError`), refuse as `indent`: the last
+stderr line is the subclass's name, which a `SyntaxError` cannot spell. A
 non-ASCII identifier or whitespace character refuses as `token` (CPython
 NFKC-folds identifiers and admits only XID characters; the tables are not
 carried), and so does any `__debug__` (`builtin`).
