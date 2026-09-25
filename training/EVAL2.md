@@ -180,6 +180,74 @@ tree resumes a pilot from them, and `split_eval2` refuses an adapter whose
 `code_sha256` differs. An evaluation that completed under the old rule held no
 mismatch, so its rows are the same under either rule.
 
+### Amendment, 2026-09-25 — seed 1111 is evaluated at step 1,050, and new selections are case-weighted
+
+Seed 1111's arm-A pilot (HF job `6ab52a686b030d633f68e503`, Actions
+`36008052722`) selected SFT step 350 under the dev selector then in force. That
+selector, rule v1 (`coverage-family-macro/1`), ranks checkpoints on the
+coverage slice's family macro. Every family weighs the same in it, whatever
+its size, and the dev split has seven families, some of them small. On pooled
+dev evidence over base, correct-and-native was +1.9, +2.6 and +3.1pp at steps
+350, 700 and 1,050. Correctness moved −0.9, 0.0 and +0.6pp. These are the
+operator's reading of that job's `sft/best.json` and base-dev on 2026-09-25.
+The macro ranked the checkpoints on its small families, and the pooled
+evidence ranks them the other way.
+
+- **The override.** The operator chose, on 2026-09-25, to evaluate step 1,050
+  on the test split and on eval-2 at k = 16, with the adapter the pilot saved,
+  in a `finish` job (`training/hf/round02_finish.sh`). Seed 1111 is not
+  re-trained. This replaces the last sentences of the 2026-09-24 amendment
+  above ("re-run … cannot be carried over"). The override is recorded here
+  before any test or eval-2 draw of that adapter exists. It is also registered
+  in code, in `training/hf/finish_lineage.py` (`OVERRIDES`). A finish job
+  refuses any step other than the rule's unless it is registered there, so a
+  dispatch input cannot choose a checkpoint.
+- **What the finish records.** Its `job-manifest.json` carries
+  `selected_step` (1,050), `rule_selected_step` (350), `selection_override`
+  (reason, date and this amendment) and `finish_lineage`. `finish_lineage`
+  holds both `code_sha256` digests, the files that moved and every commit
+  between the pilot's code and the finish's. The finish runs newer evaluation
+  code on purpose: #126 counts an engine-mismatch draw. Every other identity
+  field must be the pilot's, or the job refuses before a weight load and names
+  the field. That covers the bundles and their digests, `verifier_sha256`, the
+  engine, the Space revision, the Qwen revision, the seeds, the draws, the
+  chunking and the density. `arm_check` reads the pilot and its finish as one
+  seed.
+- **How to read seed 1111.** Its result is override-selected. The step was
+  chosen by the operator from the dev evidence of all three checkpoints, not
+  by the rule, and its report says so. The finish also re-reads the pilot's
+  own dev evaluations under the corrected rule below (`reselection` in the
+  manifest), so a reader can see whether the override and the corrected rule
+  agree. No test or eval-2 draw of any SFT checkpoint existed when the choice
+  was made; the pilot died in its base test arm, before any adapter was
+  evaluated there.
+- **Seeds 2222 and 3333 use a corrected selector.** Rule v2
+  (`coverage-case-weighted/2`) is `training_metrics.SELECTION_RULE`, the
+  default for every new selection. It ranks the coverage slice's
+  case-weighted correct-and-native rate: the mean of per-case rates, every
+  case one unit. The margin is the same 1.2816 case-clustered standard errors,
+  here of the paired per-case delta (`paired_case_standard_error`). Gate A and
+  retention are unchanged. `best.json` records `rule.version`, and the pilot's
+  manifest records `sft_selection_rule`.
+- **Its null half.** In `training/tests/test_gate_admission.py`'s simulation
+  (4,000 trials, seed 7, measured 2026-09-25), v2 admitted a checkpoint that is
+  base 10.50% of the time at κ = 2 and 9.18% at κ = 20. v1 admitted 10.53% and
+  9.23% on the same trials. Both are inside that test's bound of 10% plus three
+  Monte Carlo standard errors. That split's families are near-equal in size.
+  Add one two-case coverage family, the shape this amendment is about, and v1
+  over-admits: 12.9% at κ = 2 and 15.3% at κ = 20, against 8.9% and 9.2% for
+  v2 (4,000 trials at each of seeds 11, 12 and 13, measured 2026-09-25; the
+  test asserts v2 inside the bound and v1 beyond it). In the same test, on a
+  fixture shaped like seed 1111 (seven families, one of them two cases,
+  k = 16), v1 selects 350 and v2 selects 1,050. The default covers GRPO's
+  checkpoint selection too: it reads the same dev split.
+- **Not chosen: the five-case floor on the dev macro.** It would drop the
+  smallest families from selection, and a five-case family would still weigh
+  the same as a 45-case one. The primary eval-2 metric is unchanged: the family
+  macro under the 2026-09-22 floor. The selector reads dev only.
+- **What v2 gives up.** A gain concentrated in one small family counts for
+  that family's share of the cases, not for one family's share of the macro.
+
 ## 5. Decoding contract
 
 Every eval-2 draw uses `pipeline.training_contract.decoding` verbatim:

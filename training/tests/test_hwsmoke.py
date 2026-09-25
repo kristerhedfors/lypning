@@ -446,6 +446,39 @@ def calls(source, owner):
             and isinstance(n.func.value, ast.Name) and n.func.value.id == owner]
 
 
+def test_a_finish_job_is_its_test_and_eval2_arms_counted_by_hand(tmp_path, capsys):
+    """The seed-1111 finish (2026-09-25): two test arms at the pilot's 4 draws
+    over 315 cases, two eval-2 arms at 16 over 803, four model loads, at the
+    ~65 draws/min base-dev of HF job 6ab52a686b030d633f68e503 ran at
+    (2026-09-24). The smoke's load and download stand in for the finish's own."""
+    assert (projection.SMOKE_LOAD_SECONDS, projection.SMOKE_DOWNLOAD_SECONDS) == (
+        SMOKE_6AB4582D["load_seconds"], SMOKE_6AB4582D["download_seconds"])
+    got = projection.finish_from_rate()
+    load_min, download_min = 8.6 / 60, 34.8 / 60
+    by_hand = (projection.FINISH_PREP_MINUTES + download_min
+               + 2 * (load_min + 315 * 4 / 65.0) + 2 * (load_min + 803 * 16 / 65.0))
+    assert got["minutes"] == pytest.approx(by_hand, abs=0.3)
+    assert [s["stage"] for s in got["stages"]] == ["prep", "base-test", "sft-test", "base-eval2", "sft-eval2"]
+    assert got["draws"] == 2 * 315 * 4 + 2 * 803 * 16 == 28216
+    assert got["fits"] and got["budget_minutes"] == 648.0
+    assert got["break_even_draws_per_minute"] == pytest.approx(
+        28216 / (648 - projection.FINISH_PREP_MINUTES - download_min - 4 * load_min), abs=0.1)
+    assert not projection.finish_from_rate(got["break_even_draws_per_minute"] - 1)["fits"]
+    # The finish is priced at the pilot's own test and eval-2 shape.
+    for key in ("test_cases", "test_draws", "eval2_cases", "eval2_draws", "arms"):
+        assert projection.FINISH_PLAN[key] == projection.PLAN[key], key
+    assert projection.main(["--finish"]) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["minutes"] == got["minutes"] and printed["draws_per_minute"] == 65.0
+    path = tmp_path / "hwsmoke.json"
+    path.write_text(json.dumps(SMOKE_6AB4582D))
+    assert projection.main(["--finish", "--hwsmoke", str(path), "--draws-per-minute", "40"]) == 0
+    assert json.loads(capsys.readouterr().out)["draws_per_minute"] == 40.0
+    with pytest.raises(SystemExit):
+        projection.main([])                       # the pilot projection still needs a smoke
+    capsys.readouterr()
+
+
 def test_the_smoke_loads_through_the_trainers_own_loaders_in_its_order():
     used = [c for c in calls(HWSMOKE, "tv") if c in LOADERS]
     assert used == list(LOADERS), used

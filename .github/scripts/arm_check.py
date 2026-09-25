@@ -62,6 +62,15 @@ the pair must agree on every field they share (`PAIR_FIELDS`), and the eval-2
 job is never counted as a seed of its own. A deferred pilot with no completed
 eval-2 job is `eval2-pending`, not evidence.
 
+A FINISHED PILOT IS ONE SEED TOO. A pilot that completed SFT and then died is
+finished by a second job from its saved adapter (`round02_finish.sh`), whose
+manifest names it (`finish_of`) and carries the pair fields `finish_lineage`
+verified. The pair is joined the same way: complete only through a completed
+finish job, `finish-mismatch` when a shared field disagrees, `finish-pending`
+while no finish has completed, and the finish job is never a seed of its own.
+The joined seed carries the step the finish evaluated, the step the pilot's
+rule selected and the dated override between them, and they are printed.
+
 `commit` is reported but not enforced. A commit that fixes a workflow does not
 change the arm and a commit that changes the engine does, and this file cannot
 tell those apart -- so it shows the difference and lets a reader judge, rather
@@ -82,8 +91,9 @@ ARM_FIELDS = ("bank_path", "split_seed", "space_revision", "qwen_revision", "ste
               "grpo_steps", "grpo_generations", "grpo_prompts", "sft_target_run", "sft_sha256", "sft_learning_rate",
               "grpo_learning_rate", "kernels", "eval_draws", "dev_eval_draws", "eval_every", "eval_sequences",
               "pool_sandboxes_per_host")
-#: Fields a split eval-2 job copies from its pilot job (`training/hf/split_eval2.py`
-#: verified them before a draw); the pair must agree on every one both carry.
+#: Fields a split eval-2 job or a finish job copies from its pilot job
+#: (`training/hf/split_eval2.py` and `finish_lineage.py` verified them before a
+#: draw); the pair must agree on every one both carry.
 PAIR_FIELDS = ("seed", "eval_draws", "eval_sequences", "pool_sandboxes_per_host",
                "space_revision", "qwen_revision", "bank_path", "split_seed")
 #: Shown beside the arm, never enforced; see the module docstring.
@@ -106,24 +116,46 @@ def arm_value(manifest, field):
 
 
 def joined(manifests):
-    """One manifest per seed job: a deferred pilot and its eval-2 job, as one.
+    """One manifest per seed job: a pilot and its eval-2 or finish job, as one.
 
-    An eval-2 job (`eval2_of`) is folded into the pilot it names and never
-    stands alone. A pilot that deferred its eval-2 is complete only through a
-    completed eval-2 job that agrees with it on `PAIR_FIELDS`; otherwise its
-    status says why (`eval2-pending`, `split-mismatch`), and neither is in `OK`.
-    Returns (manifests, orphans): eval-2 jobs whose pilot is not listed.
+    An eval-2 job (`eval2_of`) or a finish job (`finish_of`) is folded into the
+    pilot it names and never stands alone. A pilot that deferred its eval-2 is
+    complete only through a completed eval-2 job, and a pilot with a finish job
+    only through a completed finish job, that agrees with it on `PAIR_FIELDS`;
+    otherwise its status says why (`eval2-pending`, `split-mismatch`,
+    `finish-pending`, `finish-mismatch`), and none is in `OK`.
+    Returns (manifests, orphans): second jobs whose pilot is not listed.
     """
-    followers, pilots = {}, []
+    followers, finishers, pilots = {}, {}, []
     for m in manifests:
         if m.get("eval2_of"):
             followers.setdefault(m["eval2_of"], []).append(m)
+        elif m.get("finish_of"):
+            finishers.setdefault(m["finish_of"], []).append(m)
         else:
             pilots.append(m)
     known = {m.get("job") for m in pilots}
-    orphans = [m for job, ms in followers.items() if job not in known for m in ms]
+    orphans = [m for group in (followers, finishers) for job, ms in group.items()
+               if job not in known for m in ms]
     out = []
     for m in pilots:
+        if m.get("job") in finishers:
+            done = sorted((f for f in finishers[m.get("job")] if str(f.get("status", "")).lower() in OK),
+                          key=lambda f: str(f.get("job")))
+            if not done:
+                out.append(dict(m, status="finish-pending"))
+                continue
+            finish = done[0]
+            mismatch = sorted(k for k in PAIR_FIELDS if k in finish and finish[k] != m.get(k))
+            merged = dict(m, status=finish.get("status"), finish_job=finish.get("job"),
+                          finish_commit=finish.get("commit"),
+                          sft_selected_step=finish.get("selected_step"),
+                          rule_selected_step=finish.get("rule_selected_step"),
+                          selection_override=finish.get("selection_override"))
+            if mismatch:
+                merged.update(status="finish-mismatch", finish_mismatch=mismatch)
+            out.append(merged)
+            continue
         if not m.get("eval2_deferred"):
             out.append(m)
             continue
@@ -221,12 +253,15 @@ def main() -> int:
 
     manifests, orphans = joined(manifests)
     for m in orphans:
-        print("   eval-2 job %s names pilot %s, which is not listed" % (m.get("job"), m.get("eval2_of")))
+        print("   %s job %s names pilot %s, which is not listed"
+              % ("eval-2" if m.get("eval2_of") else "finish", m.get("job"),
+                 m.get("eval2_of") or m.get("finish_of")))
     for m in manifests:
-        if m.get("status") in ("eval2-pending", "split-mismatch"):
+        if m.get("status") in ("eval2-pending", "split-mismatch", "finish-pending", "finish-mismatch"):
+            moved = m.get("split_mismatch") or m.get("finish_mismatch")
             print("   not complete: seed %s %s is %s%s"
                   % (m.get("seed"), m.get("job"), m.get("status"),
-                     " on " + ", ".join(m["split_mismatch"]) if m.get("split_mismatch") else ""))
+                     " on " + ", ".join(moved) if moved else ""))
     done = [m for m in manifests if str(m.get("status", "")).lower() in OK]
     if args.bank:
         done = [m for m in done if m.get("bank_path") == args.bank]
@@ -246,6 +281,13 @@ def main() -> int:
         print("      %s" % "  ".join("%s=%s" % (f, arm_value(m, f)) for f in ARM_FIELDS[1:]))
         print("      commit=%s%s" % (str(m.get("commit"))[:12],
                                   "  eval2_job=%s" % m["eval2_job"] if m.get("eval2_job") else ""))
+        if m.get("finish_job"):
+            override = m.get("selection_override") or {}
+            print("      finish_job=%s commit=%s sft_step=%s rule_step=%s%s"
+                  % (m["finish_job"], str(m.get("finish_commit"))[:12], m.get("sft_selected_step"),
+                     m.get("rule_selected_step"),
+                     "  OVERRIDE %s (%s)" % (override.get("date"), override.get("amendment"))
+                     if override else ""))
 
     failures = []
     bad = differences(done)
