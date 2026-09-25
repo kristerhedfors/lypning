@@ -380,6 +380,13 @@ pub fn hkey(v: &Value) -> R<HKey> {
                 &format!("a {k} as a dict or set key, which CPython hashes by object identity"),
             ))
         }
+        // From 3.14 the message names where the value was used — `cannot use
+        // 'list' as a dict key (unhashable type: 'list')`, a set element, or
+        // bare for `hash()` — which this one site cannot tell apart. Refused
+        // there, so CPython words it; a compile-time constant before 3.14.
+        _ if crate::err::REF_PY_MINOR >= 14 => {
+            return Err(unsupported("exception", "unhashable-type wording"))
+        }
         other => {
             return Err(type_err(format!(
                 "unhashable type: '{}'",

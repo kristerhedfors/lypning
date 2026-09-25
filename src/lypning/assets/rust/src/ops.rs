@@ -2502,6 +2502,9 @@ fn percent_one(v: &Value, spec: &str, pct: &IntPrec) -> R<String> {
                 let as_str = format!("{}s", &spec[..spec.len() - 1]);
                 return fmt::format_value_pct(v, &as_str);
             }
+            // 3.14 words it `%c requires an int or a unicode character, not
+            // …`, with a tail naming what it got.
+            _ if crate::err::REF_PY_MINOR >= 14 => return Err(unsupported("exception", "%c wording")),
             _ => return Err(type_err("%c requires int or char")),
         }
     }
