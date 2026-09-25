@@ -501,7 +501,7 @@ impl Parser {
                     // unparenthesised `except A, B` (PEP 758) — whose answer is
                     // CPython's, so it refuses rather than dying as this
                     // parser's SyntaxError.
-                    let odd = |_: &Self| unsupported("except", "an except clause other than a name or a flat tuple of names");
+                    let odd = |_: &Self| unsupported("except", "clause");
                     if self.eat_op("(") {
                         loop {
                             if !matches!(self.peek(), Tok::Name(_)) {

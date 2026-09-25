@@ -443,7 +443,7 @@ impl Interp {
                 // mapping swapped in place here would not.
                 if let (BinOp::BitOr, Value::Dict(d)) = (op, &cur) {
                     if !matches!(rhs, Value::Dict(_)) || d.borrow().environ {
-                        return Err(unsupported("aug-assign", "dict |= of a non-dict, or of os.environ"));
+                        return Err(unsupported("aug-assign", "dict |="));
                     }
                 }
                 // CPython names the IN-PLACE operator in this TypeError —

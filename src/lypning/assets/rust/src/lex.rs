@@ -475,7 +475,7 @@ impl<'a> Lexer<'a> {
                     // from 3.12 (PEP 701) and a SyntaxError before. Which of
                     // the two is the reference's to say.
                     if fstring_field_open(text.as_bytes()) {
-                        return Err(unsupported("fstring", "a replacement field that reuses the f-string's own quote"));
+                        return Err(unsupported("fstring", "nested quote"));
                     }
                     self.push(Tok::FStr {
                         raw: text,

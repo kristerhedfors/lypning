@@ -1030,11 +1030,8 @@ impl Interp {
                 // path holding a quote or a second `: '` split at the wrong
                 // place.
                 "errno" | "strerror" | "filename" => {
-                    if !in_words(
-                        "OSError FileNotFoundError PermissionError FileExistsError IsADirectoryError NotADirectoryError",
-                        kind,
-                    ) {
-                        return Err(unsupported("exception", "an OS-error attribute of another exception"));
+                    if !crate::eval::exc_matches("OSError", kind) {
+                        return Err(unsupported("exception", name));
                     }
                     if let Some(rest) = msg.strip_prefix("[Errno ") {
                         if let Some(close) = rest.find(']') {
@@ -1045,7 +1042,7 @@ impl Interp {
                                 None => (tail, ""),
                             };
                             if name != "errno" && (file.contains('\'') || text.contains(": '")) {
-                                return Err(unsupported("exception", "an OS-error message this value cannot split"));
+                                return Err(unsupported("exception", name));
                             }
                             return Ok(match name {
                                 "errno" => ival(n),
@@ -1062,12 +1059,8 @@ impl Interp {
                 // `.add_note`. AttributeError would be the program's own exit 1
                 // where CPython may answer; any other name is CPython's
                 // AttributeError too, and stays one.
-                _ if in_words(
-                    "msg pos doc lineno colno name obj path name_from with_traceback add_note text \
-                     offset end_lineno end_offset print_file_and_line characters_written exceptions message",
-                    name,
-                ) => {
-                    return Err(unsupported("exception", "an attribute this exception value does not keep"))
+                _ if in_words("msg pos doc lineno colno name obj path with_traceback add_note text offset", name) => {
+                    return Err(unsupported("exception", name))
                 }
                 _ => {}
             }
