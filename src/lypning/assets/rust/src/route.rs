@@ -202,7 +202,7 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-base64", &["base64"], &[]),
     ("cap-bigint", &[], &["bigint", "int-div-precision"]),
-    ("cap-binascii", &["binascii"], &[]),
+    ("cap-binascii", &["binascii"], &["fromhex"]),
     ("cap-collections", &["collections"], &[]),
     ("cap-csv", &["csv"], &[]),
     ("cap-difflib", &["difflib"], &[]),
@@ -1503,7 +1503,9 @@ impl Requirements {
     /// [`known_method`] is compiled per variant. Every other kind a walk
     /// produces means the same thing in both, so `blocker` alone carries it.
     fn block_method(&mut self, name: &str) {
-        self.block("method", format!(".{name}()"));
+        // `bytes.fromhex` is `cap-binascii`'s, so its block names a kind that
+        // capability's row lists and the router sends the program there.
+        self.block(if name == "fromhex" { "fromhex" } else { "method" }, format!(".{name}()"));
         if self.method_stop.is_none() {
             self.method_stop = Some(name.to_string());
         }
@@ -2282,7 +2284,9 @@ fn cap_method(name: &str, imports: &[String]) -> bool {
 /// the example is the record of the defect, not a claim about today's tables.
 fn method_wide_stop(method: Option<String>, imports: &[String]) -> Option<(String, String)> {
     let name = method?;
-    if cap_method(&name, imports) {
+    // Its block names `cap-binascii`'s own kind, which routes it; no import
+    // has to vouch for the name.
+    if cap_method(&name, imports) || name == "fromhex" {
         return None;
     }
     Some(("method".to_string(), format!(".{name}()")))

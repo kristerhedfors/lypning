@@ -344,6 +344,10 @@ pub fn method_name(recv: &Value, name: &str) -> Option<&'static str> {
             return crate::collections::method_name(k, name);
         }
     }
+    #[cfg(feature = "cap-binascii")]
+    if name == "fromhex" && matches!(recv, Value::Bytes(_)) {
+        return Some("fromhex");
+    }
     let table: &[&str] = match recv {
         Value::Str(_) => STR_METHODS,
         Value::List(_) => LIST_METHODS,
@@ -557,6 +561,12 @@ pub fn call_method(
     args: &mut Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
+    // `bytes.fromhex` is a CLASSMETHOD: off the type or off an instance, the
+    // argument is the text.
+    #[cfg(feature = "cap-binascii")]
+    if name == "fromhex" && matches!(recv, Value::Bytes(_) | Value::Builtin("bytes")) {
+        return crate::binascii::fromhex(args, &kw);
+    }
     // An unbound method (`str.upper`) arrives with the TYPE as receiver; the
     // real receiver is the first argument, exactly as CPython does it.
     if let Value::Builtin(t) = recv {
@@ -2362,9 +2372,23 @@ fn bytes_method(
     check_arity("bytes", name, args, &kw)?;
     Ok(match name {
         "decode" => {
-            crate::builtins::check_decode_errors(
-                crate::args::bind(args, &kw, 1, "errors", name)?.as_ref(),
-            )?;
+            let errors = crate::args::bind(args, &kw, 1, "errors", name)?;
+            // UTF-8 with `errors='replace'`: each maximal ill-formed subpart
+            // becomes one U+FFFD, which is both CPython's decoder and
+            // `from_utf8_lossy`. Any other codec or handler still refuses.
+            #[cfg(feature = "cap-binascii")]
+            if let Some(Value::Str(e)) = &errors {
+                let enc = crate::args::bind(args, &kw, 0, "encoding", name)?;
+                let utf8 = match &enc {
+                    None => true,
+                    Some(Value::Str(n)) => matches!(n.as_ref(), "utf-8" | "utf8" | "UTF-8" | "UTF8"),
+                    _ => false,
+                };
+                if e.as_ref() == "replace" && utf8 {
+                    return Ok(Value::Str(String::from_utf8_lossy(b).into_owned().into()));
+                }
+            }
+            crate::builtins::check_decode_errors(errors.as_ref())?;
             match crate::args::bind(args, &kw, 0, "encoding", name)?.as_ref() {
                 // The encoding name is read by `iter::decode_named`, which
                 // `str(bytes, encoding)` reads it through as well.

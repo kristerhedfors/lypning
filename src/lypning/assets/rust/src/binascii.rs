@@ -238,3 +238,31 @@ mod tests {
         }
     }
 }
+
+/// `bytes.fromhex(s)` — on the type or an instance, a classmethod either way.
+///
+/// Pairs of hex digits, with ASCII whitespace (` \t\n\r\x0b\x0c`) skipped
+/// BETWEEN pairs, as CPython 3.7+ does. Everything CPython raises for — a
+/// digit that is not hex, a lone or split digit, whitespace inside a pair —
+/// refuses, and so does a non-`str` argument (3.14 also takes bytes-like).
+pub fn fromhex(args: &Args, kw: &[(Rc<str>, Value)]) -> R<Value> {
+    let s = match (args.len(), kw.is_empty(), args.first()) {
+        (1, true, Some(Value::Str(s))) => s.clone(),
+        _ => return Err(unsupported("binascii", "bytes.fromhex() of anything but one str")),
+    };
+    let bad = || unsupported("binascii", "bytes.fromhex() of text CPython rejects");
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len() / 2);
+    let mut i = 0;
+    while i < b.len() {
+        if matches!(b[i], b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c) {
+            i += 1;
+            continue;
+        }
+        let hi = (b[i] as char).to_digit(16).ok_or_else(bad)?;
+        let lo = b.get(i + 1).and_then(|c| (*c as char).to_digit(16)).ok_or_else(bad)?;
+        out.push((hi * 16 + lo) as u8);
+        i += 2;
+    }
+    Ok(Value::Bytes(Rc::new(out)))
+}
