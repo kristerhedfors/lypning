@@ -825,7 +825,7 @@ fn staged_delete_blocks(path: &str) -> R<()> {
         if !parent.as_os_str().is_empty()
             && PENDING.with(|p| p.borrow().files.contains_key(&stage_key(&parent.to_string_lossy())))
         {
-            return Err(unsupported("mkdir", "mkdir() under a file this run has not committed"));
+            return Err(unsupported("mkdir", "mkdir() under a staged file"));
         }
     }
     if is_staged_deleted(path) {
@@ -868,7 +868,7 @@ fn note_made(p: &std::path::Path) {
 /// reason [`ARMED_LIMIT`] gives: the core answers it.
 pub fn remove_dir(path: &str) -> R<()> {
     if staged_under(path) {
-        return Err(unsupported("rmdir", "os.rmdir() of a directory holding an entry this run has not committed"));
+        return Err(unsupported("rmdir", "os.rmdir() over a staged entry"));
     }
     let real = std::fs::canonicalize(path).ok();
     #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]

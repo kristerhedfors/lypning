@@ -677,7 +677,7 @@ pub fn call_module_method(
             // are answered here as CPython answers them, and a file on disk is
             // copied as it always was.
             if !mio::is_committed() && (on_disk(&a) || on_disk(&b) || same || !dir_ok) {
-                return Err(unsupported("rename", "os.rename() that is not a move between files this run wrote"));
+                return Err(unsupported("rename", "os.rename() of a file on disk"));
             }
             if !dir_ok {
                 return Err(if dir_there {
