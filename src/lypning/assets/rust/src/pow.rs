@@ -455,6 +455,17 @@ fn zeroinfnan(i: u64) -> bool {
 /// negative power is a `ZeroDivisionError`) sit ABOVE this, so nothing below
 /// has to know about them.
 pub fn pow(x: f64, y: f64) -> f64 {
+    // On macOS the reference's libm is Apple's, not glibc's, and its `pow`
+    // differs from the one below by an ulp on some inputs (`1.7976931348623157e308
+    // ** 0.5`, `(-4341.116666666667) ** 2`). CPython calls the host `pow`, and
+    // so does `f64::powf` there — the same function, so the same bits.
+    #[cfg(target_os = "macos")]
+    return x.powf(y);
+    #[cfg(not(target_os = "macos"))]
+    pow_glibc(x, y)
+}
+
+fn pow_glibc(x: f64, y: f64) -> f64 {
     let mut sign_bias: u32 = 0;
     let mut ix = x.to_bits();
     let iy = y.to_bits();
