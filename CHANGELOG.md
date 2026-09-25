@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-25** — Finish a pilot from its saved SFT adapter, and select new checkpoints case-weighted (#TBD)
+**2026-09-25** — Finish a pilot from its saved SFT adapter, and select new checkpoints case-weighted ([#127](https://github.com/kristerhedfors/lypning/pull/127))
 
 - A `finish` stage (`launch.py finish`, `round02.yml` `stage: finish` with
   `finish_of` and `sft_step`, h200 at 720m, billed only on `SUBMIT`) runs
