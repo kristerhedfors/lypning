@@ -669,6 +669,27 @@ impl Interp {
                             let kind = err_kind(&err);
                             let mut handled = None;
                             for h in handlers {
+                                // CPython validates the WHOLE clause before it
+                                // matches any of it: `except (int, ZeroDivision
+                                // Error)` is a TypeError, not a catch. This
+                                // engine matches clauses by name, so a clause
+                                // that is not an exception class it knows would
+                                // silently never match; refuse it instead.
+                                // A bare name is read through the scopes, not
+                                // off its spelling: `ValueError = len` makes
+                                // `except ValueError` a TypeError in CPython,
+                                // and matching by name caught it at exit 0.
+                                if let Some(k) = h.kinds.iter().find(|k| {
+                                    !crate::route::except_clause(k.rsplit_once('.'), k).0
+                                        || (!k.contains('.')
+                                            && !matches!(self.lookup(k),
+                                                Ok(Value::Builtin(n)) if name_eq(n, k)))
+                                }) {
+                                    return Err(unsupported(
+                                        "exception",
+                                        &format!("except {k}"),
+                                    ));
+                                }
                                 if h.kinds.is_empty()
                                     || h.kinds.iter().any(|k| exc_matches(k, kind))
                                 {
@@ -1263,6 +1284,7 @@ impl Interp {
                 star,
                 kwargs,
                 dstar,
+                dstar_at,
             } => {
                 // A method call is the commonest call an agent types — a
                 // `.foo()` is in most corpus programs — and routing one through
@@ -1318,14 +1340,40 @@ impl Interp {
                         a.push(v);
                     }
                 }
+                // Literal keywords and `**` mappings are taken in SOURCE
+                // order, which is CPython's: `f(x=1, **{'y': 2}, z=3)` sees
+                // `x, y, z`, and gathering every literal first printed
+                // `{'x': 1, 'z': 3, 'y': 2}` at exit 0 for a `**k` callee.
                 let mut kw: Vec<(Rc<str>, Value)> = Vec::with_capacity(kwargs.len());
-                for (n, x) in kwargs {
-                    kw.push((n.clone(), self.eval(x)?));
-                }
-                for d in dstar {
+                let mut next = 0;
+                for slot in dstar.iter().zip(dstar_at.iter()).map(Some).chain([None]) {
+                    let (d, upto) = match slot {
+                        Some((d, &at)) => (Some(d), at),
+                        None => (None, kwargs.len()),
+                    };
+                    while next < upto {
+                        let (n, x) = &kwargs[next];
+                        next += 1;
+                        let v = self.eval(x)?;
+                        // A literal after a `**` that already supplied it.
+                        if !dstar.is_empty() && kw.iter().any(|(k, _)| k == n) {
+                            return Err(crate::err::unsupported(
+                                "call",
+                                "keyword argument given twice through **",
+                            ));
+                        }
+                        kw.push((n.clone(), v));
+                    }
+                    let Some(d) = d else { break };
                     let v = self.eval(d)?;
+                    // CPython's TypeError names the callee's QUALNAME
+                    // (`__main__.f() argument after ** must be a mapping, not
+                    // NoneType`), and a Counter or defaultdict IS a mapping.
                     let Value::Dict(m) = &v else {
-                        return Err(type_err("argument after ** must be a mapping"));
+                        return Err(crate::err::unsupported(
+                            "call",
+                            &format!("argument after ** of type {}", type_name(&v)),
+                        ));
                     };
                     let pairs: Vec<(Value, Value)> =
                         m.borrow().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
@@ -1333,6 +1381,18 @@ impl Interp {
                         let Value::Str(ks) = k else {
                             return Err(type_err("keywords must be strings"));
                         };
+                        // `f(a=1, **{'a': 2})` is a TypeError in CPython whose
+                        // message names the callee (`sorted()`, `binascii.
+                        // b2a_base64()`, `A.m()`), and every callee here used
+                        // to take the LAST value and answer at exit 0. Naming
+                        // the callee right is per-callable work; handing the
+                        // program to CPython, which says it exactly, is not.
+                        if kw.iter().any(|(n, _)| *n == ks) {
+                            return Err(crate::err::unsupported(
+                                "call",
+                                "keyword argument given twice through **",
+                            ));
+                        }
                         kw.push((ks, v));
                     }
                 }
@@ -1979,7 +2039,7 @@ pub fn exc_matches(clause: &str, kind: &str) -> bool {
             "OSError" | "IOError" | "EnvironmentError" | "FileNotFoundError" | "PermissionError"
                 | "FileExistsError" | "IsADirectoryError" | "NotADirectoryError"
         ),
-        "ValueError" => kind == "UnicodeDecodeError" || kind == "JSONDecodeError",
+        "ValueError" => matches!(kind, "UnicodeDecodeError" | "UnicodeEncodeError" | "JSONDecodeError"),
         "NameError" => kind == "UnboundLocalError",
         _ => false,
     }

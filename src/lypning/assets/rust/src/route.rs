@@ -57,6 +57,7 @@ pub const SPECTRUM: &[Variant] = &[
         caps: &[
             "cap-base64",
             "cap-bigint",
+            "cap-binascii",
             "cap-collections",
             "cap-csv",
             "cap-difflib",
@@ -133,6 +134,12 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// to hand it to, and `chain_after` a runtime `base64:` refusal is `[cpython]`
 /// by construction, so listing the kind would cost a spawn to be told no twice.
 ///
+/// `cap-binascii` serves the `binascii` MODULE — six functions of it, and only
+/// the names [`MODULE_ATTRS`] lists — and answers no runtime kind, for
+/// `cap-base64`'s reason: its one runtime refusal (`binascii`) is a computed
+/// argument whose call CPython raises on or words, and there is no rung above
+/// lypning-l to carry the kind to.
+///
 /// `cap-hashlib` serves the `hashlib` MODULE — four CONSTRUCTORS, and only the
 /// names [`MODULE_ATTRS`] lists, for the same reason `csv` needs a row: adding
 /// the module to this table admits every hashlib program into `lypning-l`,
@@ -195,6 +202,7 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-base64", &["base64"], &[]),
     ("cap-bigint", &[], &["bigint", "int-div-precision"]),
+    ("cap-binascii", &["binascii"], &[]),
     ("cap-collections", &["collections"], &[]),
     ("cap-csv", &["csv"], &[]),
     ("cap-difflib", &["difflib"], &[]),
@@ -256,6 +264,11 @@ pub const CAPS: &[(&str, &[&str], &[&str])] = &[
 pub const MODULE_ATTRS: &[(&str, &[&str])] = &[
     ("__future__", FUTURE_SERVED),
     ("base64", BASE64_SERVED),
+    // Held to `binascii.rs` by its own
+    // `the_route_table_names_exactly_what_is_served`. `Error`, `crc32`,
+    // `crc_hqx`, the uu/qp codecs and `Incomplete` are blocked HERE, in the
+    // core's walk — `except binascii.Error` included.
+    ("binascii", BINASCII_SERVED),
     (
         "csv",
         &["DictReader", "QUOTE_ALL", "QUOTE_MINIMAL", "QUOTE_NONE", "QUOTE_NONNUMERIC", "reader"],
@@ -1146,6 +1159,11 @@ struct Requirements {
     /// a `time.sleep` below zero of them runs at most once per run.
     #[cfg(feature = "cap-time")]
     time_nest: u32,
+    /// `from binascii import hexlify [as h]` — the bound name of a binascii
+    /// FUNCTION, for the reason [`Self::base64_names`] exists. Its refusals
+    /// share the `base64_stop` slot: one static check, one substring guard.
+    #[cfg(feature = "cap-binascii")]
+    binascii_names: Vec<(String, String)>,
     /// `from glob import glob [as g]` — the bound name of a glob FUNCTION, so
     /// that a bare `g(...)` is seen as the call it is. Without it the order
     /// blocker below would miss the one spelling that hides the module name.
@@ -1287,6 +1305,10 @@ impl Requirements {
         if self.imports.contains("base64") {
             return true;
         }
+        #[cfg(feature = "cap-binascii")]
+        if self.imports.contains("binascii") {
+            return true;
+        }
         // `PatLit::HashCtor`: which constructor a name holds, which only the
         // variant that HAS the constructors has any use for.
         #[cfg(feature = "cap-hashlib")]
@@ -1362,6 +1384,12 @@ impl Requirements {
     /// that binds arrives here — an assignment, a `for` target, a `with … as`,
     /// a parameter, an `import … as`, an `except … as`, a `def`'s own name.
     fn bind_pattern(&mut self, name: &str, lit: Option<PatLit>) {
+        // `ValueError = len` turns a later `except ValueError` into CPython's
+        // TypeError; the runtime reads the name through the scopes and
+        // refuses, and this stops the route before the first statement.
+        if crate::builtins::EXCEPTIONS.contains(&name) {
+            self.stop("exception", format!("rebinding of {name}"));
+        }
         if !self.tracks_literals() {
             return;
         }
@@ -1552,6 +1580,19 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                             req.base64_names.push((bind.to_string(), n.to_string()));
                         } else {
                             req.stop_base64("module-attr", format!("base64.{n}"));
+                        }
+                    }
+                }
+                // `from binascii import hexlify [as h]`, exactly as `base64`
+                // above: a served name is a call this walk still decides, and
+                // an unserved one (`Error`, `crc32`) must stop the RUN too.
+                #[cfg(feature = "cap-binascii")]
+                "binascii" => {
+                    for (n, bind) in names {
+                        if BINASCII_SERVED.contains(&n.as_ref()) {
+                            req.binascii_names.push((bind.to_string(), n.to_string()));
+                        } else {
+                            req.stop_base64("module-attr", format!("binascii.{n}"));
                         }
                     }
                 }
@@ -1785,21 +1826,56 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                     // ask it for the leaf; fall back to the old rule when the
                     // prefix is not a module we serve, so this can only remove
                     // refusals it can justify.
-                    let ok = match k.rsplit_once('.') {
-                        Some((prefix, leaf)) => {
-                            match crate::modules::MODULES.iter().find(|m| **m == prefix) {
-                                Some(m) => crate::modules::get_attr(
-                                    &crate::value::Value::Module(m),
-                                    leaf,
-                                )
-                                .is_ok(),
-                                None => crate::builtins::is_exception_name(leaf),
-                            }
-                        }
-                        None => crate::builtins::is_exception_name(k),
-                    };
+                    // `import binascii as b` then `except b.crc32:` names the
+                    // same module, and reading the alias literally skipped
+                    // both the resolution below and the binascii escalation.
+                    let dotted = k.rsplit_once('.').map(|(prefix, leaf)| {
+                        let module = req
+                            .aliases
+                            .iter()
+                            .find(|(a, _)| a == prefix)
+                            .map_or(prefix, |(_, p)| p.as_str());
+                        (module.to_string(), leaf)
+                    });
+                    // SERVED is not enough: it must be a CLASS. `except
+                    // binascii.hexlify:` and `except math.sqrt:` resolved, so
+                    // the handler was admitted and silently never matched,
+                    // where CPython raises TypeError the moment an exception
+                    // reaches it.
+                    let (ok, every_rung) = except_clause(
+                        dotted.as_ref().map(|(m, l)| (m.as_str(), *l)),
+                        k,
+                    );
                     if !ok {
                         req.block("exception", format!("except {k}"));
+                        // `import csv` then `except int:` blocked on the
+                        // `module` line first, so the core routed the program
+                        // to lypning-l on the import and this blocker was
+                        // dropped: the handler ran as a non-match and printed
+                        // at exit 0 where CPython raises TypeError. When the
+                        // verdict cannot differ between rungs — a bare name,
+                        // or a module this binary already serves — it stops
+                        // the whole spectrum. A module only a larger rung
+                        // serves (`except csv.Error` from the core) is that
+                        // rung's to decide, and keeps the route it had.
+                        if every_rung {
+                            req.stop_only("exception", format!("except {k}"));
+                        }
+                    }
+                    // `except binascii.<anything>`: no binascii name is a class
+                    // any rung serves (`Error` is not served, and the rest are
+                    // functions), so the core must not route the program into
+                    // lypning-l on the strength of the import, where the
+                    // handler would refuse only once an exception reached it —
+                    // possibly past a write. The escalation is binascii's
+                    // alone: `except csv.Error` keeps the route it had before
+                    // this row existed.
+                    if let Some(("binascii", leaf)) =
+                        dotted.as_ref().map(|(m, l)| (m.as_str(), *l))
+                    {
+                        req.escalate("binascii", leaf);
+                        #[cfg(feature = "cap-binascii")]
+                        req.stop_base64("module-attr", format!("binascii.{leaf}"));
                     }
                 }
                 // `except E as p` binds `p`, and Python deletes it again at
@@ -2360,6 +2436,14 @@ const GLOB_ORDER: &str = "glob() order is filesystem-defined and not \
 pub const BASE64_SERVED: &[&str] =
     &["b64decode", "b64encode", "urlsafe_b64decode", "urlsafe_b64encode"];
 
+/// The `binascii` attributes lypning-l serves — the [`MODULE_ATTRS`] row,
+/// held to `binascii.rs` by `binascii::tests::the_route_table_names_exactly_what_is_served`.
+/// Sorted, for the reason [`BASE64_SERVED`] is. `Error` is deliberately absent:
+/// the class does not exist in this engine, so `except binascii.Error` is a
+/// static `module-attr` block in the CORE's walk.
+pub const BINASCII_SERVED: &[&str] =
+    &["a2b_base64", "a2b_hex", "b2a_base64", "b2a_hex", "hexlify", "unhexlify"];
+
 /// Which base64 keyword arguments are served, and the refusal line for the rest
 /// — one function, so the WALK and `base64::call` refuse with the same words.
 ///
@@ -2569,6 +2653,62 @@ fn base64_call_block(
     }
 }
 
+/// Which binascii FUNCTION this callee names, if any — one of
+/// [`BINASCII_SERVED`], through the module (or its alias) or a name bound by
+/// `from binascii import …`.
+#[cfg(feature = "cap-binascii")]
+fn binascii_func(func: &Expr, req: &Requirements) -> Option<&'static str> {
+    let n: &str = match func {
+        Expr::Attr(b, n)
+            if req.imports.contains("binascii")
+                && matches!(resolve_module(b, &req.aliases), Some(crate::value::Value::Module("binascii"))) =>
+        {
+            n.as_ref()
+        }
+        Expr::Name(n) => req
+            .binascii_names
+            .iter()
+            .find(|(bound, _)| bound == n.as_ref())
+            .map(|(_, f)| f.as_str())?,
+        _ => return None,
+    };
+    BINASCII_SERVED.iter().copied().find(|x| *x == n)
+}
+
+/// Every refusal a served `binascii` call can raise that the source spells,
+/// decided in the walk by [`crate::binascii::block`] — the SAME function the
+/// run asks, so the two cannot disagree. A keyword's truth value is read only
+/// from a literal; an argument's type and bytes through [`base64_arg`].
+#[cfg(feature = "cap-binascii")]
+fn binascii_call_block(
+    req: &mut Requirements,
+    func: &Expr,
+    args: &[Expr],
+    kwargs: &[(std::rc::Rc<str>, Expr)],
+    star: &[usize],
+    dstar: &[Expr],
+) {
+    let Some(name) = binascii_func(func, req) else { return };
+    let Some((pos, kws)) = flatten_call(args, kwargs, star, dstar) else { return };
+    let kws: Vec<(&str, Option<bool>)> = kws
+        .iter()
+        .map(|(k, v)| {
+            let t = match v {
+                Expr::True => Some(true),
+                Expr::False | Expr::None => Some(false),
+                Expr::Int(n) => n.small().map(|i| i != 0),
+                _ => None,
+            };
+            (*k, t)
+        })
+        .collect();
+    let arg = pos.first().and_then(|e| base64_arg(e, req));
+    let arg = arg.as_ref().map(|(t, d)| (*t, d.as_deref()));
+    if let Some((k, d)) = crate::binascii::block(name, pos.len(), &kws, arg) {
+        req.stop_base64(k, d);
+    }
+}
+
 /// The static base64 rules, asked of a program that is ABOUT TO RUN rather than
 /// of one being routed — and it is the same walk, so the two can never
 /// disagree.
@@ -2581,7 +2721,9 @@ fn base64_call_block(
 /// search.
 #[cfg(feature = "cap-base64")]
 pub fn base64_static_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
-    if !src.contains("base64") {
+    // `binascii` shares the slot; `a2b_base64` already says "base64", and
+    // `hexlify` does not.
+    if !src.contains("base64") && !(cfg!(feature = "cap-binascii") && src.contains("binascii")) {
         return Ok(());
     }
     let mut req = Requirements::default();
@@ -3116,7 +3258,7 @@ fn time_call_block(
                 let t = args.get(1).filter(|_| args.len() == 2);
                 let gm = match t {
                     Some(
-                        g @ Expr::Call { func, args: a, kwargs: k, star: s, dstar: d },
+                        g @ Expr::Call { func, args: a, kwargs: k, star: s, dstar: d, .. },
                     ) if a.is_empty()
                         && k.is_empty()
                         && s.is_empty()
@@ -3261,6 +3403,28 @@ fn glob_bless(
             Some(_) => req.glob_blessed.push(&args[0] as *const Expr),
             None => {}
         }
+    }
+}
+
+/// Is an `except` clause an exception CLASS this binary can match — and would
+/// every rung give the same answer? `module` is the dotted prefix, already
+/// resolved through `import … as` when the caller can; `k` is the clause as
+/// written. The walk above asks it statically, and `eval` asks it again when
+/// an exception actually reaches the clause, so a program run directly with
+/// `-c` refuses where CPython raises TypeError instead of skipping the handler.
+pub fn except_clause(dotted: Option<(&str, &str)>, k: &str) -> (bool, bool) {
+    match dotted {
+        Some((module, leaf)) => match crate::modules::MODULES.iter().find(|m| **m == module) {
+            Some(m) => (
+                matches!(
+                    crate::modules::get_attr(&crate::value::Value::Module(m), leaf),
+                    Ok(crate::value::Value::Builtin(n)) if crate::builtins::is_exception_name(n)
+                ),
+                true,
+            ),
+            None => (crate::builtins::is_exception_name(leaf), false),
+        },
+        None => (crate::builtins::is_exception_name(k), true),
     }
 }
 
@@ -3477,7 +3641,7 @@ fn bless_cap_shapes(e: &Expr, req: &mut Requirements) -> bool {
                 blessed = None;
             }
         }
-        Expr::Call { func, args, star, kwargs, dstar } => {
+        Expr::Call { func, args, star, kwargs, dstar, .. } => {
             let (arity, n) = match &**func {
                 Expr::Attr(_, n) => match n.as_ref() {
                     "Random" | "shuffle" => (1, n),
@@ -3716,6 +3880,11 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                     if m == "base64" {
                         req.stop_base64("module-attr", format!("{m}.{n}"));
                     }
+                    // `binascii.Error` / `binascii.crc32`, the same way.
+                    #[cfg(feature = "cap-binascii")]
+                    if m == "binascii" {
+                        req.stop_base64("module-attr", format!("{m}.{n}"));
+                    }
                 }
                 return;
             }
@@ -3788,6 +3957,7 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             kwargs,
             star,
             dstar,
+            ..
         } => {
             // Before the callee and the arguments are walked, so that a
             // program whose arguments hold a second blocker is still counted
@@ -3822,6 +3992,8 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             };
             #[cfg(not(feature = "cap-time"))]
             let time_call = false;
+            #[cfg(feature = "cap-binascii")]
+            binascii_call_block(req, func, args, kwargs, star, dstar);
             // Is THIS a glob call, and did its parent bless it? A blessed call
             // is served and its callee is not walked; an unblessed one is the
             // blocker, whatever it was going to be handed to. `escape` and

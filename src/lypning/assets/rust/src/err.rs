@@ -308,7 +308,7 @@ pub fn is_cpython_builtin(name: &str) -> bool {
 /// superset refuses. Each is in CPython's `sys.stdlib_module_names`
 /// (`tests/test_semantics.py` holds it to that, and to `MODULES`).
 pub const SERVED_MODULE_NAMES: &[&str] = &[
-    "base64", "collections", "csv", "difflib", "glob", "hashlib", "io", "itertools", "json",
+    "base64", "binascii", "collections", "csv", "difflib", "glob", "hashlib", "io", "itertools", "json",
     "math", "os", "pathlib", "posixpath", "random", "re", "statistics", "sys", "textwrap",
     "time",
 ];

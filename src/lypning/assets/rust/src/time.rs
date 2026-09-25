@@ -219,7 +219,7 @@ pub fn fused_gmtime(
         && star.is_empty()
         && kwargs.is_empty()
         && dstar.is_empty()
-        && matches!(&args[1], Expr::Call { func, args: a, star: s, kwargs: k, dstar: d }
+        && matches!(&args[1], Expr::Call { func, args: a, star: s, kwargs: k, dstar: d, .. }
             if a.is_empty() && s.is_empty() && k.is_empty() && d.is_empty()
                 && matches!(&**func, Expr::Attr(b, n) if n.as_ref() == "gmtime" && matches!(**b, Expr::Name(_))))
 }

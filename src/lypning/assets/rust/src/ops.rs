@@ -234,14 +234,19 @@ impl Interp {
                     "bytes % args (PEP 461 formatting)",
                 ))
             }
-            // `str + x`, `list + x`, `tuple + x`: the LEFT operand's
-            // `sq_concat` words the refusal, not the binary-op fallback
-            // (3.9.6 through 3.14.5, measured). `bytes + str` is its own
-            // sentence and keeps the generic arm's.
-            (Add, Value::Str(_) | Value::List(_) | Value::Tuple(_), r) => {
-                let l = type_name(a);
+            // bytes has no `nb_add`: CPython falls to its `sq_concat`, whose
+            // message is not the generic one. `b'a' + 'x'` is "can't concat
+            // str to bytes". No right operand here has an `__radd__`.
+            (Add, Value::Bytes(_), r) => {
+                return Err(type_err(format!("can't concat {} to bytes", type_name(r))))
+            }
+            // str, list and tuple have `sq_concat` too, and say so in their own
+            // words: `'a' + b'x'` is "can only concatenate str (not "bytes")
+            // to str".
+            (Add, l @ (Value::Str(_) | Value::List(_) | Value::Tuple(_)), r) => {
+                let t = type_name(l);
                 return Err(type_err(format!(
-                    "can only concatenate {l} (not \"{}\") to {l}",
+                    "can only concatenate {t} (not \"{}\") to {t}",
                     type_name(r)
                 )));
             }

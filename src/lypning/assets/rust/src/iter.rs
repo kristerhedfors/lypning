@@ -751,6 +751,18 @@ pub fn decode_named(b: &[u8], encoding: &str) -> R<std::rc::Rc<str>> {
     if !matches!(e.as_str(), "utf-8" | "utf8" | "ascii") {
         return Err(crate::err::unsupported("encoding", &format!("decode('{e}')")));
     }
+    // ASCII is not UTF-8: `b'\xc3\xa9'.decode('ascii')` answered 'é' at exit 0.
+    if e == "ascii" {
+        if let Some(i) = b.iter().position(|c| !c.is_ascii()) {
+            return Err(LypningError::exc(
+                "UnicodeDecodeError",
+                format!(
+                    "'ascii' codec can't decode byte 0x{:02x} in position {i}: ordinal not in range(128)",
+                    b[i]
+                ),
+            ));
+        }
+    }
     decode_utf8_rc(b)
 }
 
@@ -763,13 +775,28 @@ pub fn decode_utf8(b: &[u8]) -> R<String> {
 
 /// The one place the decode error is worded, so the two decoders above cannot
 /// report the same bytes differently.
+///
+/// CPython names the maximal invalid subpart — which is exactly the span
+/// `Utf8Error` reports — and one of three reasons: a byte that cannot start a
+/// sequence, a truncated sequence at the END of the input, or a started
+/// sequence whose next byte does not continue it. Every error here used to
+/// say "invalid start byte" at the first bad position, so `b'\xc3'.decode()`
+/// and `b'\xe2\x82'.decode()` printed the wrong last line.
 fn utf8_error(b: &[u8], e: &std::str::Utf8Error) -> LypningError {
-    LypningError::exc(
-        "UnicodeDecodeError",
+    let start = e.valid_up_to();
+    let first = b.get(start).copied().unwrap_or(0);
+    let (len, why) = match e.error_len() {
+        None => (b.len() - start, "unexpected end of data"),
+        Some(1) if matches!(first, 0x80..=0xc1 | 0xf5..=0xff) => (1, "invalid start byte"),
+        Some(n) => (n, "invalid continuation byte"),
+    };
+    let msg = if len == 1 {
+        format!("'utf-8' codec can't decode byte 0x{first:02x} in position {start}: {why}")
+    } else {
         format!(
-            "'utf-8' codec can't decode byte 0x{:02x} in position {}: invalid start byte",
-            b.get(e.valid_up_to()).copied().unwrap_or(0),
-            e.valid_up_to()
-        ),
-    )
+            "'utf-8' codec can't decode bytes in position {start}-{}: {why}",
+            start + len - 1
+        )
+    };
+    LypningError::exc("UnicodeDecodeError", msg)
 }

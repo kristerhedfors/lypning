@@ -504,6 +504,13 @@ impl<'a> Lexer<'a> {
     fn string(&mut self, raw: bool, bytes: bool, _f: bool) -> Result<(Vec<u8>, bool), LypningError> {
         let line = self.line;
         let body = self.raw_string_body()?;
+        // A compile-time error in CPython, raw or not: `b'٣'` never runs.
+        if bytes && !body.is_ascii() {
+            return Err(LypningError::syntax(
+                line,
+                "bytes can only contain ASCII literal characters",
+            ));
+        }
         let decoded = if raw {
             body.into_bytes()
         } else {

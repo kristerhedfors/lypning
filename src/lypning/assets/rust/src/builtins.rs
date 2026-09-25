@@ -188,6 +188,44 @@ pub const EXCEPTIONS: &[&str] = &[
 /// them, in the population that does — 1,173 programs a model wrote.
 pub const MODULE_EXCEPTIONS: &[&str] = &["JSONDecodeError"];
 
+/// The ZERO of every run of Unicode decimal digits (category Nd), read off
+/// CPython 3.14.5's `unicodedata` (Unicode 16.0.0) on 2026-09-25: 75 runs of
+/// exactly ten, `0`..`9` in order, which is every non-ASCII decimal there is.
+const DECIMAL_ZEROS: [u32; 75] = [
+    0x660, 0x6f0, 0x7c0, 0x966, 0x9e6, 0xa66, 0xae6, 0xb66, 0xbe6, 0xc66, 0xce6, 0xd66, 0xde6,
+    0xe50, 0xed0, 0xf20, 0x1040, 0x1090, 0x17e0, 0x1810, 0x1946, 0x19d0, 0x1a80, 0x1a90, 0x1b50,
+    0x1bb0, 0x1c40, 0x1c50, 0xa620, 0xa8d0, 0xa900, 0xa9d0, 0xa9f0, 0xaa50, 0xabf0, 0xff10,
+    0x104a0, 0x10d30, 0x10d40, 0x11066, 0x110f0, 0x11136, 0x111d0, 0x112f0, 0x11450, 0x114d0,
+    0x11650, 0x116c0, 0x116d0, 0x116da, 0x11730, 0x118e0, 0x11950, 0x11bf0, 0x11c50, 0x11d50,
+    0x11da0, 0x11f50, 0x16130, 0x16a60, 0x16ac0, 0x16b50, 0x16d70, 0x1ccf0, 0x1d7ce, 0x1d7d8,
+    0x1d7e2, 0x1d7ec, 0x1d7f6, 0x1e140, 0x1e2f0, 0x1e4f0, 0x1e5f1, 0x1e950, 0x1fbf0,
+];
+
+/// CPython's `_PyUnicode_TransformDecimalAndSpaceToASCII`, which `int()` and
+/// `float()` of a str read through: a Unicode decimal digit is its ASCII
+/// digit, Unicode whitespace is a space, and any other non-ASCII character
+/// is `?`, which no literal accepts. `int('٣')` is 3 in CPython and was a
+/// ValueError here at exit 1. Error messages still quote the ORIGINAL text.
+fn ascii_digits(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.is_ascii() {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    s.chars()
+        .map(|c| {
+            let u = c as u32;
+            if c.is_ascii() {
+                c
+            } else if c.is_whitespace() {
+                ' '
+            } else if let Some(z) = DECIMAL_ZEROS.iter().find(|&&z| u >= z && u < z + 10) {
+                (b'0' + (u - z) as u8) as char
+            } else {
+                '?'
+            }
+        })
+        .collect()
+}
+
 pub fn is_exception_name(n: &str) -> bool {
     EXCEPTIONS.iter().any(|e| name_eq(e, n)) || MODULE_EXCEPTIONS.iter().any(|e| name_eq(e, n))
 }
@@ -965,14 +1003,47 @@ pub fn call_builtin(
             if base != 0 && !(2..=36).contains(&base) {
                 return Err(value_err("int() base must be >= 2 and <= 36, or 0"));
             }
+            if explicit_base && args.first().is_none() {
+                return Err(type_err("int() missing string argument"));
+            }
             if explicit_base && !matches!(args.first(), Some(Value::Str(_)) | Some(Value::Bytes(_)))
             {
                 return Err(type_err("int() can't convert non-string with explicit base"));
             }
-            match args.first() {
+            // `int(b'ff', 16)` is 255. The bytes arm used to recurse with
+            // `Args::one(str)`, which DROPPED a positional base: `int(b'ff',
+            // 16)` raised a base-10 ValueError and `int(hexlify(b'\x01\x02'),
+            // 16)` printed 102 at exit 0 where CPython prints 258. A bytes
+            // literal is now read as the same text, with the caller's base,
+            // and only the message differs: CPython names the BYTES repr.
+            // Only ASCII is text to CPython here — it never decodes, so a
+            // non-ASCII byte (`b'\xd9\xa1'`, an Arabic-Indic digit in
+            // UTF-8) is an invalid literal, not a digit.
+            let text;
+            let first = match args.first() {
+                Some(Value::Bytes(b)) => {
+                    if !b.is_ascii() {
+                        return Err(value_err(format!(
+                            "invalid literal for int() with base {base}: {}",
+                            int_bytes_repr(b)
+                        )));
+                    }
+                    text = Value::Str(decode_utf8(b)?.into());
+                    Some(&text)
+                }
+                o => o,
+            };
+            let lit = |s: &str| -> R<String> {
+                match args.first() {
+                    Some(Value::Bytes(b)) => Ok(int_bytes_repr(b)),
+                    _ => int_literal_repr(s),
+                }
+            };
+            match first {
                 None => ival(0),
                 Some(Value::Str(s)) => {
-                    let t = s.trim();
+                    let norm = ascii_digits(s);
+                    let t = norm.trim();
                     let (t, neg) = match t.strip_prefix('-') {
                         Some(r) => (r, true),
                         None => (t.strip_prefix('+').unwrap_or(t), false),
@@ -1001,7 +1072,7 @@ pub fn call_builtin(
                             if digits.starts_with('0') && digits.chars().any(|c| c != '0') {
                                 return Err(value_err(format!(
                                     "invalid literal for int() with base 0: {}",
-                                    int_literal_repr(s)?
+                                    lit(s)?
                                 )));
                             }
                         }
@@ -1015,10 +1086,17 @@ pub fn call_builtin(
                     } else {
                         t
                     };
-                    if !underscores_are_between_digits(t2, base as u32, t2.len() < t.len()) {
+                    // ONE sign, and only before the prefix. The sign has been
+                    // stripped above, so a second one here is malformed — and
+                    // `from_str_radix` would have read it as the sign: `int(
+                    // '--12')` printed 12 and `int('0x-1', 16)` printed -1 at
+                    // exit 0, where CPython raises ValueError for both.
+                    if t2.starts_with(['+', '-'])
+                        || !underscores_are_between_digits(t2, base as u32, t2.len() < t.len())
+                    {
                         return Err(value_err(format!(
                             "invalid literal for int() with base {reported}: {}",
-                            int_literal_repr(s)?
+                            lit(s)?
                         )));
                     }
                     let cleaned: String = t2.chars().filter(|c| *c != '_').collect();
@@ -1099,7 +1177,7 @@ pub fn call_builtin(
                         Err(_) => {
                             return Err(value_err(format!(
                                 "invalid literal for int() with base {reported}: {}",
-                                int_literal_repr(s)?
+                                lit(s)?
                             )))
                         }
                     }
@@ -1112,10 +1190,6 @@ pub fn call_builtin(
                 #[cfg(feature = "cap-re")]
                 Some(v @ (Value::Pattern(_) | Value::Match(_))) => {
                     return Err(crate::re::guard_one(v, "int() of").unwrap_err())
-                }
-                Some(Value::Bytes(b)) => {
-                    let s = decode_utf8(b)?;
-                    return call_builtin(it, "int", &mut Args::one(Value::Str(s.into())), kw);
                 }
                 Some(other) => {
                     return Err(type_err(format!(
@@ -1134,7 +1208,9 @@ pub fn call_builtin(
             Some(v @ (Value::Pattern(_) | Value::Match(_))) => {
                 return Err(crate::re::guard_one(v, "float() of").unwrap_err())
             }
-            Some(Value::Str(s)) => match parse_float(s) {
+            // `float('１２')` is 12.0: CPython reads every Unicode decimal digit
+            // (and Unicode whitespace) as its ASCII counterpart first.
+            Some(Value::Str(s)) => match parse_float(&ascii_digits(s)) {
                 Some(v) => Value::Float(v),
                 None => {
                     return Err(value_err(format!(
@@ -2447,6 +2523,16 @@ pub fn call_builtin(
 /// literal where CPython gives 240, and 252 for a 210-x one where CPython still
 /// gives 240. Measured across n = 100, 200, 210, 220 and 5000 on this box's
 /// CPython. (py-b00b60452eac)
+/// The BYTES spelling of [`int_literal_repr`]: CPython cuts the buffer to 200
+/// bytes before taking its repr, then the `%.200R` cut applies on top.
+fn int_bytes_repr(b: &[u8]) -> String {
+    let r = fmt::bytes_repr(&b[..b.len().min(200)]);
+    match r.char_indices().nth(200) {
+        Some((cut, _)) => r[..cut].to_string(),
+        None => r,
+    }
+}
+
 fn int_literal_repr(s: &str) -> R<String> {
     let r = fmt::str_repr(s)?;
     Ok(match r.char_indices().nth(200) {

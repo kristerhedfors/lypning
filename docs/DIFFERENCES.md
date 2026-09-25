@@ -142,7 +142,7 @@ the user's own — is `unsupported: module: import <name>` on both engines, and
 
 ### 4.3 Modules served in part
 
-Nine modules on `lypning-l` are served as a named list of attributes rather than
+Ten modules on `lypning-l` are served as a named list of attributes rather than
 whole, so the walk in the *smaller* engine can decide statically whether the
 larger one would answer. Everything not listed is `unsupported: module-attr:
 <module>.<name>` — including under `from <module> import <name>`:
@@ -150,6 +150,7 @@ larger one would answer. Everything not listed is `unsupported: module-attr:
 | module | served | source |
 |---|---|---|
 | `base64` | `b64decode` `b64encode` `urlsafe_b64decode` `urlsafe_b64encode` | `route.rs:BASE64_SERVED` |
+| `binascii` | `a2b_base64` `a2b_hex` `b2a_base64` `b2a_hex` `hexlify` `unhexlify` | `route.rs:BINASCII_SERVED` — `Error` and `crc32` are CPython's |
 | `csv` | `DictReader` `QUOTE_ALL` `QUOTE_MINIMAL` `QUOTE_NONE` `QUOTE_NONNUMERIC` `reader` | `route.rs:MODULE_ATTRS` — the writers are CPython's |
 | `glob` | `escape` `glob` `has_magic` `iglob` | `route.rs:GLOB_SERVED` |
 | `hashlib` | `md5` `sha1` `sha256` `sha512` | `hashlib.rs:SERVED` — `new`, the SHA-3 family and the KDFs are CPython's |
@@ -166,7 +167,7 @@ rather than in the smaller engine's walk, which costs one spawn and no answer.
 
 ## 5. What `lypning-l` adds
 
-`lypning-l` is the same crate built with fifteen `cap-*` features
+`lypning-l` is the same crate built with sixteen `cap-*` features
 (`engines.VARIANT_CAPS`, `route.rs:CAPS`, and `lypning route --spectrum` from
 either binary):
 
@@ -174,6 +175,7 @@ either binary):
 |---|---|---|
 | `cap-base64` | the `base64` module, four functions of it | `base64.rs` |
 | `cap-bigint` | no module: integers past 64 bits, exact | `bigint.rs` |
+| `cap-binascii` | the `binascii` module, six functions of it | `binascii.rs` |
 | `cap-collections` | the `collections` module — `Counter`, `defaultdict` | `collections.rs` |
 | `cap-csv` | the `csv` module — the two readers | `csv.rs` |
 | `cap-difflib` | the `difflib` module — the import, and no name on it | `modules.rs:MODULES` |

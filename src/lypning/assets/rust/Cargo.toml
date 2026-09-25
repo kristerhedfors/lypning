@@ -50,7 +50,7 @@ variant-m = []
 # The 4 MB point. Names the smaller variant so cargo's feature union makes it a
 # superset by construction — the monotonicity the router assumes. It grows one
 # `cap-*` per step; `variant-m` is FROZEN and gains none of them.
-variant-l = ["variant-m", "cap-base64", "cap-bigint", "cap-collections", "cap-csv", "cap-difflib", "cap-future", "cap-glob", "cap-hashlib", "cap-itertools", "cap-pathlib", "cap-random", "cap-re", "cap-statistics", "cap-textwrap", "cap-time"]
+variant-l = ["variant-m", "cap-base64", "cap-bigint", "cap-binascii", "cap-collections", "cap-csv", "cap-difflib", "cap-future", "cap-glob", "cap-hashlib", "cap-itertools", "cap-pathlib", "cap-random", "cap-re", "cap-statistics", "cap-textwrap", "cap-time"]
 
 # `collections.Counter` and `collections.defaultdict` — 83 of the corpus
 # programs measured on 2026-09-04 import `collections`, and between them they
@@ -106,6 +106,16 @@ cap-glob = []
 # before the program starts. 12 corpus entries (2026-09-06, 3,688 loaded) were
 # blocked on `import base64`. `src/base64.rs` is the whole of it.
 cap-base64 = []
+
+# `binascii.hexlify` / `b2a_hex` / `unhexlify` / `a2b_hex` / `a2b_base64` /
+# `b2a_base64`, bytes in and bytes out. The base64 pair CALLS `base64.rs`'s
+# decoder and encoder rather than copying them — hence the dependency — so
+# the 3.11/3.12 versus 3.13+ decode split is refused in one place. `Error`,
+# `crc32` and the uu/qp codecs are absent, so `route::MODULE_ATTRS` blocks
+# them in the CORE's walk; every `binascii.Error` an input would raise is a
+# refusal. 13 corpus programs (mined 2026-09-24) were blocked first on
+# `import binascii`. `src/binascii.rs` is the whole of it.
+cap-binascii = ["cap-base64"]
 
 # `hashlib.md5` / `sha1` / `sha256` / `sha512`, with `.update()`,
 # `.hexdigest()`, `.digest()`, `.name` and `.digest_size`. No new `Value`
