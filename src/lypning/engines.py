@@ -61,7 +61,10 @@ SPECTRUM = (LYPNING, LYPNING_L)
 #: ``urlsafe_b64decode``; the rest of the module refuses as ``module-attr`` from
 #: the WALK), ``cap-collections`` (``collections.Counter`` / ``defaultdict``),
 #: ``cap-csv`` (``csv.reader`` / ``csv.DictReader``; the writers are absent, so
-#: they refuse as ``module-attr`` from the WALK), ``cap-glob`` (``glob.glob``,
+#: they refuse as ``module-attr`` from the WALK), ``cap-future`` (``from
+#: __future__ import`` at the head of a program, a pass over the parse that
+#: never evaluates an annotation under ``annotations``; every other future use
+#: refuses before anything runs), ``cap-glob`` (``glob.glob``,
 #: whose every refusal is decided in the WALK by every variant, so the feature
 #: buys the LIST and nothing else), ``cap-hashlib`` (``hashlib.md5`` / ``sha1``
 #: / ``sha256`` / ``sha512``; every other name on the module refuses as
@@ -89,8 +92,8 @@ VARIANT_CAPS: dict = {
     LYPNING: (),
     LYPNING_L: (
         "cap-base64", "cap-bigint", "cap-collections", "cap-csv", "cap-difflib",
-        "cap-glob", "cap-hashlib", "cap-itertools", "cap-pathlib", "cap-re",
-        "cap-statistics", "cap-textwrap", "cap-time",
+        "cap-future", "cap-glob", "cap-hashlib", "cap-itertools", "cap-pathlib",
+        "cap-re", "cap-statistics", "cap-textwrap", "cap-time",
     ),
 }
 

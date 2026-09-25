@@ -166,7 +166,7 @@ rather than in the smaller engine's walk, which costs one spawn and no answer.
 
 ## 5. What `lypning-l` adds
 
-`lypning-l` is the same crate built with thirteen `cap-*` features
+`lypning-l` is the same crate built with fourteen `cap-*` features
 (`engines.VARIANT_CAPS`, `route.rs:CAPS`, and `lypning route --spectrum` from
 either binary):
 
@@ -177,6 +177,7 @@ either binary):
 | `cap-collections` | the `collections` module — `Counter`, `defaultdict` | `collections.rs` |
 | `cap-csv` | the `csv` module — the two readers | `csv.rs` |
 | `cap-difflib` | the `difflib` module — the import, and no name on it | `modules.rs:MODULES` |
+| `cap-future` | `__future__` — a head of no-op feature imports; `def` annotations never evaluated under `annotations`, or under any head on a 3.14+ reference (PEP 649) | `future.rs` |
 | `cap-glob` | the `glob` module | `glob.rs` |
 | `cap-hashlib` | the `hashlib` module — four constructors | `hashlib.rs` |
 | `cap-itertools` | the `itertools` module — `product`, `combinations` | `itertools.rs` |

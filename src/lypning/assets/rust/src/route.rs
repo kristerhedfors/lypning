@@ -60,6 +60,7 @@ pub const SPECTRUM: &[Variant] = &[
             "cap-collections",
             "cap-csv",
             "cap-difflib",
+            "cap-future",
             "cap-glob",
             "cap-hashlib",
             "cap-itertools",
@@ -168,18 +169,29 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// runtime kind. Its runtime refusals (`textwrap:`) are a computed argument of
 /// the wrong type or a non-ASCII character the hyphen regex would have to
 /// classify, and there is no rung above `lypning-l` to carry either to.
+///
 /// `cap-time` serves the `time` MODULE — the clocks, a bounded `sleep` and the
 /// one fused UTC stamp, and only the names [`MODULE_ATTRS`] lists — and
 /// answers no runtime kind. Every `time:` refusal is a SHAPE lypning-l's own
 /// walk decides before the program starts (a function used as a value, a
 /// `sleep` the walk cannot bound, `strftime` outside the fused shape), and
 /// there is no rung above lypning-l to carry the kind to.
+///
+/// `cap-future` serves `__future__`, which is not a module at all but a
+/// compiler directive: `future.rs` is a pass over the parse that strips a
+/// served head of future imports, so lypning-l's walk never sees one. The row
+/// is the MODULE column, not a kind, because what the CORE stops on is
+/// `module: from __future__ import …` and [`answers`] asks `served_module` of
+/// `module_of` that detail, which is `__future__`. Its refusal kinds (`future`,
+/// `annotation`) are shapes CPython owns — a `SyntaxError`, a `_Feature` value,
+/// annotations as strings — so the kind column stays empty.
 pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-base64", &["base64"], &[]),
     ("cap-bigint", &[], &["bigint", "int-div-precision"]),
     ("cap-collections", &["collections"], &[]),
     ("cap-csv", &["csv"], &[]),
     ("cap-difflib", &["difflib"], &[]),
+    ("cap-future", &["__future__"], &[]),
     ("cap-glob", &["glob"], &[]),
     ("cap-hashlib", &["hashlib"], &[]),
     ("cap-itertools", &["itertools"], &[]),
@@ -228,7 +240,13 @@ pub const CAPS: &[(&str, &[&str], &[&str])] = &[
 /// it — with the KIND the runtime would have raised — several arms before
 /// [`capability_module`] is reached. A row here would be a second table saying
 /// the same thing, and the two would drift.
+///
+/// `__future__` is here so the CORE sends `from __future__ import braces`, a
+/// misspelled feature and `barry_as_FLUFL` to CPython rather than to a variant
+/// that would refuse them: the row IS [`FUTURE_SERVED`], held to `future.rs`
+/// by its own `the_route_table_names_exactly_what_is_served`.
 pub const MODULE_ATTRS: &[(&str, &[&str])] = &[
+    ("__future__", FUTURE_SERVED),
     ("base64", BASE64_SERVED),
     (
         "csv",
@@ -304,6 +322,24 @@ fn textwrap_kw_served(name: &str, k: &str) -> bool {
         _ => false,
     }
 }
+
+/// The `from __future__ import` names `cap-future` serves: every feature that
+/// is mandatory in Python 3, and so does nothing, plus `annotations`, whose
+/// effect the pass implements by never evaluating one. Not `barry_as_FLUFL`
+/// (a grammar), not `braces` (a `SyntaxError`), and nothing else, because
+/// CPython answers any other name with a `SyntaxError`. Sorted, as every
+/// [`MODULE_ATTRS`] row is.
+pub const FUTURE_SERVED: &[&str] = &[
+    "absolute_import",
+    "annotations",
+    "division",
+    "generator_stop",
+    "generators",
+    "nested_scopes",
+    "print_function",
+    "unicode_literals",
+    "with_statement",
+];
 
 /// Does some variant on the spectrum answer `module.name`, as far as
 /// [`MODULE_ATTRS`] can say? `true` for every module the table does not list —
