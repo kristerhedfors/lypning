@@ -491,45 +491,26 @@ pub fn discard() {
 }
 
 pub fn os_error(path: &str, e: &std::io::Error) -> LypningError {
-    os_error_on(&format!("'{path}'"), e)
-}
-
-/// CPython's `OSError` for `e`, naming `what` — `'p'`, or `'a' -> 'b'` for a
-/// two-path call. The errno is the kernel's and the text its `strerror`, so it
-/// is the reference's on the same host: `EPERM` is `[Errno 1] Operation not
-/// permitted`, never `EACCES`'s 13, and the subclass is the one CPython's
-/// `errno` map picks.
-pub fn os_error_on(what: &str, e: &std::io::Error) -> LypningError {
-    let Some(errno) = e.raw_os_error() else {
-        return LypningError::exc("OSError", format!("{e}: {what}"));
+    let (kind, errno, msg) = match e.kind() {
+        std::io::ErrorKind::NotFound => ("FileNotFoundError", 2, "No such file or directory"),
+        std::io::ErrorKind::PermissionDenied => ("PermissionError", 13, "Permission denied"),
+        std::io::ErrorKind::AlreadyExists => ("FileExistsError", 17, "File exists"),
+        _ => ("OSError", e.raw_os_error().unwrap_or(0), "OS error"),
     };
-    let kind = match errno {
-        1 | 13 => "PermissionError",
-        2 => "FileNotFoundError",
-        17 => "FileExistsError",
-        20 => "NotADirectoryError",
-        21 => "IsADirectoryError",
-        _ => "OSError",
+    let detail = if kind == "OSError" {
+        e.to_string()
+    } else {
+        msg.to_string()
     };
-    let text = e.to_string();
-    let msg = text.split(" (os error").next().unwrap_or(&text);
-    LypningError::exc(kind, format!("[Errno {errno}] {msg}: {what}"))
-}
-
-/// Has the run already committed? Then flush what is staged and say so.
-///
-/// The fs arms REFUSE where the stage and the disk disagree, so that CPython
-/// does the real thing. Once the run has committed — an early flush, a foreign
-/// `os.rmdir` — a refusal can no longer reach CPython: it becomes exit 1,
-/// `cannot be routed onward`, on a program CPython answers. There the staged
-/// view is flushed, the disk is the program's view again, and the arm makes
-/// the real kernel call, which is the answer CPython gives.
-pub fn flushed_after_commit() -> R<bool> {
-    if !is_committed() {
-        return Ok(false);
-    }
-    commit()?;
-    Ok(true)
+    LypningError::exc(
+        match kind {
+            "FileNotFoundError" => "FileNotFoundError",
+            "PermissionError" => "PermissionError",
+            "FileExistsError" => "FileExistsError",
+            _ => "OSError",
+        },
+        format!("[Errno {errno}] {detail}: '{path}'"),
+    )
 }
 
 /// The effective content of a path, accounting for writes this run has staged
@@ -726,10 +707,7 @@ pub fn remove_file(path: &str) -> R<()> {
         ));
     }
     if std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir()) {
-        if flushed_after_commit()? {
-            return std::fs::remove_file(path).map_err(|e| os_error(path, &e));
-        }
-        return Err(unsupported("remove", &format!("removing '{path}', which is a directory")));
+        return Err(unsupported("remove", "os.remove() of a directory"));
     }
     stage_delete(path);
     Ok(())
@@ -841,19 +819,13 @@ pub fn make_dir(path: &str, parents: bool, exist_ok: bool) -> R<()> {
 /// real, one spawn later. The test is the staging layer's alone, so the two
 /// halves of a `mkdir` now consult exactly one.
 fn staged_delete_blocks(path: &str) -> R<()> {
-    if is_committed() {
-        return flushed_after_commit().map(|_| ());
-    }
     // The parent is a file this run has staged: the disk has no such path, so
     // `create_dir` says `ENOENT` where CPython says `ENOTDIR`.
     if let Some(parent) = std::path::Path::new(path).parent() {
         if !parent.as_os_str().is_empty()
             && PENDING.with(|p| p.borrow().files.contains_key(&stage_key(&parent.to_string_lossy())))
         {
-            return Err(unsupported(
-                "mkdir",
-                &format!("mkdir('{path}') under a file this run has not committed"),
-            ));
+            return Err(unsupported("mkdir", "mkdir() under a file this run has not committed"));
         }
     }
     if is_staged_deleted(path) {
@@ -895,11 +867,8 @@ fn note_made(p: &std::path::Path) {
 /// A [`held`] run refuses a foreign one. An [`arm`]ed run does not, for the
 /// reason [`ARMED_LIMIT`] gives: the core answers it.
 pub fn remove_dir(path: &str) -> R<()> {
-    if staged_under(path) && !flushed_after_commit()? {
-        return Err(unsupported(
-            "rmdir",
-            &format!("os.rmdir('{path}') of a directory holding an entry this run has not committed"),
-        ));
+    if staged_under(path) {
+        return Err(unsupported("rmdir", "os.rmdir() of a directory holding an entry this run has not committed"));
     }
     let real = std::fs::canonicalize(path).ok();
     #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]

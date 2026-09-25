@@ -456,29 +456,27 @@ def test_a_missing_source_names_both_paths(lypning_bin, tmp_path) -> None:
         "FileNotFoundError: [Errno 2] No such file or directory: 'nope' -> 'b'"
 
 
-#: The same arms once the run has COMMITTED (a foreign `os.rmdir`). A refusal
+#: `os.rename` once the run has COMMITTED (a foreign `os.rmdir`). A refusal
 #: there cannot reach CPython — it would be exit 1, `cannot be routed onward` —
-#: so the arm flushes what is staged and makes the real kernel call.
+#: so the arm answers the cases its refusal guards as CPython does: onto itself
+#: is nothing, a missing directory is the two-path error, and a file already on
+#: disk is copied as it always was.
 AFTER_COMMIT = [
-    ("mkdir e; echo x > f", "import os\nos.rmdir('e')\nos.rename('f', 'g')\nprint('done')",
+    ("mkdir e; echo x > f", "import os\nos.rmdir('e')\nos.rename('f', 'g')\nprint(open('g').read())",
      "rename-of-a-file-on-disk"),
-    ("mkdir d e", "import os\nos.rmdir('e')\nos.rename('d', 'd2')\nprint(os.path.isdir('d2'))",
-     "rename-of-a-directory"),
     ("mkdir e", "import os\nos.rmdir('e')\nopen('a','w').write('y')\nos.rename('a', 'a')\n"
      "print(open('a').read())", "rename-onto-itself"),
+    ("echo hi > a; mkdir e", "import os\nos.rmdir('e')\nos.rename('a', './a')\nprint(open('a').read())",
+     "rename-onto-itself-on-disk"),
     ("echo hi > a; mkdir e", "import os\nos.rmdir('e')\ntry:\n    os.rename('a', 'nodir/b')\n"
      "except OSError as x:\n    print(x.errno, x)\nprint(os.path.exists('a'))", "rename-into-a-missing-dir"),
-    ("mkdir d e", "import os\nos.rmdir('e')\ntry:\n    os.remove('d')\nexcept OSError as x:\n"
-     "    print(x.errno, x)", "remove-of-a-directory"),
-    ("mkdir e", "import os\nos.rmdir('e')\nopen('a','w').write('x')\ntry:\n    os.mkdir('a/b')\n"
-     "except OSError as x:\n    print(x.errno, x)", "mkdir-under-a-staged-file"),
-    ("mkdir e", "import os\nos.rmdir('e')\nos.mkdir('d')\nopen('d/f','w').write('x')\ntry:\n"
-     "    os.rmdir('d')\nexcept OSError as x:\n    print(x.errno, x)", "rmdir-over-a-staged-file"),
+    ("echo hi > a; echo f > g; mkdir e", "import os\nos.rmdir('e')\ntry:\n    os.rename('a', 'g/b')\n"
+     "except OSError as x:\n    print(x.errno, x)\nprint(os.path.exists('a'))", "rename-under-a-file"),
 ]
 
 
 @pytest.mark.parametrize("setup, program, _why", AFTER_COMMIT, ids=[w for _s, _p, w in AFTER_COMMIT])
-def test_after_a_commit_the_fs_arms_do_the_real_thing(lypning_bin, tmp_path, setup, program, _why) -> None:
+def test_after_a_commit_a_rename_is_answered_as_cpython_does(lypning_bin, tmp_path, setup, program, _why) -> None:
     engine, alone = _fresh(tmp_path, "engine"), _fresh(tmp_path, "alone")
     _setup(engine, setup)
     _setup(alone, setup)

@@ -694,18 +694,12 @@ fn push_char(out: &mut Vec<u8>, v: u32, line: u32) -> Result<(), LypningError> {
 /// `IndentationError` — subclasses of `SyntaxError` whose names are the last
 /// stderr line, which this engine's `SyntaxError` cannot spell. Refused, as
 /// [`Lexer::unexpected_indent`] is: the reference interpreter raises its own.
-fn tab_error(line: u32) -> LypningError {
-    unsupported(
-        "indent",
-        &format!("line {line} mixes tabs and spaces inconsistently; CPython's TabError is the reference's to raise"),
-    )
+fn tab_error(_line: u32) -> LypningError {
+    unsupported("indent", "a tab and space mix, which is CPython's TabError to raise")
 }
 
-fn unindent_error(line: u32) -> LypningError {
-    unsupported(
-        "indent",
-        &format!("line {line} dedents to no outer level; CPython's IndentationError is the reference's to raise"),
-    )
+fn unindent_error(_line: u32) -> LypningError {
+    unsupported("indent", "a dedent to no outer level, which is CPython's IndentationError to raise")
 }
 
 /// A run of digits and underscores CPython rejects: an underscore that does

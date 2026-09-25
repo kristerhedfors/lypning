@@ -626,12 +626,6 @@ pub fn call_module_method(
         }
         ("os", "rename" | "replace") => {
             let (a, b) = (s(0)?, s(1)?);
-            // After a commit nothing below may refuse; the kernel's rename is
-            // CPython's (`io::flushed_after_commit`).
-            if mio::flushed_after_commit()? {
-                std::fs::rename(&a, &b).map_err(|e| mio::os_error_on(&format!("'{a}' -> '{b}'"), &e))?;
-                return Ok(Value::None);
-            }
             // A directory or a symbolic link, at either end, is refused and
             // not served. The kernel MOVES those — a whole tree, or the link
             // itself — where this arm copies one file's bytes into the
@@ -641,9 +635,25 @@ pub fn call_module_method(
             // `ENOTEMPTY` and `EISDIR` included.
             for p in [&a, &b] {
                 if std::fs::symlink_metadata(p).is_ok_and(|m| !m.is_file()) {
-                    return Err(unsupported("rename", &format!("os.{name}() of '{p}', which is not a regular file")));
+                    return Err(unsupported("rename", "os.rename() of a directory or a link"));
                 }
             }
+            let two = |kind: &'static str, errno: i32, msg: &str| {
+                LypningError::exc(kind, format!("[Errno {errno}] {msg}: '{a}' -> '{b}'"))
+            };
+            let on_disk = |p: &str| !mio::is_staged_deleted(p) && std::fs::symlink_metadata(p).is_ok();
+            let staged = mio::effective_content(&a)?;
+            if staged.is_none() && !on_disk(&a) {
+                return Err(two("FileNotFoundError", 2, "No such file or directory"));
+            }
+            let (dir_ok, dir_there) = match std::path::Path::new(&b).parent() {
+                Some(d) if !d.as_os_str().is_empty() => match std::fs::metadata(d) {
+                    Ok(m) => (m.is_dir(), true),
+                    Err(_) => (false, false),
+                },
+                _ => (true, true),
+            };
+            let same = mio::same_staged_path(&a, &b);
             // This arm COPIES: it stages the bytes under the new name and a
             // delete of the old one. That is a rename only between files this
             // run made. A file already on disk at either end carries a mode,
@@ -653,25 +663,29 @@ pub fn call_module_method(
             // loses the file. A destination whose directory is missing is
             // CPython's two-path `FileNotFoundError`, which the barrier would
             // raise only at commit, after the source was gone. All four go to
-            // CPython.
-            let on_disk = |p: &str| !mio::is_staged_deleted(p) && std::fs::symlink_metadata(p).is_ok();
-            let dir_ok = match std::path::Path::new(&b).parent() {
-                Some(d) if !d.as_os_str().is_empty() => d.is_dir(),
-                _ => true,
-            };
-            if on_disk(&a) || on_disk(&b) || mio::same_staged_path(&a, &b) || !dir_ok {
-                return Err(unsupported(
-                    "rename",
-                    &format!("os.{name}('{a}', '{b}') that is not a move between files this run wrote"),
-                ));
+            // CPython while the run can still be taken back; once it has
+            // committed a refusal would be exit 1, so the two that lose a file
+            // are answered here as CPython answers them, and a file on disk is
+            // copied as it always was.
+            if !mio::is_committed() && (on_disk(&a) || on_disk(&b) || same || !dir_ok) {
+                return Err(unsupported("rename", "os.rename() that is not a move between files this run wrote"));
             }
-            let content = match mio::effective_content(&a)? {
+            if !dir_ok {
+                return Err(if dir_there {
+                    two("NotADirectoryError", 20, "Not a directory")
+                } else {
+                    two("FileNotFoundError", 2, "No such file or directory")
+                });
+            }
+            if same {
+                return Ok(Value::None);
+            }
+            let content = match staged {
                 Some(c) => c,
                 None => {
-                    return Err(LypningError::exc(
-                        "FileNotFoundError",
-                        format!("[Errno 2] No such file or directory: '{a}' -> '{b}'"),
-                    ));
+                    // A whole-file read, so a device would never finish.
+                    mio::require_regular_file(&a)?;
+                    std::fs::read(&a).map_err(|e| mio::os_error(&a, &e))?
                 }
             };
             mio::stage_write(&b, content);

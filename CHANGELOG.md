@@ -24,8 +24,9 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 - `os.rename`/`os.replace` refuse unless both ends are files this run wrote.
   `os.rmdir` over a staged entry, `os.remove`/`Path.unlink` of a directory
   and `os.mkdir` under a staged file refuse too. Three of these used to lose
-  a file at exit 0. After a commit, where a refusal could only be exit 1, the
-  arm flushes and makes the real call. OS errors carry the kernel's errno.
+  a file at exit 0. After a commit, where a refusal could only be exit 1, a
+  rename onto itself or into a missing directory is answered as CPython
+  answers it.
 - `TabError` and `IndentationError` refuse as `indent`.
 - Tests compare against the interpreter running the suite; the 3.14.5 bytes
   are checked only on 3.14.
