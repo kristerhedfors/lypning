@@ -184,6 +184,12 @@ fn execute_inner(src: &str, report_refusal: bool, kind: &mut String, detail: &mu
     }
     #[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
     io::hold_for(src);
+    // Every program a capability of this branch admitted went to CPython
+    // before, and got its `Did you mean`; see `route::hint_held`.
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+    if route::hint_held(&body, src) {
+        io::hold();
+    }
     let mut interp = eval::Interp::new();
     let r = interp.run(&body);
     finish(r, report_refusal, kind, detail)

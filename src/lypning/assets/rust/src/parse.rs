@@ -22,6 +22,18 @@ pub struct Parser {
     /// What CPython's symbol table would know about annotations in the scope
     /// being parsed. See [`AnnScope`]; a def swaps its own in and back out.
     scope: AnnScope,
+    /// The first construct this parser ACCEPTS that CPython's compiler
+    /// rejects with a `SyntaxError` before anything runs — a duplicate
+    /// parameter, `break` outside a loop, a positional argument after a
+    /// keyword one. Only noted, and only where `cap-future` is built: the
+    /// `__future__` pass refuses a program with a head that has one, because
+    /// the core refuses every such program statically and CPython answered
+    /// it. Without a head the parse is the core's, and so is its answer.
+    #[cfg(feature = "cap-future")]
+    lax: Option<&'static str>,
+    /// `for`/`while` bodies enclosing this point in the current function.
+    #[cfg(feature = "cap-future")]
+    loops: u32,
 }
 
 /// The two facts about a scope an annotated assignment needs, gathered while
@@ -37,6 +49,10 @@ struct AnnScope {
     /// A function body holds a bare `x: int`: the local it declares is never
     /// bound, and a nested scope reading it must fail rather than find a global.
     bare: bool,
+    /// The token this scope starts at — a def's `(` — so a `global` can ask
+    /// whether its name was spelled before it ([`Parser::lax`]).
+    #[cfg(feature = "cap-future")]
+    from: usize,
 }
 
 /// The nesting a program is allowed, and it is a measurement rather than a
@@ -81,6 +97,10 @@ pub fn parse(src: &str) -> R<Vec<Stmt>> {
         depth: 0,
         chain_ops: 0,
         scope: AnnScope::default(),
+        #[cfg(feature = "cap-future")]
+        lax: None,
+        #[cfg(feature = "cap-future")]
+        loops: 0,
     };
     let body = p.module();
     // `from __future__ import …` is a compiler directive, decided over the
@@ -88,11 +108,31 @@ pub fn parse(src: &str) -> R<Vec<Stmt>> {
     // handed the RESULT, error and all, because `barry_as_FLUFL` changes the
     // grammar and must refuse whether or not this parser read what follows.
     #[cfg(feature = "cap-future")]
-    let body = crate::future::pass(body, &p.t);
+    let body = crate::future::pass(body, &p.t, p.lax);
     body
 }
 
 impl Parser {
+    /// Note a compile-time `SyntaxError` CPython raises that this parser
+    /// lets through; see the field.
+    #[cfg(feature = "cap-future")]
+    fn lax(&mut self, why: &'static str) {
+        self.lax.get_or_insert(why);
+    }
+
+    /// `body` parsed as a loop body: `break` and `continue` are legal in it.
+    fn loop_block(&mut self) -> R<Vec<Stmt>> {
+        #[cfg(feature = "cap-future")]
+        {
+            self.loops += 1;
+            let b = self.block();
+            self.loops -= 1;
+            b
+        }
+        #[cfg(not(feature = "cap-future"))]
+        self.block()
+    }
+
     fn module(&mut self) -> R<Vec<Stmt>> {
         let mut body = Vec::new();
         while !self.at_eof() {
@@ -300,7 +340,7 @@ impl Parser {
         }
         if self.eat_kw("while") {
             let cond = self.expr()?;
-            let body = self.block()?;
+            let body = self.loop_block()?;
             let els = if self.eat_kw("else") {
                 self.block()?
             } else {
@@ -312,7 +352,7 @@ impl Parser {
             let target = self.target_list("in")?;
             self.expect_kw("in")?;
             let iter = self.value_list()?;
-            let body = self.block()?;
+            let body = self.loop_block()?;
             let els = if self.eat_kw("else") {
                 self.block()?
             } else {
@@ -327,6 +367,8 @@ impl Parser {
         }
         if self.eat_kw("def") {
             let name = self.ident()?;
+            #[cfg(feature = "cap-future")]
+            let from = self.i;
             let mut params = self.params()?;
             if self.eat_op("->") {
                 // The return annotation evaluates AFTER the parameters', which
@@ -339,10 +381,19 @@ impl Parser {
                 &mut self.scope,
                 AnnScope {
                     fun: true,
+                    #[cfg(feature = "cap-future")]
+                    from,
                     ..AnnScope::default()
                 },
             );
-            let body = self.block()?;
+            #[cfg(feature = "cap-future")]
+            let loops = std::mem::replace(&mut self.loops, 0);
+            let body = self.block();
+            #[cfg(feature = "cap-future")]
+            {
+                self.loops = loops;
+            }
+            let body = body?;
             let inner = std::mem::replace(&mut self.scope, outer);
             // A bare `x: int` makes `x` local and leaves it unbound, so a
             // lambda or nested def reading it raises NameError in CPython —
@@ -621,6 +672,17 @@ impl Parser {
                 break;
             }
         }
+        #[cfg(feature = "cap-future")]
+        {
+            let n = p.names.len();
+            if (0..n).any(|i| p.names[..i].contains(&p.names[i])) {
+                self.lax("duplicate argument in function definition");
+            }
+            let end = p.star.or(p.dstar).unwrap_or(n);
+            if (1..end).any(|j| p.defaults[j].is_none() && p.defaults[..j].iter().any(|d| d.is_some())) {
+                self.lax("parameter without a default follows parameter with a default");
+            }
+        }
         Ok(p)
     }
 
@@ -649,18 +711,39 @@ impl Parser {
             return Ok(Stmt::Pass);
         }
         if self.eat_kw("break") {
+            #[cfg(feature = "cap-future")]
+            if self.loops == 0 {
+                self.lax("'break' outside loop");
+            }
             return Ok(Stmt::Break);
         }
         if self.eat_kw("continue") {
+            #[cfg(feature = "cap-future")]
+            if self.loops == 0 {
+                self.lax("'continue' not properly in loop");
+            }
             return Ok(Stmt::Continue);
         }
         if self.is_kw("nonlocal") {
             return Err(unsupported("nonlocal", "nonlocal declaration"));
         }
+        #[cfg(feature = "cap-future")]
+        let at = self.i;
         if self.eat_kw("global") {
             let mut names = vec![self.ident()?];
             while self.eat_op(",") {
                 names.push(self.ident()?);
+            }
+            // A name spelled anywhere in the scope before its `global` — a
+            // parameter, an assignment, a use — is CPython's SyntaxError. A
+            // token match over-counts (an attribute, a nested scope), which
+            // costs a spawn and never an answer.
+            #[cfg(feature = "cap-future")]
+            if self.t[self.scope.from..at]
+                .iter()
+                .any(|t| matches!(&t.tok, Tok::Name(n) if names.iter().any(|m| m.as_ref() == n.as_str())))
+            {
+                self.lax("a name spelled before its global declaration");
             }
             if names.iter().any(|n| self.scope.annotated.contains(n)) {
                 return Err(annotated_global());
@@ -669,6 +752,10 @@ impl Parser {
             return Ok(Stmt::Global(names));
         }
         if self.eat_kw("return") {
+            #[cfg(feature = "cap-future")]
+            if !self.scope.fun {
+                self.lax("'return' outside function");
+            }
             if matches!(self.peek(), Tok::Newline | Tok::Eof) || self.is_op(";") {
                 return Ok(Stmt::Return(None));
             }
@@ -1272,9 +1359,21 @@ impl Parser {
         let mut kwargs = Vec::new();
         let mut dstar = Vec::new();
         let mut dstar_at = Vec::new();
+        #[cfg(feature = "cap-future")]
+        let mut bare_gen = false;
         loop {
             if self.is_op(")") {
                 break;
+            }
+            #[cfg(feature = "cap-future")]
+            if !self.is_op("**") && !(matches!(self.peek(), Tok::Name(n) if !is_keyword(n))
+                && matches!(self.peek_at(1), Tok::Op("=")))
+            {
+                if !dstar.is_empty() {
+                    self.lax("an argument after keyword argument unpacking");
+                } else if !kwargs.is_empty() && !self.is_op("*") {
+                    self.lax("positional argument follows keyword argument");
+                }
             }
             if self.eat_op("**") {
                 dstar_at.push(kwargs.len());
@@ -1301,6 +1400,13 @@ impl Parser {
                 let e = self.expr()?;
                 // A bare generator argument: `sum(x for x in y)`
                 if self.is_kw("for") {
+                    #[cfg(feature = "cap-future")]
+                    {
+                        if !args.is_empty() || !kwargs.is_empty() || !dstar.is_empty() {
+                            self.lax("Generator expression must be parenthesized");
+                        }
+                        bare_gen = true;
+                    }
                     let clauses = self.comp_clauses()?;
                     args.push(Expr::Comp {
                         kind: CompKind::Gen,
@@ -1314,6 +1420,10 @@ impl Parser {
             }
             if !self.eat_op(",") {
                 break;
+            }
+            #[cfg(feature = "cap-future")]
+            if bare_gen {
+                self.lax("Generator expression must be parenthesized");
             }
         }
         self.expect_op(")")?;
@@ -1734,6 +1844,10 @@ fn parse_fstring(raw: &str, raw_prefix: bool) -> R<Vec<FPart>> {
                     depth: 0,
                     chain_ops: 0,
                     scope: AnnScope::default(),
+                    #[cfg(feature = "cap-future")]
+                    lax: None,
+                    #[cfg(feature = "cap-future")]
+                    loops: 0,
                 };
                 let e = p.expr_list()?;
                 if !matches!(p.peek(), Tok::Newline | Tok::Eof) {

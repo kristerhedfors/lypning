@@ -237,6 +237,10 @@ fn run_guarded(req: &Request) -> Outcome {
         crate::route::base64_static_check(&body, &req.source)?;
         #[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
         io::hold_for(&req.source);
+        #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+        if crate::route::hint_held(&body, &req.source) {
+            io::hold();
+        }
         interp.run(&body)
     }));
 

@@ -3494,6 +3494,50 @@ pub fn static_stop_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
     }
 }
 
+/// The modules whose capabilities admitted programs that every Rust rung
+/// refused before: each of those programs went to CPython and got its `Did you
+/// mean` suggestion, which no variant computes (`err::forgot_import`).
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+const HINT_HELD_MODULES: &[&str] =
+    &["binascii", "difflib", "itertools", "statistics", "textwrap", "time"];
+
+/// Is this a program lypning-l serves only because of a capability whose
+/// programs used to get CPython's suggestion search — and so one whose run
+/// `io::hold` keeps reversible, and whose uncaught `NameError`,
+/// `AttributeError` or unexpected-keyword `TypeError` refuses as `name-hint`?
+///
+/// Decided from the WALK before the first statement, because the core refuses
+/// these programs STATICALLY: an error raised before the import runs, or an
+/// import that never runs (`if False: import time`, a `def` never called),
+/// went to CPython all the same. A runtime hold at the import missed both and
+/// served the program without the hint. The capabilities that serve names on
+/// a CORE module (`cap-random`'s `random.Random`/`sample`/`shuffle` and
+/// `sys.version_info`) are matched as words, and the `__future__` head, which
+/// the parse has already removed, as a word too: an over-match is a spawn for
+/// a program that was about to fail anyway, a miss is a wrong answer.
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+pub fn hint_held(body: &[Stmt], src: &str) -> bool {
+    const WORDS: &[&str] = &[
+        "__future__", "binascii", "difflib", "itertools", "statistics", "textwrap", "time",
+        "version_info", "Random", "sample", "shuffle",
+    ];
+    if !WORDS.iter().any(|w| src.contains(w)) {
+        return false;
+    }
+    if mentions_word(src, "__future__") {
+        return true;
+    }
+    let mut req = Requirements {
+        glob_wrappers: trusted_wrappers(src),
+        ..Requirements::default()
+    };
+    walk_program(body, &mut req);
+    let has = |m: &str| req.imports.contains(m);
+    req.imports.iter().any(|m| HINT_HELD_MODULES.contains(&m.as_str()))
+        || (has("random") && ["Random", "sample", "shuffle"].iter().any(|w| mentions_word(src, w)))
+        || (has("sys") && mentions_word(src, "version_info"))
+}
+
 /// Which order-blind wrapper names this source still uses as the BUILTIN, one
 /// bit per index into [`ORDER_BLIND`].
 ///

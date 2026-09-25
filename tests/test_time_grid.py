@@ -574,10 +574,37 @@ def test_a_time_program_refuses_to_rmdir_what_it_did_not_make() -> None:
         assert os.path.isdir(os.path.join(d, "theirs")), "the refusal came before the effect"
 
 
+#: Fails before the import runs, or under an import that never runs. The core
+#: refuses `import time` STATICALLY, so the chain sent every one of these to
+#: CPython before `cap-time`; lypning-l decides the hold from the walk
+#: (`route::hint_held`) and refuses too, for the suggestion it cannot compute.
+#: Bytes are CPython 3.14.5's; the first row has no suggestion and is refused
+#: all the same, which costs a spawn and never an answer.
+BEFORE_IMPORT = [
+    ("print(xx)\nimport time", "NameError: name 'xx' is not defined"),
+    ("prnt(1)\nimport time", "NameError: name 'prnt' is not defined. Did you mean: 'print'?"),
+    ("if False:\n    import time\nprnt(1)",
+     "NameError: name 'prnt' is not defined. Did you mean: 'print'?"),
+    ("import os\ndef f():\n    import time\nprnt(1)",
+     "NameError: name 'prnt' is not defined. Did you mean: 'print'?"),
+    ("def g(alpha): pass\ng(alpah=1)\nimport time",
+     "TypeError: g() got an unexpected keyword argument 'alpah'. Did you mean 'alpha'?"),
+]
+
+
+@needs_l
+@pytest.mark.parametrize("program,line", BEFORE_IMPORT, ids=range(len(BEFORE_IMPORT)))
+def test_an_error_before_the_import_runs_refuses_too(program: str, line: str) -> None:
+    got = _run([str(BINARY)], program)
+    assert _refusal_problem(got) is None, (got.returncode, got.stdout, got.stderr)
+    assert got.stderr.startswith("%s: unsupported: name-hint: " % engines.LYPNING_L), got.stderr
+    if sys.version_info[:3] == (3, 14, 5):
+        ref = _run([sys.executable], program)
+        assert (ref.returncode, ref.stdout, ref.stderr.strip().splitlines()[-1]) == (1, "", line)
+
+
 @needs_core
 @pytest.mark.parametrize("program", [
-    # Fails before the import runs: both rungs answer, with the same bytes.
-    "print(xx)\nimport time",
     # Caught: the program's own business, and no hint is printed.
     T + "try:\n    print(xx)\nexcept NameError as e:\n    print(e)",
 ])

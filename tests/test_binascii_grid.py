@@ -561,7 +561,15 @@ def test_round3_shared_code_answers_cpythons_bytes(row) -> None:
 @pytest.mark.parametrize("row", EXACT_L_ROUND3, ids=range(len(EXACT_L_ROUND3)))
 def test_round3_binascii_programs_answer_cpythons_bytes(row) -> None:
     program, out, code, last = row
-    problem = _exact_problem(_run([str(BINARY)], program), out, code, last)
+    got = _run([str(BINARY)], program)
+    # An uncaught NameError in a program only `cap-binascii` admits refuses
+    # (`route::hint_held`): CPython may end it with a suggestion.
+    if last.startswith("NameError") and got.returncode == engines.UNSUPPORTED_EXIT:
+        line = got.stderr.strip()
+        assert got.stdout == "" and "\n" not in line, got.stderr
+        assert line.startswith("%s: unsupported: name-hint: " % engines.LYPNING_L), line
+        return
+    problem = _exact_problem(got, out, code, last)
     assert problem is None, "%s\n  program: %r" % (problem, program)
 
 

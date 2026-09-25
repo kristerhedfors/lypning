@@ -145,6 +145,14 @@ def test_an_annotated_assignment_matches_cpython(arm, row) -> None:
     engine, head = arm
     program, stdout, code, last = row
     got = _run([_binary(engine)], head + program)
+    # Under a head the program is lypning-l's only through `cap-future`, and an
+    # uncaught NameError there refuses (`route::hint_held`): CPython may end it
+    # with a suggestion this engine does not compute.
+    if head and last.startswith("NameError") and got.returncode == engines.UNSUPPORTED_EXIT:
+        line = got.stderr.strip()
+        assert got.stdout == "" and "\n" not in line, got.stderr
+        assert line.startswith("%s: unsupported: name-hint: " % engine), line
+        return
     assert (got.stdout, got.returncode, _last(got.stderr)) == (stdout, code, last), (
         head + program, got.stdout, got.returncode, got.stderr[-300:])
 

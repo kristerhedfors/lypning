@@ -329,9 +329,11 @@ pub const SERVED_MODULE_NAMES: &[&str] = &[
 /// would be a table in every binary for a message the battery does not grade.
 pub fn forgot_import(e: &LypningError) -> Option<LypningError> {
     let ErrKind::Exc(x) = e.kind() else { return None };
-    // A program lypning-l serves because of `cap-itertools`, `cap-difflib` or
-    // `cap-time` — before them, every one of them went to CPython and got the
-    // hint. Any uncaught error CPython may end with a `Did you mean` refuses
+    // A program lypning-l serves only because of a capability the core lacks
+    // and whose programs went to CPython before it, and got the hint
+    // (`route::hint_held`: itertools, difflib, time, statistics, textwrap,
+    // binascii, the `__future__` head, `random.Random`/`sample`/`shuffle` and
+    // `sys.version_info`). Any uncaught error CPython may end with a `Did you mean` refuses
     // here, and `io::hold` keeps the run reversible so this can. Not the other
     // programs: they are the core's answer, and what the core answers
     // lypning-l answers. The hints are 3.10's; 3.9 prints the bare line, which
@@ -346,7 +348,7 @@ pub fn forgot_import(e: &LypningError) -> Option<LypningError> {
         return Some(unsupported(
             "name-hint",
             &format!(
-                "uncaught {} in a program that imports itertools, difflib or time, \
+                "uncaught {} in a program only a capability of this variant admits, \
                  which CPython may end with a suggestion",
                 x.kind
             ),

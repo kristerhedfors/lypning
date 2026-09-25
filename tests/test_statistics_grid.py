@@ -521,7 +521,10 @@ def test_the_exact_rows_answer_byte_for_byte(program: str) -> None:
 
 #: Past `io::COMMIT_THRESHOLD` (8 MiB) of stdout a runtime refusal can no
 #: longer be routed onward: it ends at exit 1 where CPython answers. These used
-#: to be exactly that, through lypning-l and through the chain alike.
+#: to be exactly that, through lypning-l and through the chain alike. A
+#: `statistics` program is now held reversible (`route::hint_held`, so an
+#: uncaught error CPython would end with a suggestion can still refuse), so
+#: pinned lypning-l refuses cleanly at the threshold and the CHAIN answers.
 FLUSHED = 90_000  # lines of 101 bytes: 9,090,000 B, past the threshold
 
 
@@ -542,6 +545,11 @@ def test_a_float_mean_after_a_flush_answers(tail: str, want: str, code: int, err
         with tempfile.TemporaryDirectory() as d:
             got = subprocess.run(argv + ["-c", program], capture_output=True, text=True,
                                  cwd=d, timeout=300, env=env)
+        if argv == [str(BINARY)]:
+            line = got.stderr.strip()
+            assert (got.returncode, got.stdout) == (engines.UNSUPPORTED_EXIT, ""), got.stderr[-300:]
+            assert "\n" not in line and line.startswith("%s: unsupported: name-hint: " % engines.LYPNING_L)
+            continue
         assert (got.returncode, _last(got.stderr)) == (code, err), (argv, got.stderr[-300:])
         assert got.stdout == head + want, (argv, len(got.stdout), got.stdout[-60:])
 

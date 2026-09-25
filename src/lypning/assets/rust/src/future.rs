@@ -45,7 +45,17 @@
 //! * the imported feature's own name, and `__annotations__`, anywhere else:
 //!   the import binds a `_Feature` object and the annotations it defers
 //!   become strings, and neither exists here. The corpus uses neither
-//!   (mined 2026-09-24), so the refusal costs nothing measured.
+//!   (mined 2026-09-24), so the refusal costs nothing measured;
+//! * every compile-time `SyntaxError` CPython raises and this parser does
+//!   not: whatever the parser noted as `lax` (a duplicate parameter, a
+//!   parameter without a default after one with, `break`/`continue` outside
+//!   a loop, `return` outside a function, a name spelled before its
+//!   `global`, an unparenthesized generator beside another argument, a
+//!   positional argument after a keyword one, anything after `**`) and any
+//!   `__debug__` (CPython rejects every binding of it). The core
+//!   refuses every program with a head statically, so each of these went to
+//!   CPython before `cap-future`; the same gaps WITHOUT a head are the
+//!   core's, and are left as the core answers them.
 //!
 //! A program with no `__future__` in it pays one scan of its tokens and is
 //! returned exactly as it was parsed.
@@ -78,7 +88,7 @@ fn refuse(detail: &str) -> crate::err::LypningError {
 
 /// The pass. `body` is the parse as it came out, error included, because
 /// `barry_as_FLUFL` has to be refused whether or not its grammar parsed.
-pub fn pass(body: R<Vec<Stmt>>, toks: &[Token]) -> R<Vec<Stmt>> {
+pub fn pass(body: R<Vec<Stmt>>, toks: &[Token], lax: Option<&'static str>) -> R<Vec<Stmt>> {
     if mentions(toks, "barry_as_FLUFL") > 0 {
         return Err(refuse("from __future__ import barry_as_FLUFL"));
     }
@@ -99,6 +109,12 @@ pub fn pass(body: R<Vec<Stmt>>, toks: &[Token]) -> R<Vec<Stmt>> {
         return Err(refuse("a non-ASCII identifier, which CPython NFKC-normalizes"));
     }
     let mut body = body?;
+    if let Some(why) = lax {
+        return Err(refuse(why));
+    }
+    if mentions(toks, "__debug__") > 0 {
+        return Err(refuse("the name __debug__"));
+    }
     let start = match body.first() {
         Some(Stmt::Expr(Expr::Str(_))) => 1,
         _ => 0,
@@ -265,6 +281,55 @@ mod tests {
             "from __future__ import division\nprint(f'{\u{ff44}ivision}')\n",
         ] {
             assert_eq!(kind(src), "future", "{src:?}");
+        }
+    }
+
+    /// Every compile-time SyntaxError CPython raises and this parser lets
+    /// through refuses under a head; the same programs without one keep the
+    /// core's parse, and a legal neighbour of each is still served.
+    #[test]
+    fn a_syntax_error_cpython_raises_before_running_refuses_under_a_head() {
+        const H: &str = "from __future__ import annotations\n";
+        for body in [
+            "def f(x: int = 1, y) -> int:\n    return x\n",
+            "def f(x: int, x: int): pass\n",
+            "f = lambda x, x: 1\n",
+            "f = lambda x=1, y: 1\n",
+            "def f():\n    break\n",
+            "def f():\n    try:\n        pass\n    finally:\n        continue\n",
+            "for i in []:\n    def f():\n        break\n",
+            "while 0:\n    pass\nelse:\n    break\n",
+            "return 1\n",
+            "break\n",
+            "continue\n",
+            "def f(a):\n    global a\n",
+            "def f():\n    x = 1\n    global x\n",
+            "def f():\n    print(x)\n    global x\n",
+            "x = 1\nglobal x\n",
+            "def f(*a): pass\nf(x for x in range(2), 1)\n",
+            "def f(*a): pass\nf(1, x for x in range(2))\n",
+            "def f(*a): pass\nf(x for x in range(2),)\n",
+            "print(x=1, 2)\n",
+            "print(**{}, *[])\n",
+            "print(**{}, 1)\n",
+            "__debug__ = 1\n",
+            "def f(__debug__): pass\n",
+        ] {
+            assert_eq!(kind(&format!("{H}{body}")), "future", "{body:?}");
+        }
+        for body in [
+            "def f(x=1, *a, **k): pass\n",
+            "def f(a, b=1): pass\n",
+            "for i in []:\n    if i:\n        break\n    continue\n",
+            "while 0:\n    try:\n        pass\n    finally:\n        continue\n",
+            "def f():\n    for i in []:\n        break\n    return 1\n",
+            "def f():\n    global x\n    x = 1\n",
+            "print(sum(x for x in range(2)))\n",
+            "print(*[1], sep='-')\n",
+            "print(1, sep='', *[2])\n",
+            "print(*[1], **{})\n",
+        ] {
+            assert_eq!(kind(&format!("{H}{body}")), "ok", "{body:?}");
         }
     }
 }

@@ -160,10 +160,12 @@ thread_local! {
 /// `-c`. The cost is a spawn for a program that prints more than 8 MiB. The
 /// core's own programs keep the early flush; nothing there changed.
 ///
-/// WHEN it is set differs by module. `itertools` / `difflib`: from the SOURCE
-/// before anything runs ([`hold_for`]), so an error raised before the import
-/// refuses too. `time`: when `import time` RUNS (`modules::import`), so a
-/// program that fails before its import answers exactly as the core does.
+/// It is set from the SOURCE before anything runs ([`hold_for`] and
+/// `route::hint_held`, which also covers `time`, `statistics`, `textwrap`,
+/// `binascii`, the `__future__` head and `cap-random`'s names), so an error
+/// raised before the import, or under an import that never runs, refuses too:
+/// the core refuses every one of those programs statically, so CPython
+/// answered them. `import time` running (`modules::import`) holds as well.
 #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
 pub fn hold() {
     HELD.with(|h| *h.borrow_mut() = true);
@@ -196,7 +198,7 @@ fn keep_reversible(what: &str) -> R<()> {
         return Err(unsupported(
             "name-hint",
             &format!(
-                "{what} in a program that imports itertools, difflib or time, \
+                "{what} in a program only a capability of this variant admits, \
                  whose uncaught errors must stay refusable"
             ),
         ));
