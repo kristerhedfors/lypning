@@ -922,12 +922,14 @@ impl Parser {
             // Annotated assignment: `x: int = 1`. The annotation itself is
             // parsed and dropped: a 3.14 reference evaluates none of them here.
             // Before 3.14 one at module level is EVALUATED and stored, so
-            // `x: Undefined = 1` is a NameError there — refused.
-            if crate::err::REF_PY_MINOR < 14 && !self.scope.fun {
+            // `x: Undefined = 1` is a NameError there. Refused unless the
+            // evaluation cannot raise or print: a builtin type, a string, None,
+            // or a subscript or tuple of those (`list[int]`).
+            self.bump();
+            let ann = self.expr()?;
+            if crate::err::REF_PY_MINOR < 14 && !self.scope.fun && !inert_annotation(&ann) {
                 return Err(unsupported("annotation", "a module-level annotation before 3.14"));
             }
-            self.bump();
-            self.expr()?;
             let value = if self.eat_op("=") { Some(self.value_list()?) } else { None };
             let msg = match &first {
                 // A bare NAME is "simple"; `(x)` is not, and neither binds nor
@@ -2256,6 +2258,20 @@ fn no_star(e: Expr) -> R<Expr> {
         return Err(unsupported("unpack", "* in a tuple display"));
     }
     Ok(e)
+}
+
+/// An annotation whose evaluation cannot raise or have an effect.
+fn inert_annotation(e: &Expr) -> bool {
+    match e {
+        Expr::Name(n) => matches!(
+            n.as_ref(),
+            "int" | "str" | "float" | "bool" | "bytes" | "list" | "dict" | "tuple" | "set" | "object"
+        ),
+        Expr::Str(_) | Expr::None => true,
+        Expr::Index(b, i) => inert_annotation(b) && inert_annotation(i),
+        Expr::Tuple(v) => v.iter().all(inert_annotation),
+        _ => false,
+    }
 }
 
 fn annotated_global() -> LypningError {
