@@ -168,12 +168,12 @@ thread_local! {
 /// exit 1 with half the output on stdout. The cost is a spawn for such a
 /// program that prints more than 8 MiB.
 ///
-/// Run directly, it is not decided from the walk: a program whose capability
-/// sits under an import that never runs (`if False: import time`) is answered
-/// exactly as the core answers it — its `NameError`, its 9 MB of output. What
-/// the walk decides is [`arm`]. A run the CHAIN routed here is held from its
-/// first statement instead (`route::arm_hold`): the core is not in the
-/// picture, and CPython's hint is the answer the chain must still print.
+/// It is not decided from the walk: a program whose capability sits under an
+/// import that never runs (`if False: import time`) is answered exactly as the
+/// core answers it — its `NameError`, its 9 MB of output — whether a
+/// dispatcher routed it here or it was run directly. What the walk decides is
+/// [`arm`] (`route::arm_hold`); only a served `__future__` head is held from
+/// the first statement.
 #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
 pub fn hold() {
     HELD.with(|h| *h.borrow_mut() = true);
