@@ -41,7 +41,7 @@ from pipeline.training_contract import (BASE_MODEL, CONTRACT_VERSION, MIN_SUPERV
     MIN_TRAIN_CASES, PROTOCOL_EVAL_DRAWS, PROTOCOL_TRAIN_SEEDS,
     adapter_files, adapter_identity, decoding, model_config_identity, probe_contract, probe_report,
     kernel_state, runtime_versions, seal_adapter, source_identity, validate_probe)
-from verified_evaluation import evaluate
+from verified_evaluation import PREFILL_SPLITS_FILE, PREFILL_TOKENS, evaluate
 from verified_stages import (MAX_GRAD_NORM, SFT_OPTIMIZER, balanced_cases, informative_cases,
     sft_batches, supervised_tokens, train_sft, train_grpo)
 
@@ -79,6 +79,9 @@ def parser():
     p.add_argument("--eval-draws", type=int, default=4, help="matched-seed first-draft evaluation draws")
     p.add_argument("--eval-sequences", type=int, default=256,
                    help="sequences per generate call in evaluation: cases per chunk = this // draws")
+    p.add_argument("--eval-prefill-tokens", type=int, default=PREFILL_TOKENS,
+                   help="prompt tokens one evaluation generate call may prefill; a chunk over it "
+                        "is generated as contiguous parts (verified_evaluation.prefill_parts)")
     p.add_argument("--score-workers", type=int, default=16, help="concurrent verifier scorings per chunk")
     p.add_argument("--serial-scoring", action="store_true",
                    help="diagnosis: score each chunk before generating the next, instead of while "
@@ -738,6 +741,7 @@ def _run(args, bundle, adapter_info, verifier):
             witness_path=args.output / "eval-blocked-witnesses.jsonl",
             mismatch_path=args.output / ENGINE_MISMATCH_FILE,
             sequences_per_call=args.eval_sequences, score_workers=args.score_workers,
+            prefill_tokens=args.eval_prefill_tokens,
             overlapped=not args.serial_scoring)
         contract = probe_contract(bundle, args.revision, adapter_info, policy,
                                   args.seed, args.generations, args.smoke)
@@ -751,6 +755,7 @@ def _run(args, bundle, adapter_info, verifier):
                         witness_path=args.output / "eval-blocked-witnesses.jsonl",
                         mismatch_path=args.output / ENGINE_MISMATCH_FILE,
                         sequences_per_call=args.eval_sequences, score_workers=args.score_workers,
+                        prefill_tokens=args.eval_prefill_tokens,
                         overlapped=not args.serial_scoring, **metric_policy(bundle))
     if args.reuse_evaluation is not None and reuse_evaluation(
             args.reuse_evaluation, args.output, manifest, dev_cases):
@@ -774,6 +779,10 @@ def _run(args, bundle, adapter_info, verifier):
         slices = baseline["by_population"].values()
         core.log("eval draws=%d engine_mismatches=%d"
                  % (sum(s["draws"] for s in slices), sum(s["engine_mismatches"] for s in slices)))
+        splits = args.output / PREFILL_SPLITS_FILE
+        if splits.exists():
+            parts = [json.loads(line) for line in splits.read_text().splitlines()]
+            core.log("eval prefill splits: %s" % json.dumps([x for p in parts for x in p["splits"]]))
         return
 
     # Save every candidate separately; 'best.json' selects one without deleting

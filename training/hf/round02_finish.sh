@@ -47,6 +47,9 @@ export DISPATCH_SPACE_REV="$SPACE_REV" PILOT_SPACE_REV=""
 export FINISH_OF SFT_STEP EVAL_DRAWS SEED SPLIT_SEED EVAL_SEQUENCES SCORE_WORKERS
 cd "$(dirname "$0")/../.."
 export PYTHONPATH=src:training LYPNING_CAPTURE=0 LYPNING_HARVEST=0 PIP_DISABLE_PIP_VERSION_CHECK=1
+# Fragmentation, not demand, decided the last 0.13 GiB of the 2026-09-25 OOM
+# (2.62 GiB asked, 2.49 free). The allocator setting changes no result.
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 ROUND=work/round-02
 JOB="${JOB_ID:-local}"
 export NTX_POOL_TAG="$JOB"   # this run's sandbox pool is its own; see hf_sandbox_runner.pool_name

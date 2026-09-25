@@ -30,12 +30,22 @@ and the evaluation fails with `EngineMismatchBound` once such draws exceed 1%
 of its planned draws. The seed-1111 arm-A pilot (HF job
 6ab52a686b030d633f68e503) aborted in its base test arm on one such draw.
 Every other block still aborts as before.
+
+A chunk whose PREFILL would exceed ``prefill_tokens`` -- cases x draws x its
+padded prompt length -- is generated as contiguous sub-calls instead
+(`prefill_parts`), each seeded by the case IDs it holds. The split is a
+function of prompt lengths alone, so both arms split the same chunk the same
+way and pairing survives; a chunk under the budget is untouched, seed and all.
+The seed-1111 finish (HF job 6ab6a20c6b030d633f691a95, 2026-09-25) ran out of
+memory in the prefill of eval-2 chunk 26: one 434-token prompt padded 256
+sequences to 111,104 tokens, 2.3x the largest prefill that had ever run.
 """
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 import threading
+from pathlib import Path
 
 from pipeline.jsonio import append_jsonl
 from pipeline.mismatch_policy import (check_mismatch_bound, counted_on_gpu, mismatch_score,
@@ -49,6 +59,12 @@ from pipeline.training_types import VerificationBlocked
 SEQUENCES_PER_CALL = 256
 #: Concurrent verifier scorings; one pooled sandbox host serves 50.
 SCORE_WORKERS = 16
+#: Prompt tokens one `generate` call may prefill: the largest the h200 has
+#: run, pilot base-dev's longest chunk (189 padded x 256 sequences, HF job
+#: 6ab52a686b030d633f68e503, 2026-09-24). No pilot dev or test chunk exceeds it.
+PREFILL_TOKENS = 189 * 256
+#: The stage's record of every chunk generated as parts, beside its rows.
+PREFILL_SPLITS_FILE = "prefill-splits.jsonl"
 
 
 def blocked_witness(verifier, witness_path, step, *, count_mismatches=False):
@@ -110,6 +126,22 @@ def chunked(cases, draws, sequences_per_call):
     """Consecutive chunks of cases whose draws fit one `generate` call."""
     per_chunk = max(1, int(sequences_per_call) // max(1, int(draws)))
     return [cases[i:i + per_chunk] for i in range(0, len(cases), per_chunk)]
+
+
+def prefill_parts(lengths, draws, budget):
+    """Contiguous index spans of one chunk, each within `budget` prefill tokens.
+
+    The fewest near-equal contiguous parts whose `len(part) * draws * longest
+    prompt` fits; the whole chunk, as one span, whenever it fits already. A
+    single case over the budget is its own part: it cannot be split further.
+    """
+    n = len(lengths)
+    for k in range(1, n + 1):
+        size = -(-n // k)
+        spans = [list(range(i, min(n, i + size))) for i in range(0, n, size)]
+        if all(len(s) * int(draws) * max(lengths[j] for j in s) <= budget for s in spans):
+            return spans
+    return [[i] for i in range(n)]
 
 
 def chunk_seed(seed, chunk):
@@ -258,7 +290,7 @@ class ScoringStage:
 def evaluate(model, tokenizer, cases, verifier, policy, output, step, torch,
              *, seed=1111, draws=4, return_records=False, witness_path=None,
              sequences_per_call=SEQUENCES_PER_CALL, score_workers=SCORE_WORKERS,
-             min_family_cases=1, overlapped=True, mismatch_path=None):
+             min_family_cases=1, overlapped=True, mismatch_path=None, prefill_tokens=None):
     """Generate and score every draw of `cases`; `overlapped=False` is the serial loop.
 
     The two modes write the same rows in the same order and the same witness,
@@ -297,6 +329,26 @@ def evaluate(model, tokenizer, cases, verifier, policy, output, step, torch,
             append_jsonl(output, row)
         return emit
 
+    def tokenize(part):
+        texts = [tokenizer.apply_chat_template(messages(case), tokenize=False,
+                 add_generation_prompt=True, enable_thinking=False) for case in part]
+        return tokenizer(texts, return_tensors="pt", padding=True,
+                         add_special_tokens=False).to(model.device)
+
+    def generation_parts(chunk):
+        # Prompts of one chunk are left-padded so every completion starts at
+        # the same index. Over the prefill budget, the chunk is generated as
+        # contiguous parts, each padded to its own longest prompt.
+        batch = tokenize(chunk)
+        if prefill_tokens is None or len(chunk) * draws * batch["input_ids"].shape[1] <= prefill_tokens:
+            return [(chunk, batch)]
+        lengths = [int(n) for n in batch["attention_mask"].sum(dim=1).tolist()]
+        parts = [[chunk[i] for i in span] for span in prefill_parts(lengths, draws, prefill_tokens)]
+        splits.append({"chunk_cases": len(chunk), "padded": batch["input_ids"].shape[1],
+                       "parts": [len(p) for p in parts]})
+        return [(part, tokenize(part)) for part in parts]
+
+    splits = []
     cases = list(cases)
     stage = ScoringStage(verifier, witness_path, step, score_workers, overlapped=overlapped,
                          planned=len(cases) * int(draws), mismatch_path=mismatch_path)
@@ -313,34 +365,36 @@ def evaluate(model, tokenizer, cases, verifier, policy, output, step, torch,
         with torch.random.fork_rng():
             for chunk in chunked(cases, draws, sequences_per_call):
                 try:
-                    texts = [tokenizer.apply_chat_template(messages(case), tokenize=False,
-                             add_generation_prompt=True, enable_thinking=False) for case in chunk]
-                    batch = tokenizer(texts, return_tensors="pt", padding=True,
-                                      add_special_tokens=False).to(model.device)
-                    prompt_len = batch["input_ids"].shape[1]
-                    sample_seed = chunk_seed(seed, chunk)
-                    torch.manual_seed(sample_seed)
-                    with torch.no_grad():
-                        ids = model.generate(**batch, generation_config=config)
-                    # `generate` groups its return sequences by input, in input order.
-                    pending = []
-                    for i, case in enumerate(chunk):
-                        for draw in range(draws):
-                            tail = trim(ids[i * draws + draw, prompt_len:].tolist(), eos, pad)
-                            completion = tokenizer.decode(tail, skip_special_tokens=True)
-                            truncated = not complete(tail, eos)
-                            program = None if truncated else program_from_completion(completion)
-                            pending.append((case, draw, tail, completion, truncated, program))
+                    parts = generation_parts(chunk)
                 except Exception:
-                    # The serial loop scored the previous chunk before it began
-                    # this one: that chunk's rows land, and its failure, if it
-                    # had one, is the exception the caller sees.
                     stage.finish()
                     raise
-                # The previous chunk's scoring overlapped this generation; it
-                # finishes, and raises, before this chunk's scoring begins.
-                stage.finish()
-                stage.submit(pending, rows_of(sample_seed))
+                for part, batch in parts:
+                    try:
+                        prompt_len = batch["input_ids"].shape[1]
+                        sample_seed = chunk_seed(seed, part)
+                        torch.manual_seed(sample_seed)
+                        with torch.no_grad():
+                            ids = model.generate(**batch, generation_config=config)
+                        # `generate` groups its return sequences by input, in input order.
+                        pending = []
+                        for i, case in enumerate(part):
+                            for draw in range(draws):
+                                tail = trim(ids[i * draws + draw, prompt_len:].tolist(), eos, pad)
+                                completion = tokenizer.decode(tail, skip_special_tokens=True)
+                                truncated = not complete(tail, eos)
+                                program = None if truncated else program_from_completion(completion)
+                                pending.append((case, draw, tail, completion, truncated, program))
+                    except Exception:
+                        # The serial loop scored the previous chunk before it began
+                        # this one: that chunk's rows land, and its failure, if it
+                        # had one, is the exception the caller sees.
+                        stage.finish()
+                        raise
+                    # The previous chunk's scoring overlapped this generation; it
+                    # finishes, and raises, before this chunk's scoring begins.
+                    stage.finish()
+                    stage.submit(pending, rows_of(sample_seed))
             stage.finish()
     finally:
         stage.close()
@@ -351,5 +405,8 @@ def evaluate(model, tokenizer, cases, verifier, policy, output, step, torch,
         if checkpointing:
             model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
         model.train(was_training)
+    if splits:
+        # Counts only: which chunks split, how, and nothing about their cases.
+        append_jsonl(Path(output).with_name(PREFILL_SPLITS_FILE), {"step": step, "splits": splits})
     metrics = summarize(records, min_family_cases=min_family_cases)
     return (metrics, records) if return_records else metrics
