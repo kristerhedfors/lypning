@@ -183,12 +183,12 @@ fn execute_inner(src: &str, report_refusal: bool, kind: &mut String, detail: &mu
         return finish(Err(e), report_refusal, kind, detail);
     }
     // Every program a capability of this branch admitted went to CPython
-    // before, and got its `Did you mean`; see `route::hint_held`, which holds
-    // exactly the programs the core's own walk routes past the core.
+    // before, and got its `Did you mean`; see `route::hint_held`, which ARMS
+    // exactly the programs the core's own walk routes past the core. The hold
+    // itself starts where the capability runs (`io::hold`), which for a
+    // served `__future__` head is before the first statement.
     #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
-    if route::hint_held(&body, src) {
-        io::hold();
-    }
+    route::arm_hold(&body, src, route::routed());
     let mut interp = eval::Interp::new();
     let r = interp.run(&body);
     finish(r, report_refusal, kind, detail)
@@ -595,6 +595,13 @@ fn exec_engine(
         }
     };
     let mut cmd = std::process::Command::new(&bin);
+    // The rung was ROUTED here (`route::arm_hold`); CPython, and anything it
+    // spawns, is not told so.
+    if bin == engine_path_named(route::CPYTHON_NAME) {
+        cmd.env_remove(route::ROUTED_ENV);
+    } else {
+        cmd.env(route::ROUTED_ENV, "1");
+    }
     match is_file {
         Some(p) => {
             cmd.arg(p);

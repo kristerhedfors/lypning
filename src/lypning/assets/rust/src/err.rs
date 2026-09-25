@@ -329,16 +329,15 @@ pub const SERVED_MODULE_NAMES: &[&str] = &[
 /// would be a table in every binary for a message the battery does not grade.
 pub fn forgot_import(e: &LypningError) -> Option<LypningError> {
     let ErrKind::Exc(x) = e.kind() else { return None };
-    // A program lypning-l serves only because of a capability the core lacks
-    // and whose programs went to CPython before it, and got the hint: the
-    // core's own walk routes it past the core (`route::hint_held` —
-    // itertools, difflib, time, statistics, textwrap, binascii, a served
-    // `__future__` head, `random.Random`/`sample`/`shuffle` and
-    // `sys.version_info`, as the walk finds them, never as words in the
-    // text). Any uncaught error CPython may end with a `Did you mean` refuses
+    // A run in which a capability the core lacks has RUN — itertools,
+    // difflib, time, statistics, textwrap, binascii imported, a served
+    // `__future__` head, `random.Random`/`sample`/`shuffle` or
+    // `sys.version_info` evaluated (`io::hold`) — is one the core refused at
+    // that point, and whose programs went to CPython before and got the
+    // hint. Any uncaught error CPython may end with a `Did you mean` refuses
     // here, and `io::hold` keeps the run reversible so this can. Not the other
-    // programs: the core routes them to itself, they are the core's answer,
-    // and what the core answers lypning-l answers. The hints are 3.10's; 3.9 prints the bare line, which
+    // programs, including one whose capability never ran: the core answers
+    // them, and what the core answers lypning-l answers. The hints are 3.10's; 3.9 prints the bare line, which
     // is what this engine prints (measured on 3.9.6, 3.11.15 and 3.14.5).
     #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
     if crate::io::held()

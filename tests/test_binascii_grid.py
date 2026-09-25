@@ -15,7 +15,10 @@ refused here too, from the same function.
 **Every `binascii.Error` is a refusal, not a raise.** The class does not exist
 in this engine, so `binascii.Error` — `except binascii.Error` included — is a
 `module-attr` block in the CORE's walk, and every input that would raise one
-(odd length, a non-hex digit, bad padding) refuses before the program runs.
+(odd length, a non-hex digit, bad padding) refuses before the program runs. An
+`except binascii.Error` no exception reaches is never evaluated, by CPython or
+by the core, so a direct run answers it; one that an exception reaches refuses
+there (`ANSWERED_UNREACHED`).
 `crc32` has no corpus demand (mined 2026-09-24) and is not served.
 """
 
@@ -87,8 +90,9 @@ REFUSED = [
     B + 'print(binascii.crc32(b"hello"))',
     "from binascii import crc32\nprint(crc32(b'a'))",
     B + "E = binascii.Error\nprint(1)",
-    B + "try:\n    print(binascii.unhexlify(b'01'))\nexcept binascii.Error as e:\n    print('E', e)",
-    B + "try:\n    print(binascii.unhexlify(b'01'))\nexcept (ValueError, binascii.Error):\n    print('E')",
+    B + "try:\n    print(binascii.unhexlify(b'0'))\nexcept binascii.Error as e:\n    print('E', e)",
+    B + "try:\n    print(binascii.unhexlify(b'0'))\nexcept (ValueError, binascii.Error):\n    print('E')",
+    B + "try:\n    int('x')\nexcept binascii.Error:\n    print('E')\nexcept ValueError:\n    print('V')",
     B + "def g(b):\n    return binascii.hexlify(b)\nprint(g('x'))",
 ]
 
@@ -111,7 +115,16 @@ AFTER_A_BARRIER = [
     ("binascii", 'print(binascii.hexlify("ab"))'),
     ("binascii", 'print(binascii.a2b_base64(b"aGk"))'),
     ("module-attr", 'print(binascii.crc32(b""))'),
-    ("module-attr", "try:\n    pass\nexcept binascii.Error:\n    pass"),
+    ("binascii", "try:\n    binascii.unhexlify(b'0')\nexcept binascii.Error:\n    pass"),
+]
+
+#: An `except binascii.Error` no exception reaches: CPython never evaluates
+#: the clause, and neither does the core, so a direct run answers as both do.
+#: The ROUTE still goes past the rungs (`ROUTED_PAST_LYPNING_L`).
+ANSWERED_UNREACHED = [
+    B + "try:\n    print(binascii.unhexlify(b'01'))\nexcept binascii.Error:\n    pass",
+    B + "try:\n    print(binascii.unhexlify(b'01'))\nexcept (ValueError, binascii.Error):\n    print('E')",
+    BARRIER + "try:\n    print(1)\nexcept binascii.Error:\n    pass",
 ]
 
 #: Routed by the CORE: into lypning-l on the import, and past it when the
@@ -125,7 +138,7 @@ ROUTED_PAST_LYPNING_L = [
     B + "print(binascii.crc32(b'a'))",
     B + "print(binascii.b2a_uu(b'a'))",
     "from binascii import Error\nprint(1)",
-    B + "try:\n    print(binascii.unhexlify(b'01'))\nexcept binascii.Error:\n    pass",
+    B + "try:\n    print(binascii.unhexlify(b'0'))\nexcept binascii.Error:\n    pass",
     # A served FUNCTION in an `except` is not a class: CPython raises
     # TypeError the moment an exception reaches the handler, and the handler
     # used to be admitted and silently skipped. The alias spelling reached
@@ -357,6 +370,19 @@ def test_every_static_refusal_lands_before_the_barrier(kind: str, call: str) -> 
     assert problem is None, "%s\n  program: %r" % (problem, program)
     assert ": %s: " % kind in got.stderr, got.stderr
     assert before == after, "the refusal landed AFTER the barrier: %r -> %r" % (before, after)
+
+
+@needs_l
+@pytest.mark.parametrize("program", ANSWERED_UNREACHED, ids=range(len(ANSWERED_UNREACHED)))
+def test_an_except_clause_no_exception_reaches_is_answered(program: str) -> None:
+    with tempfile.TemporaryDirectory() as d:
+        got = subprocess.run([str(BINARY), "-c", program], capture_output=True,
+                             text=True, cwd=d, timeout=60)
+    with tempfile.TemporaryDirectory() as d:
+        ref = subprocess.run([sys.executable, "-c", program], capture_output=True,
+                             text=True, cwd=d, timeout=60)
+    assert (got.returncode, got.stdout) == (ref.returncode, ref.stdout), (program, got.stderr)
+    assert got.returncode == 0
 
 
 @needs_core

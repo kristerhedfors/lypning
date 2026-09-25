@@ -256,6 +256,8 @@ fn eval_vi(it: &mut Interp, e: &Expr) -> R<Option<Value>> {
         if n.as_ref() == "version_info" && VERSION_INFO {
             let bv = it.eval(b)?;
             if matches!(bv, Value::Module("sys")) {
+                // The core refuses `sys.version_info`: see `io::hold`.
+                crate::io::hold();
                 return Ok(None);
             }
             return it.get_attr(&bv, n).map(Some);

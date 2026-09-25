@@ -22,15 +22,6 @@ pub struct Parser {
     /// What CPython's symbol table would know about annotations in the scope
     /// being parsed. See [`AnnScope`]; a def swaps its own in and back out.
     scope: AnnScope,
-    /// The first construct this parser ACCEPTS that CPython's compiler
-    /// rejects with a `SyntaxError` before anything runs — a duplicate
-    /// parameter, `break` outside a loop, a positional argument after a
-    /// keyword one. Only noted, and only where `cap-future` is built: the
-    /// `__future__` pass refuses a program with a head that has one, because
-    /// the core refuses every such program statically and CPython answered
-    /// it. Without a head the parse is the core's, and so is its answer.
-    #[cfg(feature = "cap-future")]
-    lax: Option<&'static str>,
     /// `for`/`while` bodies enclosing this point in the current function.
     #[cfg(feature = "cap-future")]
     loops: u32,
@@ -91,15 +82,38 @@ pub const MAX_PARSE_DEPTH: u32 = 64;
 /// gets its answer from CPython.
 pub const MAX_CHAIN_OPS: u32 = 1000;
 
+#[cfg(feature = "cap-future")]
+thread_local! {
+    static LAX: std::cell::Cell<Option<(&'static str, u32)>> = const { std::cell::Cell::new(None) };
+}
+
+/// Note the first construct the lexer or this parser ACCEPTS that CPython's
+/// compiler rejects with a `SyntaxError` before anything runs — a duplicate
+/// parameter, `break` outside a loop, `0777`, a bare `except:` before another
+/// clause — with its line. Only noted, and only where `cap-future` is built:
+/// `future.rs` answers it with CPython's `SyntaxError` for a program the core
+/// routes past itself (a `__future__` head, or any capability the core
+/// lacks), because every such program went to CPython before and got that
+/// answer. A program the core routes to itself keeps the core's parse, and
+/// the core's answer.
+#[cfg(feature = "cap-future")]
+pub fn note_lax(why: &'static str, line: u32) {
+    LAX.with(|l| {
+        if l.get().is_none() {
+            l.set(Some((why, line)));
+        }
+    });
+}
+
 pub fn parse(src: &str) -> R<Vec<Stmt>> {
+    #[cfg(feature = "cap-future")]
+    LAX.with(|l| l.set(None));
     let mut p = Parser {
         t: tokenize(src)?,
         i: 0,
         depth: 0,
         chain_ops: 0,
         scope: AnnScope::default(),
-        #[cfg(feature = "cap-future")]
-        lax: None,
         #[cfg(feature = "cap-future")]
         loops: 0,
     };
@@ -109,7 +123,7 @@ pub fn parse(src: &str) -> R<Vec<Stmt>> {
     // handed the RESULT, error and all, because `barry_as_FLUFL` changes the
     // grammar and must refuse whether or not this parser read what follows.
     #[cfg(feature = "cap-future")]
-    let body = crate::future::pass(body, &p.t, p.lax);
+    let body = crate::future::pass(body, &p.t, LAX.with(|l| l.take()), src);
     body
 }
 
@@ -164,7 +178,7 @@ impl Parser {
     /// lets through; see the field.
     #[cfg(feature = "cap-future")]
     fn lax(&mut self, why: &'static str) {
-        self.lax.get_or_insert(why);
+        note_lax(why, self.line());
     }
 
     /// `body` parsed as a loop body: `break` and `continue` are legal in it.
@@ -495,6 +509,10 @@ impl Parser {
             let body = self.block()?;
             let mut handlers = Vec::new();
             while self.is_kw("except") {
+                #[cfg(feature = "cap-future")]
+                if handlers.last().is_some_and(|h: &Handler| h.kinds.is_empty()) {
+                    self.lax("default 'except:' must be last");
+                }
                 self.bump();
                 if self.is_op("*") {
                     return Err(unsupported("except-star", "except* group"));
@@ -1047,6 +1065,10 @@ impl Parser {
                 break;
             }
         }
+        #[cfg(feature = "cap-future")]
+        if items.iter().filter(|t| matches!(t, Target::Star(_))).count() > 1 {
+            note_lax("multiple starred expressions in assignment", self.line());
+        }
         Ok(if items.len() == 1 && !saw_comma {
             items.pop().unwrap()
         } else {
@@ -1059,6 +1081,10 @@ impl Parser {
             Expr::Name(name) => Target::Name(name),
             Expr::Starred(inner) => Target::Star(Box::new(self.target_from_expr(*inner)?)),
             Expr::Tuple(v) | Expr::List(v) => {
+                #[cfg(feature = "cap-future")]
+                if v.iter().filter(|x| matches!(x, Expr::Starred(_))).count() > 1 {
+                    note_lax("multiple starred expressions in assignment", self.line());
+                }
                 let mut out = Vec::with_capacity(v.len());
                 for x in v {
                     out.push(self.target_from_expr(x)?);
@@ -1881,6 +1907,10 @@ fn parse_fstring(raw: &str, raw_prefix: bool) -> R<Vec<FPart>> {
                     lit.clear();
                 }
                 let (expr_src, conv, spec_src, next) = split_field(raw, i + 1)?;
+                #[cfg(feature = "cap-future")]
+                if conv.is_some_and(|c| !matches!(c, 's' | 'r' | 'a')) {
+                    note_lax("f-string: invalid conversion character", 0);
+                }
                 i = next;
                 if expr_src.trim_end().ends_with('=') && !expr_src.trim_end().ends_with("==") {
                     return Err(unsupported("fstring", "self-documenting {x=} field"));
@@ -1891,8 +1921,6 @@ fn parse_fstring(raw: &str, raw_prefix: bool) -> R<Vec<FPart>> {
                     depth: 0,
                     chain_ops: 0,
                     scope: AnnScope::default(),
-                    #[cfg(feature = "cap-future")]
-                    lax: None,
                     #[cfg(feature = "cap-future")]
                     loops: 0,
                 };

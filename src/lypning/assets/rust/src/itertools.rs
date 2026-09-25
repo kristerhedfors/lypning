@@ -36,8 +36,8 @@
 //! `OverflowError` names `C ssize_t`), a keyword `combinations` does not bind,
 //! a `product` whose pool list would be absurdly long, `mro()` of either class
 //! (`value::attr_error`), an UNCAUGHT NameError or AttributeError in a program
-//! that names this module (`Interp::run`: CPython's last line carries a
-//! suggestion), and more than 8 MiB of output from such a program
+//! that has imported this module (`err::forgot_import`: CPython's last line
+//! carries a suggestion), and more than 8 MiB of output from such a program
 //! (`io::hold`: flushing it would turn any later refusal into an exit 1).
 //! `isinstance(x, itertools.product)` is answered: the object's kind IS the
 //! class's tp_name (`builtins.rs`, `isinstance`).

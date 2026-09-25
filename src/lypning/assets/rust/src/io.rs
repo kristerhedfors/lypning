@@ -143,30 +143,37 @@ thread_local! {
     /// See [`hold`].
     #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
     static HELD: RefCell<bool> = const { RefCell::new(false) };
+    /// See [`arm`].
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+    static ARMED: RefCell<bool> = const { RefCell::new(false) };
 }
 
 /// This run may not commit early: past [`COMMIT_THRESHOLD`] it REFUSES
 /// instead of flushing, and an `os.rmdir` of a directory it did not make
 /// refuses instead of committing.
 ///
-/// Set for a program lypning-l serves only because of a capability the core
-/// lacks — one the core's own walk routes PAST the core (`route::hint_held`):
-/// every one of them went to CPython before, and their served surface keeps
-/// runtime refusals — `repr` of a product, `set-order`, a dynamic `getattr`,
-/// and above all an uncaught error whose last line CPython ends with a `Did
-/// you mean` suggestion this engine does not compute (`err::forgot_import`).
-/// A refusal needs a run that can still be taken back; a flush would turn it
-/// into an exit 1 with half the output on stdout, from the chain as well as
-/// from a pinned `-c`. The cost is a spawn for such a program that prints more
-/// than 8 MiB.
+/// Called when a capability the CORE lacks actually RUNS — the import of a
+/// module only a [`crate::route::HINT_HELD_CAPS`] capability serves
+/// (`modules::import`), `random.sample`/`shuffle`/`Random` or
+/// `sys.version_info` being evaluated, or a served `__future__` head, which
+/// runs before the first statement. That is exactly the point at which the
+/// core, running the same program, would have refused: before it, the two
+/// binaries have done the same thing and must keep doing it (invariant 10);
+/// after it, the program is one only this variant answers. Every such program
+/// went to CPython before, and its served surface keeps runtime refusals —
+/// `repr` of a product, `set-order`, a dynamic `getattr`, and above all an
+/// uncaught error whose last line CPython ends with a `Did you mean`
+/// suggestion this engine does not compute (`err::forgot_import`). A refusal
+/// needs a run that can still be taken back; a flush would turn it into an
+/// exit 1 with half the output on stdout. The cost is a spawn for such a
+/// program that prints more than 8 MiB.
 ///
-/// Decided from the WALK before anything runs, so an error raised before the
-/// import, or under an import that never runs, refuses too — the core routes
-/// those programs past itself all the same. A program the core routes to
-/// ITSELF is never held: it keeps the early flush and answers exactly as the
-/// core does (invariant 10), whatever its comments or strings say. The
-/// runtime calls (`import time`, `itertools`/`difflib` running) only ever
-/// fire in a program the walk already held.
+/// Run directly, it is not decided from the walk: a program whose capability
+/// sits under an import that never runs (`if False: import time`) is answered
+/// exactly as the core answers it — its `NameError`, its 9 MB of output. What
+/// the walk decides is [`arm`]. A run the CHAIN routed here is held from its
+/// first statement instead (`route::arm_hold`): the core is not in the
+/// picture, and CPython's hint is the answer the chain must still print.
 #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
 pub fn hold() {
     HELD.with(|h| *h.borrow_mut() = true);
@@ -181,6 +188,37 @@ pub fn held() -> bool {
 pub fn held() -> bool {
     false
 }
+
+/// The run MAY become held: the core's own walk routes this program past the
+/// core (`route::hint_held`), so a capability the core lacks is somewhere in
+/// it, reachable or not. An armed run that is not yet [`held`] behaves as the
+/// core does in every observable way but one: past [`COMMIT_THRESHOLD`] it
+/// keeps buffering, up to [`ARMED_LIMIT`], instead of flushing, so that the
+/// capability, if it does run later, still finds a run it can take back. A
+/// program that never reaches it commits at its end, byte for byte what the
+/// core printed.
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+pub fn arm() {
+    ARMED.with(|a| *a.borrow_mut() = true);
+}
+
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+fn armed() -> bool {
+    ARMED.with(|a| *a.borrow())
+}
+
+/// How far an [`arm`]ed run that is not yet [`held`] buffers before it
+/// flushes as the core does. Past it a capability that runs later finds a
+/// committed run, and the program keeps its output, as any committed run does.
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+pub const ARMED_LIMIT: usize = 8 * COMMIT_THRESHOLD;
+
+/// Does an armed run keep buffering past [`COMMIT_THRESHOLD`] at `len` bytes?
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+fn defer_commit(len: usize) -> bool {
+    armed() && !held() && len <= ARMED_LIMIT
+}
+
 
 /// The refusal a held run raises where it would otherwise commit.
 #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
@@ -292,6 +330,10 @@ fn maybe_commit() -> R<()> {
         if !is_committed() && staged_len() > COMMIT_THRESHOLD {
             #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
             keep_reversible("more than 8 MiB of staged file writes")?;
+            #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+            if defer_commit(staged_len()) {
+                return Ok(());
+            }
             commit()?;
             mark_committed(WHY_FLUSHED);
         }
@@ -300,6 +342,10 @@ fn maybe_commit() -> R<()> {
     if !is_committed() && buffered_len() > COMMIT_THRESHOLD {
         #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
         keep_reversible("more than 8 MiB of output")?;
+        #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+        if defer_commit(buffered_len()) {
+            return Ok(());
+        }
         commit()?;
         mark_committed(WHY_FLUSHED);
     }
@@ -1123,6 +1169,8 @@ pub fn reset() {
     COMMIT_WHY.with(|w| *w.borrow_mut() = "");
     #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
     HELD.with(|h| *h.borrow_mut() = false);
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+    ARMED.with(|a| *a.borrow_mut() = false);
     STDIN.with(|s| *s.borrow_mut() = None);
     STDIN_POS.with(|p| *p.borrow_mut() = 0);
     #[cfg(feature = "cap-csv")]

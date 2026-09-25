@@ -10,10 +10,12 @@ a clean refusal (exit 90, nothing on stdout, one
 ``lypning-l: unsupported: <kind>: <detail>`` line on stderr) and the chain
 must then print exactly what CPython 3.14.5 prints — pinned below.
 
-`route::hint_held` decides the suggestion rows from the WALK, before the
-first statement, so an error raised before `import time` runs, or under an
-import that never runs, refuses too. `future.rs` refuses the SyntaxError rows
-under a head; without one the parse is the core's, and so is its answer.
+Each row is run as the CHAIN runs it — ROUTED (`engines.ROUTED_ENV`): then
+`route::arm_hold` holds the suggestion rows from the WALK, before the first
+statement, so an error raised before `import time` runs, or under an import
+that never runs, refuses too; and `future.rs` refuses the SyntaxError rows.
+Run directly, lypning-l answers what the core answers until the capability
+runs, and a SyntaxError row is CPython's SyntaxError (exit 1, empty stdout).
 """
 
 from __future__ import annotations
@@ -163,6 +165,14 @@ def _run(argv: list[str], program: str) -> subprocess.CompletedProcess:
                               cwd=d, timeout=60)
 
 
+def _routed(argv: list[str], program: str) -> subprocess.CompletedProcess:
+    """As the CHAIN runs a rung it routed to (`engines.ROUTED_ENV`)."""
+    env = dict(os.environ, **{engines.ROUTED_ENV: "1"})
+    with tempfile.TemporaryDirectory() as d:
+        return subprocess.run(argv + ["-c", program], capture_output=True, text=True,
+                              cwd=d, timeout=120, env=env)
+
+
 def _refused(got: subprocess.CompletedProcess, kind: str) -> None:
     assert got.returncode == engines.UNSUPPORTED_EXIT, (got.returncode, got.stdout, got.stderr)
     assert got.stdout == "", got.stdout
@@ -173,7 +183,7 @@ def _refused(got: subprocess.CompletedProcess, kind: str) -> None:
 @needs_l
 @pytest.mark.parametrize("program,out,line", HINTED, ids=range(len(HINTED)))
 def test_a_suggestion_cpython_prints_is_a_refusal(program: str, out: str, line: str) -> None:
-    _refused(_run([str(BINARY)], program), "name-hint")
+    _refused(_routed([str(BINARY)], program), "name-hint")
     if exact:
         ref = _run([sys.executable], program)
         assert (ref.returncode, ref.stdout, ref.stderr.strip().splitlines()[-1]) == (1, out, line)
@@ -182,7 +192,13 @@ def test_a_suggestion_cpython_prints_is_a_refusal(program: str, out: str, line: 
 @needs_l
 @pytest.mark.parametrize("program,out,line", SYNTAX, ids=range(len(SYNTAX)))
 def test_a_compile_time_syntax_error_under_a_head_is_a_refusal(program: str, out: str, line: str) -> None:
-    _refused(_run([str(BINARY)], program), "future")
+    _refused(_routed([str(BINARY)], program), "future")
+    direct = _run([str(BINARY)], program)
+    if "__debug__" in program:  # read as a constant this engine has no value for
+        _refused(direct, "future")
+        return
+    assert (direct.returncode, direct.stdout) == (1, ""), (direct.returncode, direct.stdout, direct.stderr)
+    assert direct.stderr.strip().splitlines()[-1].startswith("SyntaxError: "), direct.stderr
     if exact:
         ref = _run([sys.executable], program)
         assert (ref.returncode, ref.stdout, ref.stderr.strip().splitlines()[-1]) == (1, out, line)

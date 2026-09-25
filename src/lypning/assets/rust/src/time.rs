@@ -78,14 +78,15 @@
 //!
 //! Every program this capability admits went to CPython before it, and CPython
 //! ends an uncaught `NameError`, `AttributeError` or unexpected-keyword
-//! `TypeError` with a `Did you mean` search this engine does not run. When
-//! the walk sees `import time` ANYWHERE (`route::hint_held`, decided before
-//! the first statement), the exit path refuses those as `name-hint`
-//! (`err::forgot_import`), and `io::hold` keeps the run reversible to its end
-//! so it can: more than 8 MiB of output, or an `os.rmdir` of a directory the
-//! run did not make, refuses instead of committing. That includes an error
-//! raised before the import runs, or under an import that never runs: the
-//! core refuses `import time` statically, so CPython answered those too.
+//! `TypeError` with a `Did you mean` search this engine does not run. Once
+//! `import time` RUNS — where the core, running the same program, refuses —
+//! the exit path refuses those as `name-hint` (`err::forgot_import`), and
+//! `io::hold` keeps the run reversible to its end so it can: more than 8 MiB
+//! of output, or an `os.rmdir` of a directory the run did not make, refuses
+//! instead of committing. An error raised before the import runs, or under an
+//! import that never runs, is answered as the core answers it; the walk only
+//! ARMS such a run (`route::hint_held`), so that its output is still held
+//! back when the import does run.
 
 use crate::args::Args;
 use crate::err::{type_err, unsupported, value_err, LypningError, R};

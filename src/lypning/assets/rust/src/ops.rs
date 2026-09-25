@@ -816,7 +816,14 @@ impl Interp {
     }
 
     pub fn get_attr(&mut self, base: &Value, name: &str) -> R<Value> {
-        if let Value::Module(_) = base {
+        if let Value::Module(m) = base {
+            // `random.sample` and friends: the core refuses them right here,
+            // so from here the run is one only a capability answers.
+            #[cfg(feature = "cap-random")]
+            if crate::route::core_refuses_attr(m, name) {
+                crate::io::hold();
+            }
+            let _ = m;
             return crate::modules::get_attr(base, name);
         }
         // `.name`, `.value`, `.bit_length()`, `.real`: CPython answers every

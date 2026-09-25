@@ -366,19 +366,12 @@ impl Interp {
     pub fn run(&mut self, body: &[Stmt]) -> R<()> {
         collect_fn_locals(body, &mut self.fn_locals);
         let flow = self.exec_block(body);
-        // An UNCAUGHT NameError or AttributeError in a program the core's
-        // walk routes past the core refuses at the exit path
+        // An UNCAUGHT NameError or AttributeError in a run a capability the
+        // core lacks has run in refuses at the exit path
         // (`err::forgot_import`, behind `io::hold`), not here.
         match flow? {
             Flow::Normal => Ok(()),
             _ => Err(LypningError::syntax(0, "'return'/'break' outside a block")),
-        }
-    }
-
-    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
-    fn note_cap(&mut self, path: &str) {
-        if matches!(path, "itertools" | "difflib") {
-            crate::io::hold();
         }
     }
 
@@ -794,8 +787,6 @@ impl Interp {
             Stmt::Import { names } => {
                 for (path, bind) in names {
                     let m = modules::import(path)?;
-                    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
-                    self.note_cap(path);
                     // `import os.path` binds `os`, but `os.path` must resolve.
                     if path.contains('.') && bind.as_ref() == path.split('.').next().unwrap() {
                         modules::import(path.split('.').next().unwrap())?;
@@ -808,9 +799,13 @@ impl Interp {
             }
             Stmt::FromImport { module, names } => {
                 let m = modules::import(module)?;
-                #[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
-                self.note_cap(module);
                 for (n, bind) in names {
+                    #[cfg(feature = "cap-random")]
+                    if let Value::Module(name) = &m {
+                        if crate::route::core_refuses_attr(name, n) {
+                            crate::io::hold();
+                        }
+                    }
                     let v = modules::get_attr(&m, n)?;
                     self.bind(bind, v);
                 }

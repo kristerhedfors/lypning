@@ -86,9 +86,11 @@ pub fn import(path: &str) -> R<Value> {
         // False at exit 0.
         Some(&"posixpath") => Ok(Value::Module("os.path")),
         Some(m) => {
-            // See `io::hold`: from here the run must stay reversible.
-            #[cfg(feature = "cap-time")]
-            if *m == "time" {
+            // See `io::hold`: the core refuses this import, so from here the
+            // program is one only a capability answers, and the run must stay
+            // reversible.
+            #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+            if crate::route::core_refuses_import(m) {
                 crate::io::hold();
             }
             Ok(Value::Module(m))
@@ -445,9 +447,15 @@ pub fn call_module_method(
         #[cfg(feature = "cap-time")]
         ("time", _) => return crate::time::call(it, name, args, &kw),
         #[cfg(feature = "cap-random")]
-        ("random", "sample" | "shuffle") => return crate::randobj::call(it, name, args, &kw),
+        ("random", "sample" | "shuffle") => {
+            crate::io::hold();
+            return crate::randobj::call(it, name, args, &kw);
+        }
         #[cfg(feature = "cap-random")]
-        ("random", "Random") => return crate::randobj::construct(it, args, &kw),
+        ("random", "Random") => {
+            crate::io::hold();
+            return crate::randobj::construct(it, args, &kw);
+        }
         #[cfg(feature = "cap-binascii")]
         ("binascii", _) => return crate::binascii::call(it, name, args, &kw),
         ("random", _) => return crate::random::call(it, name, args, &kw),

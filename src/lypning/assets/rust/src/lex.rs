@@ -346,6 +346,15 @@ impl<'a> Lexer<'a> {
             while self.peek().is_ascii_alphanumeric() || self.peek() == b'_' {
                 self.pos += 1;
             }
+            // `0x_1` is legal: one underscore may follow the prefix.
+            #[cfg(feature = "cap-future")]
+            {
+                let d = &self.src[ds..self.pos];
+                let d = d.strip_prefix(b"_").unwrap_or(d);
+                if bad_underscores(d) {
+                    crate::parse::note_lax("invalid number literal", self.line);
+                }
+            }
             let text: String = std::str::from_utf8(&self.src[ds..self.pos])
                 .unwrap_or("")
                 .chars()
@@ -381,6 +390,10 @@ impl<'a> Lexer<'a> {
         }
         if (self.peek() | 0x20) == b'j' {
             return Err(unsupported("complex", "complex literal"));
+        }
+        #[cfg(feature = "cap-future")]
+        if let Some(why) = bad_decimal(&self.src[start..self.pos], is_float) {
+            crate::parse::note_lax(why, self.line);
         }
         let text: String = std::str::from_utf8(&self.src[start..self.pos])
             .unwrap_or("")
@@ -657,4 +670,33 @@ fn push_char(out: &mut Vec<u8>, v: u32, line: u32) -> Result<(), LypningError> {
         )),
         None => Err(LypningError::syntax(line, "invalid unicode escape")),
     }
+}
+
+/// A run of digits and underscores CPython rejects: an underscore that does
+/// not sit BETWEEN two digits — leading, trailing or doubled (`1_`, `1__0`).
+#[cfg(feature = "cap-future")]
+fn bad_underscores(run: &[u8]) -> bool {
+    run.first() == Some(&b'_') || run.last() == Some(&b'_') || run.windows(2).any(|w| w == b"__")
+}
+
+/// The `SyntaxError` CPython's tokenizer raises for a decimal literal this
+/// lexer reads anyway: a misplaced underscore in any digit run (the integer
+/// part, the fraction, the exponent), and a leading zero on a nonzero integer
+/// (`0777`, which is octal in Python 2 and nothing in Python 3). `00` and
+/// `0_0` are zero, and `09.5` is a float; all three are legal.
+#[cfg(feature = "cap-future")]
+fn bad_decimal(lit: &[u8], is_float: bool) -> Option<&'static str> {
+    let runs = lit.split(|c| matches!(c, b'.' | b'e' | b'E' | b'+' | b'-'));
+    for run in runs {
+        if bad_underscores(run) {
+            return Some("invalid decimal literal");
+        }
+    }
+    let digits: Vec<u8> = lit.iter().copied().filter(|c| *c != b'_').collect();
+    if !is_float && digits.len() > 1 && digits[0] == b'0' && digits.iter().any(|c| *c != b'0') {
+        return Some(
+            "leading zeros in decimal integer literals are not permitted; use an 0o prefix for octal integers",
+        );
+    }
+    None
 }

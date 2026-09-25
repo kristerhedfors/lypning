@@ -415,6 +415,21 @@ pub fn future_names(toks: &[crate::lex::Token], needle: &str) -> usize {
     toks.iter().filter(|t| matches!(&t.tok, crate::lex::Tok::Name(n) if n == needle)).count()
 }
 
+/// Does the program import the MODULE `__future__` — a `__future__` NAME right
+/// after `from` or `import`? Only then is it a compiler directive at all.
+/// Anywhere else the name is an ordinary one — a variable, a parameter, an
+/// `as` target, a keyword argument — which the core runs as it runs any name,
+/// and CPython with it; neither variant may look further (invariant 10).
+/// `import os, __future__` is not caught here and needs not be: its import
+/// refuses at runtime, in every variant, before anything after it runs.
+pub fn future_imported(toks: &[crate::lex::Token]) -> bool {
+    use crate::lex::Tok;
+    toks.windows(2).any(|w| {
+        matches!(&w[1].tok, Tok::Name(n) if n == "__future__")
+            && matches!(&w[0].tok, Tok::Name(k) if k == "from" || k == "import")
+    })
+}
+
 /// The refusals a program with a `__future__` NAME in it gets from its TOKENS
 /// alone: `barry_as_FLUFL` (a grammar), and any non-ASCII identifier or
 /// f-string text, which CPython NFKC-folds and this lexer does not, so the
@@ -497,7 +512,7 @@ fn future_route_stop(src: &str, body: &[Stmt], req: &mut Requirements) {
         return;
     }
     let Ok(toks) = crate::lex::tokenize(src) else { return };
-    if future_names(&toks, "__future__") == 0 {
+    if !future_imported(&toks) {
         return;
     }
     let why = match future_token_block(&toks) {
@@ -692,14 +707,18 @@ fn served_module(v: &Variant, m: &str) -> bool {
 /// down rather than closed by a rule that costs three matches.
 #[cfg(feature = "cap-hashlib")]
 fn admitted_by_a_capability(req: &Requirements) -> bool {
-    // `textwrap` joins it for the same reason: its results are `str` and
-    // `list`, so a method outside `known_method` on one is a method nothing on
-    // the spectrum has.
-    #[cfg(feature = "cap-textwrap")]
-    if req.imports.contains("textwrap") {
-        return true;
-    }
     req.imports.contains("hashlib")
+}
+
+/// `textwrap` asks the same question for the ROUTE only: its results are
+/// `str` and `list`, so a method outside `known_method` on one is a method
+/// nothing on the spectrum has. Not a pre-run stop, because an import that
+/// never runs (`while False: import textwrap`) leaves a program the core
+/// answers; a direct run that does import it is held (`io::hold`), and its
+/// uncaught `AttributeError` refuses at the exit as `name-hint`.
+#[cfg(feature = "cap-textwrap")]
+fn routed_past_by_textwrap(req: &Requirements) -> bool {
+    req.imports.contains("textwrap")
 }
 
 fn module_of(detail: &str) -> &str {
@@ -1532,7 +1551,10 @@ impl Requirements {
         if same {
             self.blocker = Some(("module-attr".to_string(), detail));
         } else {
-            self.stop_only("module-attr", detail);
+            // The ROUTE's stop, not the run's: the attribute refuses where it
+            // is evaluated, in every variant, and one that never is (an
+            // `except m.X` no exception reaches) is the core's answer too.
+            self.stop_route("module-attr", detail);
         }
     }
 
@@ -2012,6 +2034,19 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                         // rung's to decide, and keeps the route it had.
                         if every_rung {
                             req.stop_only("exception", format!("except {k}"));
+                        } else if dotted
+                            .as_ref()
+                            .is_some_and(|(m, _)| crate::modules::MODULES.contains(&m.as_str()))
+                        {
+                            // A module only a capability of THIS binary serves
+                            // (`except glob.X`, `except time.error`): the verdict is
+                            // the capability's, and a handler no exception
+                            // reaches is never evaluated — the core, whose
+                            // walk sees no such module, runs the program and
+                            // answers. So the ROUTE goes past the rungs, and a
+                            // direct run refuses where an exception reaches
+                            // the clause (`eval.rs`), as the core's would.
+                            req.stop_route("exception", format!("except {k}"));
                         }
                     }
                     // `except binascii.<anything>`: no binascii name is a class
@@ -2030,10 +2065,6 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                         dotted.as_ref().map(|(m, l)| (m.as_str(), *l))
                     {
                         req.escalate(m, leaf);
-                        #[cfg(feature = "cap-binascii")]
-                        if m == "binascii" {
-                            req.stop_base64("module-attr", format!("binascii.{leaf}"));
-                        }
                     }
                 }
                 // `except E as p` binds `p`, and Python deletes it again at
@@ -3571,7 +3602,10 @@ pub fn except_clause(dotted: Option<(&str, &str)>, k: &str) -> (bool, bool) {
                     crate::modules::get_attr(&crate::value::Value::Module(m), leaf),
                     Ok(crate::value::Value::Builtin(n)) if crate::builtins::is_exception_name(n)
                 ),
-                true,
+                // Every rung only when the CORE serves the module: `glob` and
+                // `time` are in this binary's MODULES and not in the core's,
+                // whose walk therefore never stops on the clause.
+                !CAPS.iter().any(|(c, mods, _)| !SPECTRUM[0].caps.contains(c) && mods.contains(&module)),
             ),
             None => (crate::builtins::is_exception_name(leaf), false),
         },
@@ -3717,15 +3751,16 @@ fn walk_for_hold(body: &[Stmt], src: &str) -> Requirements {
 fn has_future_head(src: &str) -> bool {
     #[cfg(feature = "cap-future")]
     if src.contains("__future__") {
-        return crate::lex::tokenize(src).is_ok_and(|t| future_names(&t, "__future__") > 0);
+        return crate::lex::tokenize(src).is_ok_and(|t| future_imported(&t));
     }
     let _ = src;
     false
 }
 
-/// Is this run HELD — its output kept reversible to the end (`io::hold`), and
-/// its uncaught `NameError`, `AttributeError` or unexpected-keyword
-/// `TypeError` refused as `name-hint` (`err::forgot_import`)?
+/// Is this run ARMED (`io::arm`) — may it become held, its output kept
+/// reversible to the end and its uncaught `NameError`, `AttributeError` or
+/// unexpected-keyword `TypeError` refused as `name-hint`
+/// (`err::forgot_import`)?
 ///
 /// Exactly when the spectrum router, evaluated in this binary over this
 /// program, would NOT pick the core, because the core's static walk blocks on
@@ -3733,17 +3768,73 @@ fn has_future_head(src: &str) -> bool {
 /// CPython before the capability existed; a program the core routes to itself
 /// is the core's answer, and this variant answers it identically — no hold, no
 /// `name-hint`, no 8 MiB or `rmdir` refusal (invariant 10, pinned by
-/// `tests/test_hold_monotone.py`). Decided from the WALK before the first
-/// statement, so an error raised before the import runs, or under an import
-/// that never runs (`if False: import time`), refuses too: the core routes
-/// those past itself all the same. Nothing here reads the source as text —
+/// `tests/test_hold_monotone.py`). Nothing here reads the source as text —
 /// a comment or a string that says `itertools`, a variable named `sample`,
-/// holds nothing.
+/// arms nothing. The HOLD itself starts where the capability RUNS
+/// (`io::hold`), which is where the core, running the same program, refuses:
+/// an import that never runs (`if False: import time`) holds nothing, and the
+/// program is answered as the core answers it.
 #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
 pub fn hint_held(body: &[Stmt], src: &str) -> bool {
     core_lacks(&walk_for_hold(body, src), has_future_head(src))
         .iter()
         .any(|c| HINT_HELD_CAPS.contains(c))
+}
+
+/// Set to `1` by both dispatchers (`main.rs::exec_engine`,
+/// `engines.dispatch`) in the environment of every Rust rung they run, and
+/// cleared for CPython and for every other child (`engines.child_env`).
+pub const ROUTED_ENV: &str = "LYPNING_ROUTED";
+
+/// Was this process ROUTED here by a dispatcher ([`ROUTED_ENV`])?
+pub fn routed() -> bool {
+    std::env::var_os(ROUTED_ENV).is_some_and(|v| v == "1")
+}
+
+/// Before the first statement, for a run [`hint_held`] says the core routes
+/// past itself.
+///
+/// ROUTED — the chain reached this binary because the router did not pick the
+/// core — the run is HELD from its first statement (`io::hold`): the core is
+/// not in the picture, the program went to CPython before its capability
+/// existed, and CPython's `Did you mean` is the answer the chain must still
+/// print, even for an error raised before the import runs or under one that
+/// never runs.
+///
+/// Run DIRECTLY (`lypning-l -c`, a pinned engine, the per-engine arm of
+/// `lypning conformance`) it is only ARMED (`io::arm`), and held where the
+/// capability runs — a served `__future__` head at once, since the core
+/// refuses it at its first statement. Until then it answers exactly as the
+/// core, run the same way, answers (invariant 10).
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+pub fn arm_hold(body: &[Stmt], src: &str, routed: bool) {
+    if hint_held(body, src) {
+        crate::io::arm();
+        if routed || has_future_head(src) {
+            crate::io::hold();
+        }
+    }
+}
+
+/// Does evaluating `module.name` mean running a capability the core lacks —
+/// a [`CAP_ATTRS`] name, which the core's `get_attr` refuses? Asked where
+/// the RUN evaluates the attribute (`ops.rs`, a `from … import`), never by
+/// the walk, which reads `modules::get_attr` without running anything.
+#[cfg(feature = "cap-random")]
+pub fn core_refuses_attr(module: &str, name: &str) -> bool {
+    CAP_ATTRS.iter().any(|(c, m, any, shape)| {
+        *m == module && !SPECTRUM[0].caps.contains(c) && (any.contains(&name) || shape.contains(&name))
+    })
+}
+
+/// Does running `module` mean running a capability the core lacks, one whose
+/// programs [`HINT_HELD_CAPS`] says went to CPython before — the point at
+/// which the core, running the same program, refuses (`io::hold`)?
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+pub fn core_refuses_import(module: &str) -> bool {
+    CAPS.iter().any(|(c, mods, _)| {
+        HINT_HELD_CAPS.contains(c) && !SPECTRUM[0].caps.contains(c) && mods.contains(&module)
+    })
 }
 
 /// Which order-blind wrapper names this source still uses as the BUILTIN, one
@@ -3946,6 +4037,16 @@ fn random_method(_req: &Requirements, _n: &str) -> bool {
     false
 }
 
+/// Is `e` a bare name some `import` in the program bound — an `as` alias, or
+/// the module's own name? Read in source order, like every binding here, so
+/// a use above its import (in a `def`) is not one; that costs a stop, which
+/// the run then raises where the attribute is evaluated.
+#[cfg(any(feature = "cap-base64", feature = "cap-binascii"))]
+fn names_an_import(e: &Expr, req: &Requirements) -> bool {
+    let Expr::Name(n) = e else { return true };
+    req.aliases.iter().any(|(a, _)| a == n.as_ref()) || req.imports.contains(n.as_ref())
+}
+
 fn resolve_module(e: &Expr, aliases: &[(String, String)]) -> Option<crate::value::Value> {
     match e {
         Expr::Name(n) => {
@@ -4131,13 +4232,18 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                     // variants, so the ROUTE is already right — but a blocker
                     // is not a stop, and the run has to refuse before the
                     // barrier rather than when the attribute is touched.
+                    //
+                    // Only for a name the program IMPORTED: `resolve_module`
+                    // reads any bare `binascii` as the module, and
+                    // `binascii = "x"; binascii.upper()` is a string's method,
+                    // which the core answers and a pre-run stop would refuse.
                     #[cfg(feature = "cap-base64")]
-                    if m == "base64" {
+                    if m == "base64" && names_an_import(b, req) {
                         req.stop_base64("module-attr", format!("{m}.{n}"));
                     }
                     // `binascii.Error` / `binascii.crc32`, the same way.
                     #[cfg(feature = "cap-binascii")]
-                    if m == "binascii" {
+                    if m == "binascii" && names_an_import(b, req) {
                         req.stop_base64("module-attr", format!("{m}.{n}"));
                     }
                 }
@@ -4202,6 +4308,10 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                 #[cfg(feature = "cap-hashlib")]
                 if admitted_by_a_capability(req) {
                     req.stop_only("method", format!(".{n}()"));
+                }
+                #[cfg(feature = "cap-textwrap")]
+                if routed_past_by_textwrap(req) {
+                    req.stop_route("method", format!(".{n}()"));
                 }
                 req.block_method(n);
             }
@@ -4474,5 +4584,36 @@ mod hold_tests {
         // A capability outside the held set is admitted past the core but not held.
         assert!(!held("import re\nfoo"));
         assert!(!core_admits(&crate::parse::parse("import re\nfoo").unwrap(), "import re\nfoo"));
+    }
+
+    /// No pre-run stop for what the core runs: a variable named after a
+    /// capability module, or an `except m.X` clause no exception reaches. The
+    /// core's walk sees no such module and the core answers; the ROUTE may
+    /// still go past the rungs, but a direct run refuses only where the
+    /// attribute is evaluated.
+    #[test]
+    fn what_the_core_runs_has_no_pre_run_stop() {
+        for src in [
+            "binascii = 'x'\nprint(binascii.upper())",
+            "def f(binascii): return binascii.upper()\nprint(f('a'))",
+            "base64 = 'x'\nprint(base64.upper())",
+            "try:\n    print(1)\nexcept glob.X:\n    pass",
+            "try:\n    print(1)\nexcept hashlib.X:\n    pass",
+            "try:\n    print(1)\nexcept time.error:\n    pass",
+            "try:\n    print(1)\nexcept textwrap.X:\n    pass",
+            "try:\n    print(1)\nexcept binascii.Error:\n    pass",
+            "time = 1\ntry:\n    print(1)\nexcept time.error:\n    pass",
+            "def f():\n    try:\n        pass\n    except (ValueError, glob.X):\n        pass",
+        ] {
+            let body = crate::parse::parse(src).expect("parses");
+            assert!(static_stop_check(&body, src).is_ok(), "{src:?}");
+            #[cfg(feature = "cap-base64")]
+            assert!(base64_static_check(&body, src).is_ok(), "{src:?}");
+        }
+        // An imported module's unserved attribute is still stopped before the run.
+        let src = "import binascii\nprint(binascii.crc32(b'a'))";
+        #[cfg(feature = "cap-base64")]
+        assert!(base64_static_check(&crate::parse::parse(src).unwrap(), src).is_err());
+        let _ = src;
     }
 }

@@ -313,6 +313,14 @@ def _run(argv: list[str], program: str) -> subprocess.CompletedProcess:
                               cwd=d, timeout=60)
 
 
+def _routed(argv: list[str], program: str) -> subprocess.CompletedProcess:
+    """As the CHAIN runs a rung it routed to (`engines.ROUTED_ENV`)."""
+    env = dict(os.environ, **{engines.ROUTED_ENV: "1"})
+    with tempfile.TemporaryDirectory() as d:
+        return subprocess.run(argv + ["-c", program], capture_output=True, text=True,
+                              cwd=d, timeout=120, env=env)
+
+
 def _refusal_problem(got: subprocess.CompletedProcess) -> str | None:
     if got.returncode != engines.UNSUPPORTED_EXIT:
         return "exit %d, not %d" % (got.returncode, engines.UNSUPPORTED_EXIT)
@@ -576,8 +584,9 @@ def test_a_time_program_refuses_to_rmdir_what_it_did_not_make() -> None:
 
 #: Fails before the import runs, or under an import that never runs. The core
 #: refuses `import time` STATICALLY, so the chain sent every one of these to
-#: CPython before `cap-time`; lypning-l decides the hold from the walk
-#: (`route::hint_held`) and refuses too, for the suggestion it cannot compute.
+#: CPython before `cap-time`; ROUTED, lypning-l holds them from the walk
+#: (`route::arm_hold`) and refuses too, for the suggestion it cannot compute.
+#: Run directly it answers what the core, run directly, answers.
 #: Bytes are CPython 3.14.5's; the first row has no suggestion and is refused
 #: all the same, which costs a spawn and never an answer.
 BEFORE_IMPORT = [
@@ -592,10 +601,17 @@ BEFORE_IMPORT = [
 ]
 
 
+@needs_core
+@pytest.mark.parametrize("program", [p for p, _ in BEFORE_IMPORT], ids=range(len(BEFORE_IMPORT)))
+def test_run_directly_an_error_before_the_import_is_the_cores(program: str) -> None:
+    core, larger = _run([str(CORE)], program), _run([str(BINARY)], program)
+    assert (larger.returncode, larger.stdout, larger.stderr) == (core.returncode, core.stdout, core.stderr)
+
+
 @needs_l
 @pytest.mark.parametrize("program,line", BEFORE_IMPORT, ids=range(len(BEFORE_IMPORT)))
 def test_an_error_before_the_import_runs_refuses_too(program: str, line: str) -> None:
-    got = _run([str(BINARY)], program)
+    got = _routed([str(BINARY)], program)
     assert _refusal_problem(got) is None, (got.returncode, got.stdout, got.stderr)
     assert got.stderr.startswith("%s: unsupported: name-hint: " % engines.LYPNING_L), got.stderr
     if sys.version_info[:3] == (3, 14, 5):

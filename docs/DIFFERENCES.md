@@ -106,22 +106,36 @@ capability would be indistinguishable to the dispatcher. One exception: an
 UNCAUGHT `NameError` on the name of a module some variant serves (`os`, `time`,
 …) is `unsupported: name-hint`, because CPython 3.14 ends that traceback with
 an import hint that rests on a suggestion search the engine does not run
-(`err.rs:forgot_import`). On `lypning-l`, a program **only a capability admits**
-is *held*: every uncaught `NameError`, `AttributeError` and unexpected-keyword
-`TypeError` is `name-hint` too, and the run refuses rather than commit past
-8 MiB of output or `os.rmdir` a directory it did not make, so that refusal stays
-possible (`io.rs:hold`). "Only a capability admits" is the spectrum router's own
-verdict, computed inside `lypning-l` before the first statement
-(`route.rs:hint_held`): the run is held exactly when the core's static walk
-blocks on one of `itertools`, `difflib`, `time`, `statistics`, `textwrap`,
-`binascii`, a served `from __future__` head, or `cap-random`'s
-`random.Random`/`sample`/`shuffle` and `sys.version_info` — anywhere in the
-program, including an import that never runs — so the router would not pick the
-core. Those programs went to CPython before the capability existed. A program
-the core routes to itself is never held, whatever its comments, strings or
-variable names say: `lypning-l` answers it byte for byte as `lypning` does
-(invariant 10, `tests/test_hold_monotone.py`). No other `Did you mean` hint is
-written.
+(`err.rs:forgot_import`). On `lypning-l`, a run in which a capability the core
+lacks has **run** is *held*: every uncaught `NameError`, `AttributeError` and
+unexpected-keyword `TypeError` is `name-hint` too, and the run refuses rather
+than commit past 8 MiB of output or `os.rmdir` a directory it did not make, so
+that refusal stays possible (`io.rs:hold`). The capabilities are `itertools`,
+`difflib`, `time`, `statistics`, `textwrap` and `binascii` (held when imported),
+a served `from __future__` head (held from the first statement), and
+`cap-random`'s `random.Random`/`sample`/`shuffle` and `sys.version_info` (held
+when evaluated) — the points at which the core, running the same program,
+refuses. Those programs went to CPython before the capability existed. The
+spectrum router's own verdict, computed inside `lypning-l` before the first
+statement (`route.rs:hint_held`), decides the rest. When the CHAIN routed the
+program there (both dispatchers set `LYPNING_ROUTED=1` for a Rust rung,
+`route.rs:arm_hold`), the run is held from its first statement, so an error
+raised before the import runs, or under one that never runs, still refuses and
+the chain prints CPython's hint. Run directly (`lypning-l -c`, a pinned engine,
+the per-engine arm of `lypning conformance`) the run is only *armed*: output
+past 8 MiB is still held back, so a capability that runs later finds a run it
+can refuse, and until one runs the program is answered byte for byte as
+`lypning` answers it — as is any program the core routes to itself, whatever
+its comments, strings or variable names say (invariant 10,
+`tests/test_hold_monotone.py`). No other `Did you mean` hint is written.
+
+Behind such a capability — any program the core routes past itself — a
+compile-time `SyntaxError` the parser lets through (a duplicate parameter,
+`break` outside a loop, `0777`, a bare `except:` before another clause, a
+second starred target) is decided before anything runs
+(`future.rs:past_the_core`): run directly it is CPython's `SyntaxError` (exit 1,
+empty stdout), and routed it refuses, so the chain prints CPython's own line. A
+program the core routes to itself keeps the core's parse.
 
 The methods on the types that do exist are a larger surface with the same rule:
 a method CPython has and the engine lacks refuses as `<type>-method` or

@@ -32,8 +32,8 @@
 //! * a name off the list (`braces`, a misspelling, a feature from a later
 //!   Python) or an alias, which CPython answers with a `SyntaxError` or, for
 //!   `as`, with a `_Feature` binding this engine has no value for;
-//! * `barry_as_FLUFL` as a NAME anywhere in the source, and before the parse result is
-//!   looked at, because it changes the grammar (`1 <> 2` is valid under it)
+//! * `barry_as_FLUFL` as a NAME anywhere in a program that imports
+//!   `__future__`, before the parse result is looked at, because it changes the grammar (`1 <> 2` is valid under it)
 //!   and the parser would otherwise answer a program CPython runs with a
 //!   `SyntaxError` at exit 1;
 //! * any other `__future__` in the program: a misplaced import, `import
@@ -46,21 +46,28 @@
 //!   the import binds a `_Feature` object and the annotations it defers
 //!   become strings, and neither exists here. The corpus uses neither
 //!   (mined 2026-09-24), so the refusal costs nothing measured;
-//! * every compile-time `SyntaxError` CPython raises and this parser does
-//!   not: whatever the parser noted as `lax` (a duplicate parameter, a
-//!   parameter without a default after one with, `break`/`continue` outside
-//!   a loop, `return` outside a function, a name spelled before its
-//!   `global`, an unparenthesized generator beside another argument, a
-//!   positional argument after a keyword one, anything after `**`) and any
-//!   `__debug__` (CPython rejects every binding of it). The core
-//!   refuses every program with a head statically, so each of these went to
-//!   CPython before `cap-future`; the same gaps WITHOUT a head are the
-//!   core's, and are left as the core answers them.
+//! * any `__debug__` (CPython rejects every binding of it).
 //!
-//! A program with no `__future__` NAME in it pays one scan of its tokens and
-//! is returned exactly as it was parsed — a string, a comment or an f-string's
-//! text that says `__future__` is the core's program, answered as the core
-//! answers it.
+//! And it ANSWERS every compile-time `SyntaxError` CPython raises and this
+//! parser does not, with that `SyntaxError`, before anything runs: whatever
+//! the lexer or parser noted as lax (`parse::note_lax` — a duplicate
+//! parameter, a parameter without a default after one with, `break`/
+//! `continue` outside a loop, `return` outside a function, a name spelled
+//! before its `global`, an unparenthesized generator beside another argument,
+//! a positional argument after a keyword one, anything after `**`, `0777` or
+//! a misplaced `_` in a number, a bare `except:` before another clause, an
+//! f-string conversion other than `!s`/`!r`/`!a`, a second starred target).
+//! The core refuses every program with a head statically, so each of these
+//! went to CPython before `cap-future`, and so did every program WITHOUT a
+//! head that the core routes past itself for another capability
+//! ([`past_the_core`]). The same gaps in a program the core routes to itself
+//! are the core's, and are left as the core answers them.
+//!
+//! A program that does not import `__future__` — a `__future__` NAME right
+//! after `from` or `import` (`route::future_imported`) — pays one scan of its
+//! tokens and is otherwise the core's: a string, a comment, an f-string's
+//! text, a variable, parameter or argument named `__future__` or
+//! `barry_as_FLUFL` is answered as the core answers it.
 
 use crate::ast::*;
 use crate::err::{unsupported, R};
@@ -71,7 +78,7 @@ use std::rc::Rc;
 /// for `__future__` so the CORE's walk sends every other name to CPython.
 pub const SERVED: &[&str] = crate::route::FUTURE_SERVED;
 
-use crate::route::{future_head, future_names as names, future_token_block};
+use crate::route::{future_head, future_imported, future_token_block};
 
 fn refuse(detail: &str) -> crate::err::LypningError {
     unsupported("future", detail)
@@ -79,12 +86,14 @@ fn refuse(detail: &str) -> crate::err::LypningError {
 
 /// The pass. `body` is the parse as it came out, error included, because
 /// `barry_as_FLUFL` has to be refused whether or not its grammar parsed.
-pub fn pass(body: R<Vec<Stmt>>, toks: &[Token], lax: Option<&'static str>) -> R<Vec<Stmt>> {
-    if names(toks, "barry_as_FLUFL") > 0 {
-        return Err(refuse("from __future__ import barry_as_FLUFL"));
-    }
-    if names(toks, "__future__") == 0 {
-        return body;
+pub fn pass(body: R<Vec<Stmt>>, toks: &[Token], lax: Option<(&'static str, u32)>, src: &str) -> R<Vec<Stmt>> {
+    // Only a program that imports `__future__` is looked at: a variable,
+    // a parameter or an argument named `__future__` or `barry_as_FLUFL` is
+    // the core's program (`route::future_imported`). The grammar change can
+    // only come in through that import, so `future_token_block` below still
+    // refuses it whether or not its grammar parsed.
+    if !future_imported(toks) {
+        return past_the_core(body, toks, lax, src);
     }
     // CPython NFKC-folds every identifier, so `ｄivision` IS `division` and
     // `ｂarry_as_FLUFL` is the grammar change; see `route::future_token_block`.
@@ -92,8 +101,11 @@ pub fn pass(body: R<Vec<Stmt>>, toks: &[Token], lax: Option<&'static str>) -> R<
         return Err(refuse(why));
     }
     let mut body = body?;
-    if let Some(why) = lax {
-        return Err(refuse(why));
+    // CPython's compiler answers these before anything runs, and the core
+    // refuses every program with a head, so the answer is CPython's
+    // SyntaxError (`lax_answer`).
+    if let Some(l) = lax {
+        return Err(lax_answer(l, "future"));
     }
     // The head's shape, the names it serves and every other spelling of them
     // — decided in `route.rs`, because the CORE's walk asks the same question
@@ -110,6 +122,52 @@ pub fn pass(body: R<Vec<Stmt>>, toks: &[Token], lax: Option<&'static str>) -> R<
         return Err(refuse("an annotated def, with the reference Python's minor unmeasured (PEP 649)"));
     }
     Ok(body)
+}
+
+/// A lax construct's answer: CPython's `SyntaxError`, exactly in kind — exit
+/// 1, nothing on stdout — though not always in wording. So a ROUTED run
+/// (`route::routed`), whose chain goes on to CPython, refuses as `kind`
+/// instead, and the chain prints CPython's own line; a direct run gets the
+/// `SyntaxError`, which is what the core, running the same program, never
+/// answers better.
+fn lax_answer((why, line): (&'static str, u32), kind: &str) -> crate::err::LypningError {
+    if crate::route::routed() {
+        return unsupported(kind, why);
+    }
+    crate::err::LypningError::syntax(line, why)
+}
+
+/// A program WITHOUT a head that the core's own walk routes past the core
+/// (`route::core_admits` false: an import only a capability serves, a
+/// `random.sample`, a `sys.version_info`). Every one of them went to CPython
+/// before its capability existed, and CPython's compiler answered what this
+/// parser noted as lax with a `SyntaxError` before anything ran — so that is
+/// the answer here too, exactly: exit 1, empty stdout, that exception. It is
+/// never a wrong one for the core either: the core answers such a program
+/// with whatever its lax parse runs to, which CPython never does.
+///
+/// A `__debug__` in one refuses as the core refuses reading it (`builtin`):
+/// CPython rejects every binding of it at compile time, and reads it as a
+/// constant this engine has no value for.
+///
+/// The walk is paid only by a program that has one of the two.
+fn past_the_core(body: R<Vec<Stmt>>, toks: &[Token], lax: Option<(&'static str, u32)>, src: &str) -> R<Vec<Stmt>> {
+    let debug = crate::route::future_names(toks, "__debug__") > 0;
+    if lax.is_none() && !debug {
+        return body;
+    }
+    let Ok(b) = &body else { return body };
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+    if !crate::route::core_admits(b, src) {
+        if debug {
+            return Err(unsupported("builtin", "__debug__"));
+        }
+        if let Some(l) = lax {
+            return Err(lax_answer(l, "syntax"));
+        }
+    }
+    let _ = (b, src);
+    body
 }
 
 /// `from __future__ import annotations`: no annotation on any `def`, at any
@@ -175,6 +233,7 @@ mod tests {
         match run(src) {
             Err(e) => match e.kind() {
                 crate::err::ErrKind::Unsupported { kind, .. } => kind.clone(),
+                crate::err::ErrKind::Syntax { .. } => "SyntaxError".into(),
                 _ => "error".into(),
             },
             Ok(_) => "ok".into(),
@@ -237,37 +296,51 @@ mod tests {
         }
     }
 
+    /// What this parser lets through and CPython's compiler rejects, one per
+    /// lax note. `tests/test_hold_monotone.py` holds each to CPython 3.14.
+    const LAX: &[&str] = &[
+        "def f(x: int = 1, y) -> int:\n    return x\n",
+        "def f(x: int, x: int): pass\n",
+        "f = lambda x, x: 1\n",
+        "f = lambda x=1, y: 1\n",
+        "def f():\n    break\n",
+        "def f():\n    try:\n        pass\n    finally:\n        continue\n",
+        "for i in []:\n    def f():\n        break\n",
+        "while 0:\n    pass\nelse:\n    break\n",
+        "return 1\n",
+        "break\n",
+        "continue\n",
+        "def f(a):\n    global a\n",
+        "def f():\n    x = 1\n    global x\n",
+        "def f():\n    print(x)\n    global x\n",
+        "x = 1\nglobal x\n",
+        "def f(*a): pass\nf(x for x in range(2), 1)\n",
+        "def f(*a): pass\nf(1, x for x in range(2))\n",
+        "def f(*a): pass\nf(x for x in range(2),)\n",
+        "print(x=1, 2)\n",
+        "print(**{}, *[])\n",
+        "print(**{}, 1)\n",
+        "print(0777)\n",
+        "print(1__0)\n",
+        "print(1_)\n",
+        "print(1_.5)\n",
+        "print(0x1_)\n",
+        "try:\n    pass\nexcept:\n    pass\nexcept ValueError:\n    pass\n",
+        "print(f'{1!x}')\n",
+        "a, *b, *c = [1, 2, 3]\n",
+        "for *a, *b in [[1, 2]]: pass\n",
+    ];
+
     /// Every compile-time SyntaxError CPython raises and this parser lets
-    /// through refuses under a head; the same programs without one keep the
-    /// core's parse, and a legal neighbour of each is still served.
+    /// through is CPython's `SyntaxError` under a head, and `__debug__`
+    /// refuses; a legal neighbour of each is still served.
     #[test]
-    fn a_syntax_error_cpython_raises_before_running_refuses_under_a_head() {
+    fn a_syntax_error_cpython_raises_before_running_is_one_under_a_head() {
         const H: &str = "from __future__ import annotations\n";
-        for body in [
-            "def f(x: int = 1, y) -> int:\n    return x\n",
-            "def f(x: int, x: int): pass\n",
-            "f = lambda x, x: 1\n",
-            "f = lambda x=1, y: 1\n",
-            "def f():\n    break\n",
-            "def f():\n    try:\n        pass\n    finally:\n        continue\n",
-            "for i in []:\n    def f():\n        break\n",
-            "while 0:\n    pass\nelse:\n    break\n",
-            "return 1\n",
-            "break\n",
-            "continue\n",
-            "def f(a):\n    global a\n",
-            "def f():\n    x = 1\n    global x\n",
-            "def f():\n    print(x)\n    global x\n",
-            "x = 1\nglobal x\n",
-            "def f(*a): pass\nf(x for x in range(2), 1)\n",
-            "def f(*a): pass\nf(1, x for x in range(2))\n",
-            "def f(*a): pass\nf(x for x in range(2),)\n",
-            "print(x=1, 2)\n",
-            "print(**{}, *[])\n",
-            "print(**{}, 1)\n",
-            "__debug__ = 1\n",
-            "def f(__debug__): pass\n",
-        ] {
+        for body in LAX {
+            assert_eq!(kind(&format!("{H}{body}")), "SyntaxError", "{body:?}");
+        }
+        for body in ["__debug__ = 1\n", "def f(__debug__): pass\n"] {
             assert_eq!(kind(&format!("{H}{body}")), "future", "{body:?}");
         }
         for body in [
@@ -284,5 +357,44 @@ mod tests {
         ] {
             assert_eq!(kind(&format!("{H}{body}")), "ok", "{body:?}");
         }
+    }
+
+    /// The same, for a program with no head that the core's walk routes past
+    /// itself: each went to CPython before its capability existed. Without the
+    /// capability it is the core's program and keeps the core's parse.
+    #[test]
+    fn a_program_past_the_core_gets_the_syntax_error_too() {
+        for head in ["import itertools\n", "import random\nr = random.Random(1)\n", "if 0:\n    import time\n"] {
+            for body in LAX {
+                assert_eq!(kind(&format!("{head}{body}")), "SyntaxError", "{head:?} {body:?}");
+            }
+            assert_eq!(kind(&format!("{head}def f(__debug__): pass\n")), "builtin");
+        }
+        for body in LAX {
+            assert_eq!(kind(&format!("import math\n{body}")), "ok", "{body:?}");
+        }
+        for ok in ["print(0x_1f, 1_000, 0_0, 00, 09.5, 1e1_0, 0o7_7, 1.5e-3)\n", "print(f'{1!r}{2!s}{3!a}')\n"] {
+            assert_eq!(kind(&format!("import itertools\n{ok}")), "ok", "{ok:?}");
+        }
+    }
+
+    /// A NAME `__future__` or `barry_as_FLUFL` that is not the module's import
+    /// is an ordinary name: the core runs it, and so does this pass.
+    #[test]
+    fn only_an_import_of_the_module_is_a_directive() {
+        for src in [
+            "barry_as_FLUFL = 1\nprint(barry_as_FLUFL)\n",
+            "def barry_as_FLUFL(): return 2\n",
+            "print(dict(barry_as_FLUFL=1))\n",
+            "__future__ = 1\nprint(__future__)\n",
+            "for __future__ in range(2): pass\n",
+            "import os as __future__\n",
+            "def __future__(): return 5\n",
+            "print(dict(__future__=1))\n",
+        ] {
+            assert_eq!(kind(src), "ok", "{src:?}");
+        }
+        assert_eq!(kind("import __future__\n"), "future");
+        assert_eq!(kind("from __future__ import annotations\nbarry_as_FLUFL = 1\n"), "future");
     }
 }
