@@ -46,7 +46,7 @@ executing a program is simply absent, and the absences are the architecture:
 | `__file__`, `__spec__`, `__package__` bound per module | `__name__`, which is `__main__` | `__file__` is `unsupported: dunder-missing` rather than a `NameError`, because CPython binds it for a script and leaves it unbound under `-c`, and only one of those can be faked (`err.rs:name_err`) |
 
 **An absent module and an absent package are the same refusal to the engine and
-different answers to the caller.** `import numpy` and `import itertools` both
+different answers to the caller.** `import numpy` and `import subprocess` both
 exit 90; the *chain* then runs the program on CPython, where one raises
 `ModuleNotFoundError` at exit 1 and the other works. The engine cannot tell them
 apart — it has no `sys.path` to look on — and does not have to, because the
@@ -106,11 +106,22 @@ capability would be indistinguishable to the dispatcher. One exception: an
 UNCAUGHT `NameError` on the name of a module some variant serves (`os`, `time`,
 …) is `unsupported: name-hint`, because CPython 3.14 ends that traceback with
 an import hint that rests on a suggestion search the engine does not run
-(`err.rs:forgot_import`). In a program that has run `import time`, every
-uncaught `NameError`, `AttributeError` and unexpected-keyword `TypeError` is
-`name-hint` too, and the run refuses rather than commit past 8 MiB of output
-or `os.rmdir` a directory it did not make, so that refusal stays possible
-(`io.rs:hold`). No other `Did you mean` hint is written.
+(`err.rs:forgot_import`). On `lypning-l`, a program **only a capability admits**
+is *held*: every uncaught `NameError`, `AttributeError` and unexpected-keyword
+`TypeError` is `name-hint` too, and the run refuses rather than commit past
+8 MiB of output or `os.rmdir` a directory it did not make, so that refusal stays
+possible (`io.rs:hold`). "Only a capability admits" is the spectrum router's own
+verdict, computed inside `lypning-l` before the first statement
+(`route.rs:hint_held`): the run is held exactly when the core's static walk
+blocks on one of `itertools`, `difflib`, `time`, `statistics`, `textwrap`,
+`binascii`, a served `from __future__` head, or `cap-random`'s
+`random.Random`/`sample`/`shuffle` and `sys.version_info` — anywhere in the
+program, including an import that never runs — so the router would not pick the
+core. Those programs went to CPython before the capability existed. A program
+the core routes to itself is never held, whatever its comments, strings or
+variable names say: `lypning-l` answers it byte for byte as `lypning` does
+(invariant 10, `tests/test_hold_monotone.py`). No other `Did you mean` hint is
+written.
 
 The methods on the types that do exist are a larger surface with the same rule:
 a method CPython has and the engine lacks refuses as `<type>-method` or
