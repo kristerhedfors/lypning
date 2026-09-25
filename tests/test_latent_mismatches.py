@@ -290,6 +290,18 @@ REFUSED = [
     # last stderr line, which the engine's SyntaxError printed instead
     "if 1:\n\tx=1\n        y=2\nprint(1)",
     "if 1:\n    x=1\n  y=2\nprint(1)",
+    # an except clause that is not a name or a flat tuple of names: valid
+    # Python the parser called a SyntaxError (py-c4b2d35e4022), and 3.14's
+    # unparenthesised `except A, B` (PEP 758)
+    "try:\n    raise KeyError(1)\nexcept ((KeyError, ValueError), TypeError):\n    print('c')",
+    "try:\n    raise ValueError('x')\nexcept (ValueError, (KeyError,)):\n    print(1)",
+    # an attribute a flat exception value does not keep: AttributeError at the
+    # program's own exit 1 where CPython answers (py-b24ca4b953ce)
+    "import json\ntry:\n    json.loads('x')\nexcept json.JSONDecodeError as e:\n    print('json', e.msg, e.pos)",
+    "try:\n    raise ValueError('a')\nexcept ValueError as e:\n    print(e.with_traceback(None) is e)",
+    "try:\n    open(\"no/x: 'y\")\nexcept OSError as e:\n    print(e.filename)",
+    # an f-string field that reuses the f-string's own quote: 3.12+ (PEP 701)
+    "d = {'k': 1}\nprint(f\"{d[\"k\"]}\")",
     "a=[1,2]\nprint([*a,])",
     "[a, *b] = [1,2,3]\nprint(a, b)",
     # an exception whose `args` the flat (kind, message) value cannot carry

@@ -495,8 +495,18 @@ impl Parser {
                 let mut kinds = Vec::new();
                 let mut name = None;
                 if !self.is_op(":") {
+                    // Served: a name, a dotted name, or a flat parenthesised
+                    // tuple of them. Any other expression is valid Python —
+                    // `except ((A, B), C)`, `except E + (X,)`, and 3.14's
+                    // unparenthesised `except A, B` (PEP 758) — whose answer is
+                    // CPython's, so it refuses rather than dying as this
+                    // parser's SyntaxError.
+                    let odd = |_: &Self| unsupported("except", "an except clause other than a name or a flat tuple of names");
                     if self.eat_op("(") {
                         loop {
+                            if !matches!(self.peek(), Tok::Name(_)) {
+                                return Err(odd(self));
+                            }
                             kinds.push(self.dotted_name()?);
                             if !self.eat_op(",") {
                                 break;
@@ -505,9 +515,18 @@ impl Parser {
                                 break;
                             }
                         }
-                        self.expect_op(")")?;
+                        if !self.is_op(")") {
+                            return Err(odd(self));
+                        }
+                        self.bump();
                     } else {
+                        if !matches!(self.peek(), Tok::Name(_)) {
+                            return Err(odd(self));
+                        }
                         kinds.push(self.dotted_name()?);
+                    }
+                    if !self.is_op(":") && !self.is_kw("as") {
+                        return Err(odd(self));
                     }
                     if self.eat_kw("as") {
                         name = Some(self.ident()?);

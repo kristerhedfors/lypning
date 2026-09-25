@@ -1024,7 +1024,18 @@ impl Interp {
                 // OSError-family exceptions carry `.errno`/`.strerror`/
                 // `.filename`, and the message we build always has the shape
                 // `[Errno N] text: 'path'`, so read them back from it.
+                // Only on the OSError family: `ValueError().errno` is
+                // CPython's AttributeError, and it answered None. And a
+                // filename is read back only when it cannot be ambiguous — a
+                // path holding a quote or a second `: '` split at the wrong
+                // place.
                 "errno" | "strerror" | "filename" => {
+                    if !in_words(
+                        "OSError FileNotFoundError PermissionError FileExistsError IsADirectoryError NotADirectoryError",
+                        kind,
+                    ) {
+                        return Err(unsupported("exception", "an OS-error attribute of another exception"));
+                    }
                     if let Some(rest) = msg.strip_prefix("[Errno ") {
                         if let Some(close) = rest.find(']') {
                             let n: i64 = rest[..close].parse().unwrap_or(0);
@@ -1033,6 +1044,9 @@ impl Interp {
                                 Some(i) => (&tail[..i], tail[i + 3..].trim_end_matches('\'')),
                                 None => (tail, ""),
                             };
+                            if name != "errno" && (file.contains('\'') || text.contains(": '")) {
+                                return Err(unsupported("exception", "an OS-error message this value cannot split"));
+                            }
                             return Ok(match name {
                                 "errno" => ival(n),
                                 "strerror" => Value::Str(text.into()),
@@ -1041,6 +1055,19 @@ impl Interp {
                         }
                     }
                     return Ok(Value::None);
+                }
+                // What some exception class carries and this flat (kind,
+                // message) value does not keep — `.msg`/`.pos` of a
+                // JSONDecodeError, `.name` of a NameError, `.with_traceback`,
+                // `.add_note`. AttributeError would be the program's own exit 1
+                // where CPython may answer; any other name is CPython's
+                // AttributeError too, and stays one.
+                _ if in_words(
+                    "msg pos doc lineno colno name obj path name_from with_traceback add_note text \
+                     offset end_lineno end_offset print_file_and_line characters_written exceptions message",
+                    name,
+                ) => {
+                    return Err(unsupported("exception", "an attribute this exception value does not keep"))
                 }
                 _ => {}
             }
@@ -2593,6 +2620,12 @@ pub fn errno_args<'a>(kind: &str, msg: &'a str) -> R<Option<(i64, &'a str)>> {
         Some(p) if known => Ok(Some(p)),
         _ => Err(unsupported("exception", &format!("{kind}.args of an OS error"))),
     }
+}
+
+/// Is `w` one of the space-separated words? A scan over one string is a
+/// fraction of the code a `match` over as many literals compiles to.
+fn in_words(words: &str, w: &str) -> bool {
+    words.split(' ').any(|x| x == w)
 }
 
 /// The three exceptions whose `args` are the codec's constructor arguments.

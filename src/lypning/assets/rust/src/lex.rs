@@ -470,6 +470,13 @@ impl<'a> Lexer<'a> {
             if raw || bytes || fstr || uni {
                 if fstr {
                     let text = self.raw_string_body()?;
+                    // A replacement field still open where the body ended met
+                    // the f-string's own quote inside it: `f"{d["k"]}"`, valid
+                    // from 3.12 (PEP 701) and a SyntaxError before. Which of
+                    // the two is the reference's to say.
+                    if fstring_field_open(text.as_bytes()) {
+                        return Err(unsupported("fstring", "a replacement field that reuses the f-string's own quote"));
+                    }
                     self.push(Tok::FStr {
                         raw: text,
                         raw_prefix: raw,
@@ -572,6 +579,22 @@ fn wide_literal(digits: &str, radix: u32) -> Result<crate::value::Int, LypningEr
     }
     #[cfg(not(feature = "cap-bigint"))]
     Err(unsupported("bigint", "integer literal beyond 64-bit range"))
+}
+
+/// Is a `{` replacement field still open at the end of an f-string body?
+/// `{{` and `}}` are literal braces.
+fn fstring_field_open(b: &[u8]) -> bool {
+    let (mut depth, mut i) = (0usize, 0);
+    while i < b.len() {
+        match (b[i], b.get(i + 1)) {
+            (b'{', Some(b'{')) | (b'}', Some(b'}')) if depth == 0 => i += 1,
+            (b'{', _) => depth += 1,
+            (b'}', _) => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        i += 1;
+    }
+    depth > 0
 }
 
 fn is_ident_start(c: u8) -> bool {
