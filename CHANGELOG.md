@@ -27,8 +27,13 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   `verifier_sha256`, the engine, the pilot's Space revision (fetched, never
   the head), Qwen, the seeds, the draws, the chunking and the density.
   `code_sha256` may differ; both digests and the commits between them are
-  recorded as `finish_lineage`. `finish_preflight.py` checks the Space
-  revision for free before submit.
+  recorded as `finish_lineage`. It also compares the pinned tokenizer with
+  the adapter's, before the weight pull. `finish_preflight.py` checks, for
+  free before submit, the Space revision, the dispatch's arm fields, both
+  bundles, `verifier_sha256`, the engine and the adapter's experiment.
+- A `finish` dispatch holds the verifier Space (`SPACE_HOLD`): bootstrap
+  reads and wakes it and uploads nothing, so a rebuild cannot move the head
+  past the pilot's revision.
 - A step other than the pilot rule's needs a dated entry in
   `finish_lineage.OVERRIDES`. Seed 1111 (HF job `6ab52a686b030d633f68e503`) is
   registered at step 1,050, where its rule chose 350. `arm_check` joins a
@@ -37,8 +42,9 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 - `CheckpointGate` rules are versioned. The default for new selections is now
   `coverage-case-weighted/2`: case-weighted coverage correct-and-native, with
   the same paired margin. `best.json` records the version. Its null admission
-  stays at the stated 10% in `test_gate_admission.py`, and on a fixture shaped
-  like seed 1111 it picks step 1,050 where v1 picks 350. `code_sha256` moves;
+  stays at the stated 10% in `test_gate_admission.py`, including on a split
+  with a two-case family where v1 over-admits, and on a fixture shaped like
+  seed 1111 it picks step 1,050 where v1 picks 350. `code_sha256` moves;
   `verifier_sha256` does not.
 - `projection.py --finish` prices the job at 445.2 of 648 minutes (re-run
   2026-09-25, at the ~65 draws/min of the pilot's base-dev).

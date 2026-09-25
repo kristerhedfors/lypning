@@ -125,11 +125,16 @@ manifest = {"job": job, "kind": "finish", "stage": "finish", "finish_of": os.env
             "engine_sha256": lineage.get("engine_sha256"),
             "verifier_sha256": lineage.get("verifier_sha256"),
             "lineage_verified": bool(lineage)}
-manifest.update(lineage.get("pair") or {
+# The pair fields are what THIS job ran, never copies of the pilot's: `arm_check`
+# compares them with the pilot manifest, and a copy would agree by construction.
+# `bank_path` alone is the pilot's (a finish reads no bank); the space revision
+# is the one the engine and the pool used, None before it was read.
+manifest.update({
     "seed": int(os.environ["SEED"]), "split_seed": int(os.environ["SPLIT_SEED"]),
     "eval_draws": int(os.environ["EVAL_DRAWS"]), "eval_sequences": int(os.environ["EVAL_SEQUENCES"]),
     "pool_sandboxes_per_host": int(os.environ["NTX_POOL_SANDBOXES_PER_HOST"]),
-    "space_revision": os.environ.get("PILOT_SPACE_REV") or None, "qwen_revision": os.environ["QWEN_REV"]})
+    "space_revision": os.environ.get("PILOT_SPACE_REV") or None, "qwen_revision": os.environ["QWEN_REV"],
+    "bank_path": (lineage.get("pair") or {}).get("bank_path")})
 json.dump(manifest, open("work/round-02/job-manifest.json", "w"), indent=2)
 print("== manifest:", json.dumps(public_view(manifest)))
 info = api.repo_info(os.environ["WORK_REPO"], repo_type="dataset")

@@ -376,25 +376,53 @@ def test_the_finish_preflight_refuses_what_the_job_would_refuse_for_free():
     spec.loader.exec_module(pre)
     lineage = pre.lineage_module()
     job = "6ab52a686b030d633f68e503"
+    identity = {"sha256": "e" * 64, "verifier_sha256": "v" * 64}
+    bundles = {}
+    for name in ("pilot", "eval2"):
+        body = {"purpose": name, "identity": dict(identity), "cases": []}
+        bundle = dict(body, digest=pre.bundle_digest(body))
+        bundles[name] = (bundle, bundle["digest"])
     manifest = {"job": job, "status": "failed", "last_stage": "test", "grpo_steps": 0, "steps": 1050,
-                "sft_selected_step": 350, "space": "o/verifier", "space_revision": "a" * 40}
+                "sft_selected_step": 350, "space": "o/verifier", "space_revision": "a" * 40,
+                "seed": 1111, "split_seed": 1111, "eval_draws": 16, "eval_sequences": 256,
+                "pool_sandboxes_per_host": 4, "qwen_revision": "b" * 40,
+                "pilot_bundle_digest": bundles["pilot"][1], "eval2_bundle_digest": bundles["eval2"][1]}
     files = {"round-02/%s/%s" % (job, name) for name in (
         "sft/best.json", "sft/adapter-1050/seal.json", "sft/adapter-1050/experiment.json",
         "pilot/bundle.json", "eval2/bundle.json")}
+    experiment = {"stage": "sft", "checkpoint_step": 1050, "bundle_digest": bundles["pilot"][1],
+                  "seed": 1111, "revision": "b" * 40,
+                  "sft_targets": {"lineage": {"engine_sha256": "e" * 64}}}
     here = {"job": job, "step": 1050, "space": "o/verifier", "space_head": "a" * 40,
-            "revision_serves_engine": True}
+            "revision_serves_engine": True, "engine_sha256": "e" * 64, "seed": 1111,
+            "split_seed": 1111, "eval_draws": 16, "eval_sequences": 256, "pool_sandboxes_per_host": 4,
+            "qwen_revision": "b" * 40, "verifier_sha256": "v" * 64, "bundles": bundles,
+            "experiment": experiment}
     assert pre.problems(manifest, files, here, lineage) == []
 
     def refused(**change):
         m, h, f = dict(manifest), dict(here), set(files)
         for key, value in change.items():
-            if key in ("space_head", "revision_serves_engine", "step"):
+            if key in here:
                 h[key] = value
             elif key == "drop":
                 f.discard("round-02/%s/%s" % (job, value))
             else:
                 m[key] = value
         return {line.split(":", 1)[0] for line in pre.problems(m, f, h, lineage)}
+    # What this dispatch sends, what the bundles were made by, and what the
+    # adapter trained on: each refused here, for free, rather than after deps.
+    assert refused(seed=2222) == {"seed", "selected_step"}
+    for field, value in (("split_seed", 2222), ("eval_draws", 4), ("eval_sequences", 128),
+                         ("pool_sandboxes_per_host", 2)):
+        assert refused(**{field: value}) == {field}, field
+    assert refused(qwen_revision="d" * 40) == {"qwen_revision", "selected_step"}
+    assert refused(verifier_sha256="w" * 64) == {"verifier_sha256"}
+    assert refused(engine_sha256="f" * 64) == {"engine"}
+    assert refused(pilot_bundle_digest="0" * 64) == {"pilot_bundle_digest", "selected_step"}
+    assert refused(bundles=dict(bundles, eval2=(bundles["eval2"][0], "0" * 64))) == {"eval2_bundle_digest"}
+    assert refused(experiment=dict(experiment, checkpoint_step=700)) == {"selected_step"}
+    assert refused(experiment={}) == {"selected_step", "engine"}
     assert refused(space_head="d" * 40) == {"space_revision"}
     assert refused(revision_serves_engine=False) == {"space_revision"}
     assert refused(last_stage="sft") == {"sft_completed"}
@@ -402,3 +430,52 @@ def test_the_finish_preflight_refuses_what_the_job_would_refuse_for_free():
     assert refused(drop="sft/adapter-1050/seal.json") == {"selected_step"}
     assert "selection_override" in refused(step=700)
     assert refused(space="o/other") == {"space"}
+
+
+def test_a_finish_dispatch_holds_the_verifier_space_and_writes_nothing_to_it(monkeypatch, tmp_path):
+    """Bootstrap would otherwise rebuild the Space on a finish dispatch too. A
+    rebuild that is not byte-identical (a newer rustc on the runner image)
+    commits, the head moves past the pilot's revision, and since the pool
+    serves only the head no dispatch could ever finish that pilot again. A
+    finish therefore only reads the head, wakes the Space, and pins that."""
+    step = job(ROUND02, "bootstrap")
+    space = step[step.index("- name: Create or update the verifier Space"):]
+    space = space[:space.index("- name:", 10)]
+    assert "SPACE_HOLD: ${{ github.event.inputs.stage == 'finish' && '1' || '' }}" in space
+
+    calls = []
+
+    class Api:
+        def __init__(self, token=None):
+            pass
+
+        def whoami(self):
+            return {"name": "o"}
+
+        def repo_info(self, repo_id, repo_type=None):
+            calls.append("repo_info")
+            return types.SimpleNamespace(private=True, sha="a" * 40)
+
+        def get_space_runtime(self, repo_id):
+            calls.append("runtime")
+            return types.SimpleNamespace(stage="SLEEPING" if "restart" not in calls else "RUNNING")
+
+        def restart_space(self, repo_id):
+            calls.append("restart")
+
+        def __getattr__(self, name):          # create_repo, upload_folder, ...: a write
+            raise AssertionError("a held Space was written to: " + name)
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(HfApi=Api))
+    spec = importlib.util.spec_from_file_location("round02_space_hold", ROOT / ".github" / "scripts" / "round02_space.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module.time, "sleep", lambda s: None)
+    output = tmp_path / "out"
+    monkeypatch.setenv("HF_TOKEN", "t")
+    monkeypatch.setenv("SPACE_HOLD", "1")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.delenv("LYPNING_HOME", raising=False)      # no engine is needed to hold
+    assert module.main() == 0
+    assert "restart" in calls, "a sleeping Space is still woken"
+    assert "space_rev=%s" % ("a" * 40) in output.read_text()

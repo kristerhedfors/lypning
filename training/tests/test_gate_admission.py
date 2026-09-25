@@ -292,6 +292,32 @@ def test_the_case_weighted_rate_is_summarize_s_own_case_weighted_native():
     assert paired_case_standard_error(coverage, coverage) == 0.0
 
 
+#: The simulated split above, plus one two-case coverage family: the shape the
+#: amendment of 2026-09-25 is about (seed 1111's arm-A dev split has small
+#: families beside 45-case ones). 8 draws at K = 4: two cases, 7 correct, 4 native.
+TINY_DEV = dict(DEV, tiny=(8, 7, 4))
+
+
+@pytest.mark.parametrize("kappa", KAPPAS)
+def test_with_a_tiny_dev_family_the_case_weighted_rule_keeps_its_ten_percent_and_v1_does_not(
+        kappa, monkeypatch):
+    """The null half on the split the amendment is about.
+
+    A two-case family weighs a sixth of v1's coverage macro, and its paired
+    delta's variance rests on two cases -- or, for a one-case family, on the
+    draws' binomial alone -- so v1's margin under-covers it and a checkpoint
+    that IS base clears it more often than the 10% the rule states. v2 weighs
+    those two cases as two of ~200 and keeps its 10%. Measured 2026-09-25,
+    4,000 trials at each of seeds 11, 12, 13: v1 12.9% (KAPPA 2) and 15.3%
+    (KAPPA 20); v2 8.9% and 9.2%. Asserted at seed 7, 4,000 trials: v2 within
+    the bound the equal-family test uses, v1 beyond it."""
+    monkeypatch.setitem(globals(), "DEV", TINY_DEV)       # `dev_cases` reads it per call
+    trials = 4000
+    bound = 0.10 + 3 * math.sqrt(0.10 * 0.90 / trials)
+    assert admission_rate(0.0, 0.0, kappa, trials=trials, rule=SELECTION_RULE_V2) <= bound
+    assert admission_rate(0.0, 0.0, kappa, trials=trials, rule=SELECTION_RULE_V1) > bound
+
+
 # --- seed 1111 arm A: a dev split with a tiny family (amendment 2026-09-25) --
 
 #: SHAPED like seed 1111's arm-A SFT selection (HF job 6ab52a686b030d633f68e503,

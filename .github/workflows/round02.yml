@@ -237,10 +237,16 @@ jobs:
       # The verifier Space: a private Docker Space whose context is exactly the
       # four reviewed files. Its 40-character commit is what the bundle pins, so
       # a host booted from an earlier build can never serve a later bundle.
+      #
+      # A finish HOLDS the Space: it runs at the revision its pilot pinned and
+      # the pool serves only the head, so an upload that is not byte-identical
+      # (a newer rustc on the runner image is enough) would move the head past
+      # that revision for good. It reads the head, wakes it, and pins that.
       - name: Create or update the verifier Space, and record its commit
         id: space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          SPACE_HOLD: ${{ github.event.inputs.stage == 'finish' && '1' || '' }}
         run: python .github/scripts/round02_space.py
 
       - name: Ensure the private artifact repo exists

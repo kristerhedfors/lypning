@@ -55,12 +55,12 @@ def fixture():
                 "pool_sandboxes_per_host": 4, "bank_path": "banks/v3-20260920b", "commit": "c" * 40}
     best = {"step": 350, "observed": [{"step": s} for s in (350, 700, 1050)]}
     experiment = {"stage": "sft", "checkpoint_step": 1050, "bundle_digest": pilot["digest"],
-                  "revision": "b" * 40, "seed": 1111,
+                  "revision": "b" * 40, "seed": 1111, "tokenizer_sha256": "k" * 64,
                   "sft_targets": {"sft_sha256": "t" * 64, "lineage": {"engine_sha256": "e" * 64}}}
     here = {"space": "o/verifier", "space_head": "a" * 40, "qwen_revision": "b" * 40,
             "engine_identity": dict(ENGINE), "verifier_sha256": "v" * 64, "seed": 1111,
             "split_seed": 1111, "eval_draws": 16, "eval_sequences": 256, "pool_sandboxes_per_host": 4,
-            "commit_descends": True}
+            "commit_descends": True, "tokenizer_sha256": "k" * 64}
     return dict(manifest=manifest, best=best, adapter_experiment=experiment, seal_ok=True,
                 pilot_bundle=pilot, pilot_digest=pilot["digest"], eval2_bundle=eval2,
                 eval2_digest=eval2["digest"], here=here, job=JOB, step=1050)
@@ -119,6 +119,8 @@ def test_the_rules_own_step_needs_no_override_and_an_unregistered_one_is_refused
     ("eval_sequences", lambda f: f["here"].update(eval_sequences=128)),
     ("pool_sandboxes_per_host", lambda f: f["here"].update(pool_sandboxes_per_host=2)),
     ("commit", lambda f: f["here"].update(commit_descends=False)),
+    ("tokenizer_sha256", lambda f: f["here"].update(tokenizer_sha256="j" * 64)),
+    ("tokenizer_sha256", lambda f: f["adapter_experiment"].pop("tokenizer_sha256")),
 ])
 def test_each_identity_refusal_names_its_field(field, mutate):
     f = fixture()
@@ -191,6 +193,7 @@ def environment(monkeypatch):
     from pipeline import training
     monkeypatch.setattr(training, "engine_identity", lambda path: dict(ENGINE))
     monkeypatch.setattr(training, "verifier_sha256", lambda: "v" * 64)
+    monkeypatch.setattr(finish, "current_tokenizer_sha256", lambda revision: "k" * 64)
     monkeypatch.setattr(finish, "git_lineage", lambda commit: (
         True, "f" * 40, [{"sha": "1" * 40, "subject": "Count an engine-mismatch draw"}]))
     for key, value in (("SPACE_REPO", "o/verifier"), ("SPACE_HEAD", "a" * 40), ("QWEN_REV", "b" * 40),
@@ -308,5 +311,35 @@ def test_the_finish_manifest_names_the_pilot_the_steps_and_the_override():
     trap = SCRIPT[SCRIPT.index("finish() {"):SCRIPT.index("trap 'finish $?' EXIT")]
     for key in ('"kind": "finish"', '"stage": "finish"', '"finish_of"', '"selected_step"',
                 '"rule_selected_step"', '"selection_override"', '"finish_lineage"', '"reselection"',
-                '"dispatch_space_revision"', '"test_eval_draws"', 'lineage.get("pair")'):
+                '"dispatch_space_revision"', '"test_eval_draws"'):
         assert key in trap, key
+    # The pair fields are this job's own values, so arm_check's comparison
+    # with the pilot can fail; only bank_path (a finish reads no bank) is copied.
+    pair = trap[trap.index("manifest.update({"):]
+    pair = pair[:pair.index("\n\n") if "\n\n" in pair else pair.index("json.dump")]
+    for field in finish.PAIR_FIELDS:
+        assert '"%s"' % field in pair, field
+    assert 'os.environ["SEED"]' in pair and 'os.environ.get("PILOT_SPACE_REV")' in pair
+    assert 'lineage.get("pair") or {}).get("bank_path")' in pair
+    assert "manifest.update(lineage" not in trap
+
+
+def test_the_tokenizer_is_compared_through_train_verified_s_own_digest():
+    """One spelling of the digest: `finish_lineage` imports `train_verified`'s,
+    which is the function the adapter's experiment.json was written with."""
+    import sys
+    sys.path.insert(0, str(ROOT / "training" / "gpu"))
+    import train_verified
+    source = (ROOT / "training" / "gpu" / "train_verified.py").read_text(encoding="utf-8")
+    assert '"tokenizer_sha256": tokenizer_sha256(tok)' in source
+    assert "from train_verified import load_tokenizer, tokenizer_sha256" in \
+        (ROOT / "training" / "hf" / "finish_lineage.py").read_text(encoding="utf-8")
+
+    class Tok:
+        chat_template = "t"
+        special_tokens_map = {"eos_token": "<|im_end|>"}
+
+        def get_vocab(self):
+            return {"a": 0}
+    assert train_verified.tokenizer_sha256(Tok()) == sha256_of(
+        {"vocab": {"a": 0}, "template": "t", "special_tokens": {"eos_token": "<|im_end|>"}})

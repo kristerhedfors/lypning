@@ -527,6 +527,16 @@ def load_tokenizer(revision):
     return tok
 
 
+def tokenizer_sha256(tok):
+    """The tokenizer half of an adapter's runtime contract (`experiment.json`).
+
+    One function, because `finish_lineage.py` compares it with a saved
+    adapter's BEFORE the 55 GB weight pull, and a second spelling of the digest
+    there could drift from this one into a false refusal."""
+    return sha256_of({"vocab": tok.get_vocab(), "template": tok.chat_template,
+                      "special_tokens": tok.special_tokens_map})
+
+
 def download_base(revision):
     """The pinned checkpoint's local snapshot directory (the 55 GB pull)."""
     from huggingface_hub import snapshot_download
@@ -679,8 +689,7 @@ def _run(args, bundle, adapter_info, verifier):
                 "enable_thinking": False, "presence_penalty": 0.0,
                 "eos_token_id": tok.eos_token_id,
                 "decoding": decoding(schedule(args)["max_tokens"], greedy=args.greedy),
-                "tokenizer_sha256": sha256_of({"vocab": tok.get_vocab(), "template": tok.chat_template,
-                    "special_tokens": tok.special_tokens_map}),
+                "tokenizer_sha256": tokenizer_sha256(tok),
                 "model_config_sha256": model_config_identity(model.config.to_dict()),
                 "hardware": {"device": device, "dtype": str(dtype), "cuda": torch.version.cuda,
                     "gpu": torch.cuda.get_device_name() if device == "cuda" else None},

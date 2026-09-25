@@ -233,9 +233,14 @@ evidence ranks them the other way.
   (4,000 trials, seed 7, measured 2026-09-25), v2 admitted a checkpoint that is
   base 10.50% of the time at κ = 2 and 9.18% at κ = 20. v1 admitted 10.53% and
   9.23% on the same trials. Both are inside that test's bound of 10% plus three
-  Monte Carlo standard errors. In the same test, on a fixture shaped like seed
-  1111 (seven families, one of them two cases, k = 16), v1 selects 350 and v2
-  selects 1,050.
+  Monte Carlo standard errors. That split's families are near-equal in size.
+  Add one two-case coverage family, the shape this amendment is about, and v1
+  over-admits: 12.9% at κ = 2 and 15.3% at κ = 20, against 8.9% and 9.2% for
+  v2 (4,000 trials at each of seeds 11, 12 and 13, measured 2026-09-25; the
+  test asserts v2 inside the bound and v1 beyond it). In the same test, on a
+  fixture shaped like seed 1111 (seven families, one of them two cases,
+  k = 16), v1 selects 350 and v2 selects 1,050. The default covers GRPO's
+  checkpoint selection too: it reads the same dev split.
 - **Not chosen: the five-case floor on the dev macro.** It would drop the
   smallest families from selection, and a five-case family would still weigh
   the same as a 45-case one. The primary eval-2 metric is unchanged: the family

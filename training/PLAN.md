@@ -605,12 +605,22 @@ evaluate step 1,050. The dated amendment is `EVAL2.md` §4, 2026-09-25.
   the commits between them. The finish free-checks, in `submit`, that the
   pilot's Space revision is still the head bootstrap resolved
   (`.github/scripts/finish_preflight.py`), because the pool serves only the
-  head.
+  head. For a finish, bootstrap HOLDS the Space (`SPACE_HOLD`): it reads and
+  wakes it but uploads nothing, because a rebuild that is not byte-identical
+  would move the head past the pilot's revision for good. The same preflight
+  also checks, for free, the dispatch's seeds, draws, chunking, density and
+  Qwen revision, both bundles' digests and `verifier_sha256`, the engine at
+  the pilot's revision, and the adapter's `experiment.json`. In the job,
+  `finish_lineage` also compares the pinned tokenizer with the adapter's
+  `tokenizer_sha256`, which `train_verified` would otherwise refuse only
+  after the weight pull.
 - **Selection from here on.** Seeds 2222 and 3333 select under rule v2,
   `coverage-case-weighted/2` (`training_metrics.SELECTION_RULE`). It ranks
   case-weighted coverage correct-and-native with the same paired margin. Its
   null admission is 10.50% / 9.18% at κ 2 / 20, measured 2026-09-25 over 4,000
-  trials (`training/tests/test_gate_admission.py`). The finish also records
+  trials (`training/tests/test_gate_admission.py`). With one two-case family
+  added to that split, v1's rises to 12.9% / 15.3% and v2's is 8.9% / 9.2%
+  (measured 2026-09-25, `EVAL2.md` §4). The finish also records
   what v2 selects on the pilot's own dev draws (`reselection`).
 
 The finish job's projection, re-run 2026-09-25 with

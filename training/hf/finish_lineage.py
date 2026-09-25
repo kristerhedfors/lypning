@@ -31,6 +31,11 @@ recorded, and refuses, NAMING every field that differs:
                            current head is still that revision (the pool can
                            only serve the head: `hf_sandbox_runner`)
   qwen_revision            the base model is the pilot's and the adapter's
+  tokenizer_sha256         this job's pinned tokenizer is the one the adapter
+                           was saved under: `train_verified` refuses an adapter
+                           whose runtime contract moved, but only after the
+                           55 GB weight pull, so it is asked here first on the
+                           tokenizer alone (a few MB)
   seed, split_seed, eval_draws, eval_sequences, pool_sandboxes_per_host
                            the evaluation's own arm fields are the pilot's
   commit                   this checkout descends from the pilot's commit
@@ -159,6 +164,9 @@ def problems(manifest, best, adapter_experiment, seal_ok, pilot_bundle, pilot_di
                                  "serves only the head" % (here["space_head"], revision))
     if {manifest.get("qwen_revision"), adapter_experiment.get("revision")} != {here["qwen_revision"]}:
         refuse("qwen_revision", "the pilot job's base model is not this job's")
+    if adapter_experiment.get("tokenizer_sha256") != here["tokenizer_sha256"]:
+        refuse("tokenizer_sha256", "this job's tokenizer is not the one the adapter was saved under; "
+                                   "train_verified would refuse it after the weight pull")
     if manifest.get("seed") != here["seed"] or adapter_experiment.get("seed") != here["seed"]:
         refuse("seed", "the pilot ran seed %s, the adapter %s, this job %s"
                % (manifest.get("seed"), adapter_experiment.get("seed"), here["seed"]))
@@ -172,6 +180,15 @@ def problems(manifest, best, adapter_experiment, seal_ok, pilot_bundle, pilot_di
         refuse("commit", "this checkout does not descend from the pilot's commit %s"
                % manifest.get("commit"))
     return out
+
+
+def current_tokenizer_sha256(revision):
+    """`train_verified`'s own tokenizer digest at `revision`: the tokenizer download only."""
+    gpu = str(ROOT / "training" / "gpu")
+    if gpu not in sys.path:
+        sys.path.insert(0, gpu)
+    from train_verified import load_tokenizer, tokenizer_sha256
+    return tokenizer_sha256(load_tokenizer(revision))
 
 
 def git_lineage(pilot_commit):
@@ -207,7 +224,9 @@ def reselect(evaluations, rule):
         gate = CheckpointGate(baseline=summarize(steps[0]), rule=rule)
         for step in sorted(s for s in steps if isinstance(s, int) and s > 0):
             gate.observe(step, summarize(steps[step]))
-    except (TrainingError, ValueError, KeyError, TypeError, ZeroDivisionError) as exc:
+    except Exception as exc:                                   # noqa: BLE001
+        # Any exception: this is evidence beside the finish, and a record it
+        # cannot read must not stop a job that has already paid for its deps.
         return {"rule": rule, "selected_step": None, "unreadable": type(exc).__name__}
     return {"rule": rule, "selected_step": gate.best_step,
             "observed": [{k: o[k] for k in ("step", "delta", "standard_error", "margin", "rejected_for")}
@@ -261,7 +280,8 @@ def main(argv=None):
             "split_seed": int(os.environ["SPLIT_SEED"]), "eval_draws": int(os.environ["EVAL_DRAWS"]),
             "eval_sequences": int(os.environ["EVAL_SEQUENCES"]),
             "pool_sandboxes_per_host": int(os.environ["NTX_POOL_SANDBOXES_PER_HOST"]),
-            "commit_descends": descends}
+            "commit_descends": descends,
+            "tokenizer_sha256": current_tokenizer_sha256(os.environ["QWEN_REV"])}
     found = problems(manifest, best, experiment, seal_ok, bundles["pilot"][0], bundles["pilot"][1],
                      bundles["eval2"][0], bundles["eval2"][1], here, args.job, step)
     if found:
