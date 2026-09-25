@@ -32,7 +32,7 @@
 //! * a name off the list (`braces`, a misspelling, a feature from a later
 //!   Python) or an alias, which CPython answers with a `SyntaxError` or, for
 //!   `as`, with a `_Feature` binding this engine has no value for;
-//! * `barry_as_FLUFL` ANYWHERE in the source, and before the parse result is
+//! * `barry_as_FLUFL` as a NAME anywhere in the source, and before the parse result is
 //!   looked at, because it changes the grammar (`1 <> 2` is valid under it)
 //!   and the parser would otherwise answer a program CPython runs with a
 //!   `SyntaxError` at exit 1;
@@ -57,30 +57,21 @@
 //!   CPython before `cap-future`; the same gaps WITHOUT a head are the
 //!   core's, and are left as the core answers them.
 //!
-//! A program with no `__future__` in it pays one scan of its tokens and is
-//! returned exactly as it was parsed.
+//! A program with no `__future__` NAME in it pays one scan of its tokens and
+//! is returned exactly as it was parsed — a string, a comment or an f-string's
+//! text that says `__future__` is the core's program, answered as the core
+//! answers it.
 
 use crate::ast::*;
 use crate::err::{unsupported, R};
-use crate::lex::{Tok, Token};
+use crate::lex::Token;
 use std::rc::Rc;
 
 /// The feature names served, which is the list `route::MODULE_ATTRS` carries
 /// for `__future__` so the CORE's walk sends every other name to CPython.
 pub const SERVED: &[&str] = crate::route::FUTURE_SERVED;
 
-/// How many tokens of the program are `needle`: a name, or text inside an
-/// f-string, whose expressions the lexer keeps as raw source. Over-counting
-/// (an f-string's literal text) can only refuse, never serve.
-fn mentions(toks: &[Token], needle: &str) -> usize {
-    toks.iter()
-        .filter(|t| match &t.tok {
-            Tok::Name(n) => n == needle,
-            Tok::FStr { raw, .. } => raw.contains(needle),
-            _ => false,
-        })
-        .count()
-}
+use crate::route::{future_head, future_names as names, future_token_block};
 
 fn refuse(detail: &str) -> crate::err::LypningError {
     unsupported("future", detail)
@@ -89,64 +80,26 @@ fn refuse(detail: &str) -> crate::err::LypningError {
 /// The pass. `body` is the parse as it came out, error included, because
 /// `barry_as_FLUFL` has to be refused whether or not its grammar parsed.
 pub fn pass(body: R<Vec<Stmt>>, toks: &[Token], lax: Option<&'static str>) -> R<Vec<Stmt>> {
-    if mentions(toks, "barry_as_FLUFL") > 0 {
+    if names(toks, "barry_as_FLUFL") > 0 {
         return Err(refuse("from __future__ import barry_as_FLUFL"));
     }
-    let futures = mentions(toks, "__future__");
-    if futures == 0 {
+    if names(toks, "__future__") == 0 {
         return body;
     }
     // CPython NFKC-folds every identifier, so `ｄivision` IS `division` and
-    // `ｂarry_as_FLUFL` is the grammar change; this lexer does not fold, and
-    // counting only ASCII spellings would miss those uses. Under a head, any
-    // non-ASCII identifier (or f-string text, whose expressions are raw
-    // source) refuses rather than be compared unfolded.
-    if toks.iter().any(|t| match &t.tok {
-        Tok::Name(n) => !n.is_ascii(),
-        Tok::FStr { raw, .. } => !raw.is_ascii(),
-        _ => false,
-    }) {
-        return Err(refuse("a non-ASCII identifier, which CPython NFKC-normalizes"));
+    // `ｂarry_as_FLUFL` is the grammar change; see `route::future_token_block`.
+    if let Some(why) = future_token_block(toks) {
+        return Err(refuse(why));
     }
     let mut body = body?;
     if let Some(why) = lax {
         return Err(refuse(why));
     }
-    if mentions(toks, "__debug__") > 0 {
-        return Err(refuse("the name __debug__"));
-    }
-    let start = match body.first() {
-        Some(Stmt::Expr(Expr::Str(_))) => 1,
-        _ => 0,
-    };
-    let mut end = start;
-    let mut names: Vec<Rc<str>> = Vec::new();
-    while let Some(Stmt::FromImport { module, names: ns }) = body.get(end) {
-        if module.as_ref() != "__future__" {
-            break;
-        }
-        for (n, bind) in ns {
-            if n != bind {
-                return Err(refuse(&format!("from __future__ import {n} as {bind}")));
-            }
-            if !SERVED.contains(&n.as_ref()) {
-                return Err(refuse(&format!("from __future__ import {n}")));
-            }
-            names.push(n.clone());
-        }
-        end += 1;
-    }
-    if end - start != futures {
-        return Err(refuse("__future__ anywhere but the head of the program"));
-    }
-    // Each consumed name is one token of its own import; any other token
-    // spelling it is a use of the `_Feature` binding.
+    // The head's shape, the names it serves and every other spelling of them
+    // — decided in `route.rs`, because the CORE's walk asks the same question
+    // and routes a head this pass would refuse straight to CPython (#48).
+    let (start, end, names) = future_head(&body, toks).map_err(|d| refuse(&d))?;
     let own = |n: &str| names.iter().filter(|m| m.as_ref() == n).count();
-    for n in names.iter().map(|n| n.as_ref()).chain(["__annotations__"]) {
-        if mentions(toks, n) != own(n) {
-            return Err(refuse(&format!("the name {n}")));
-        }
-    }
     use crate::err::{REF_PY_KNOWN, REF_PY_MINOR};
     let deferred = own("annotations") > 0 || (REF_PY_KNOWN && REF_PY_MINOR >= 14);
     body.drain(start..end);

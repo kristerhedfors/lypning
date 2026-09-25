@@ -49,8 +49,8 @@ from lypning import engines, paths
 
 F = "from __future__ import annotations\n"
 
-#: Rows CPython answers and this capability serves. Each must match CPython
-#: byte for byte, stdout and exit code; a refusal skips loudly.
+#: Rows CPython answers and this capability serves. Each must be ANSWERED —
+#: never refused — and match CPython byte for byte, stdout and exit code.
 SERVED = [
     F + "print(1)",
     '"""doc"""\n' + F + "print(2)",
@@ -92,8 +92,7 @@ SERVED = [
         "    return p\nprint(f())",
     # a string AFTER the imports is an ordinary expression statement
     F + '"""not a docstring"""\nprint(3)',
-    # the program's own error, after the pass, is the program's
-    F + "print(undefined_name)",
+    # the program's own exit, after the pass, is the program's
     F + "print(1)\nraise SystemExit(3)",
     F + "f = lambda *a, **k: (a, k)\nprint(f(1, x=2))",
     F + "def f(x: int = 5, *a, **k) -> None:\n    print(x, a, k)\nf()",
@@ -105,6 +104,15 @@ SERVED = [
     F + "def g(x: int = 5, *a: int, **k: str) -> None:\n    print(x, a, k)\ng()",
     "def g(*a: int):\n    return a\nprint(g(1))",
     "def g(**k: str):\n    return k\nprint(g(a='1'))",
+]
+
+#: An uncaught error under a head: the program is one only `cap-future` admits
+#: (the core routes it past itself), so the run is held and refuses at its end
+#: as `name-hint` rather than print a last line CPython may end with a
+#: `Did you mean` (`route::hint_held`, `err::forgot_import`).
+HELD = [
+    F + "print(undefined_name)",
+    F + "x = 1\nx.foo",
 ]
 
 #: Rows the capability declines. CPython answers some of them and raises a
@@ -234,12 +242,11 @@ def _refusal_problem(got: subprocess.CompletedProcess) -> str | None:
 @pytest.mark.parametrize("program", SERVED, ids=range(len(SERVED)))
 def test_the_future_grid_agrees_with_cpython(program: str) -> None:
     got = _run([str(BINARY)], program)
-    if got.returncode == engines.UNSUPPORTED_EXIT:
-        # A refusal is always allowed and never a bug, but it must be CLEAN and
-        # it is reported: a row that started refusing stopped measuring.
-        problem = _refusal_problem(got)
-        assert problem is None, "%s\n  program: %r" % (problem, program)
-        pytest.skip("lypning-l refuses this row: %s" % got.stderr.strip()[:160])
+    # SERVED means served: a row that started refusing stopped measuring, and
+    # the surface it pinned turned into refusals with the suite still green.
+    assert got.returncode != engines.UNSUPPORTED_EXIT, (
+        "every SERVED row is answered natively; this one refused: %s\n  program: %r"
+        % (got.stderr.strip()[:200], program))
     ref = _run([sys.executable], program)
     assert (got.stdout, got.returncode) == (ref.stdout, ref.returncode), (
         "lypning-l disagrees with CPython.\n"
@@ -249,6 +256,15 @@ def test_the_future_grid_agrees_with_cpython(program: str) -> None:
         % (program, got.stdout, got.returncode, got.stderr.strip()[-200:],
            ref.stdout, ref.returncode, ref.stderr.strip()[-200:])
     )
+
+
+@needs_l
+@pytest.mark.parametrize("program", HELD, ids=range(len(HELD)))
+def test_an_uncaught_error_under_a_head_is_held(program: str) -> None:
+    got = _run([str(BINARY)], program)
+    problem = _refusal_problem(got)
+    assert problem is None, "%s\n  program: %r" % (problem, program)
+    assert got.stderr.startswith("%s: unsupported: name-hint: " % engines.LYPNING_L), got.stderr
 
 
 @needs_l
@@ -370,3 +386,26 @@ def test_the_grid_rows_are_what_cpython_says_they_are() -> None:
     a SyntaxError on the reference would pin a refusal as an answer."""
     for program in SERVED:
         compile(program, "<grid>", "exec")
+
+
+#: Issue #48, for `cap-future`: every row lypning-l's OWN walk refuses statically.
+_STATIC_REFUSALS = list(REFUSED)
+
+
+@needs_core
+@pytest.mark.parametrize("program", _STATIC_REFUSALS, ids=range(len(_STATIC_REFUSALS)))
+def test_the_core_never_routes_into_a_rung_whose_walk_refuses(program: str) -> None:
+    """The router never routes to a rung whose own walk refuses (#48).
+
+    The CORE is the binary that routes, and it carries this capability's
+    static refusals in its own walk (`route::future_head`, shared with `future.rs`), so a program lypning-l would
+    refuse before its first statement goes to CPython in one step rather than
+    costing a lypning-l spawn to be told no."""
+    mine = engines.route(program, binary=BINARY)
+    if mine.engine != engines.CPYTHON:
+        pytest.skip("lypning-l's walk does not refuse this row statically")
+    core = engines.route(program, binary=CORE)
+    assert core.engine == engines.CPYTHON, (
+        "the core routes a program lypning-l's walk refuses into lypning-l\n"
+        "  program: %r\n  core: %s %s: %s\n  lypning-l: %s: %s"
+        % (program, core.engine, core.kind, core.detail, mine.kind, mine.detail))

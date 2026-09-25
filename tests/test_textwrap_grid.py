@@ -503,3 +503,26 @@ if __name__ == "__main__":
     for d in s["disagree"][:10]:
         print(repr(d))
     sys.exit(1 if s["disagree"] else 0)
+
+
+#: Issue #48, for `cap-textwrap`: every row lypning-l's OWN walk refuses statically.
+_STATIC_REFUSALS = [T + p if not p.startswith(("import ", "from ")) else p for _, p in AFTER_A_BARRIER] + REFUSED
+
+
+@needs_core
+@pytest.mark.parametrize("program", _STATIC_REFUSALS, ids=range(len(_STATIC_REFUSALS)))
+def test_the_core_never_routes_into_a_rung_whose_walk_refuses(program: str) -> None:
+    """The router never routes to a rung whose own walk refuses (#48).
+
+    The CORE is the binary that routes, and it carries this capability's
+    static refusals in its own walk (`textwrap_call_block`, uncfg'd), so a program lypning-l would
+    refuse before its first statement goes to CPython in one step rather than
+    costing a lypning-l spawn to be told no."""
+    mine = engines.route(program, binary=BINARY)
+    if mine.engine != engines.CPYTHON:
+        pytest.skip("lypning-l's walk does not refuse this row statically")
+    core = engines.route(program, binary=CORE)
+    assert core.engine == engines.CPYTHON, (
+        "the core routes a program lypning-l's walk refuses into lypning-l\n"
+        "  program: %r\n  core: %s %s: %s\n  lypning-l: %s: %s"
+        % (program, core.engine, core.kind, core.detail, mine.kind, mine.detail))

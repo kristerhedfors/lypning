@@ -182,10 +182,9 @@ fn execute_inner(src: &str, report_refusal: bool, kind: &mut String, detail: &mu
     if let Err(e) = route::base64_static_check(&body, src) {
         return finish(Err(e), report_refusal, kind, detail);
     }
-    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
-    io::hold_for(src);
     // Every program a capability of this branch admitted went to CPython
-    // before, and got its `Did you mean`; see `route::hint_held`.
+    // before, and got its `Did you mean`; see `route::hint_held`, which holds
+    // exactly the programs the core's own walk routes past the core.
     #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
     if route::hint_held(&body, src) {
         io::hold();

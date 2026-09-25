@@ -245,6 +245,12 @@ pub fn repr(v: &Value) -> R<String> {
                     &format!("repr() of a {kind}, whose constructor arguments this value does not keep"),
                 ));
             }
+            if crate::err::opaque_assert(kind, msg) {
+                return Err(crate::err::unsupported(
+                    "exception",
+                    "repr() of an assert whose message was not a non-empty str",
+                ));
+            }
             if let Some((n, text)) = crate::ops::errno_args(kind, msg)? {
                 return Ok(format!("{kind}({n}, {})", str_repr(text)?));
             }

@@ -146,8 +146,12 @@ pub fn call(it: &mut Interp, name: &str, args: &mut Args, kw: &[(Rc<str>, Value)
             if n > MAX_POOLS as u64 {
                 return Err(refuse("product() over more than 65,536 pools"));
             }
-            let mut drained = Vec::with_capacity(args.len());
-            for i in 0..args.len() {
+            // `repeat=0` is no pools at all: `product_new` sets `nargs = 0`
+            // and never touches an argument, so a non-iterable is not an
+            // error and a generator is not consumed.
+            let nargs = if repeat == 0 { 0 } else { args.len() };
+            let mut drained = Vec::with_capacity(nargs);
+            for i in 0..nargs {
                 let v = args.take(i);
                 drained.push(Rc::new(it.iter_collect(v)?));
             }

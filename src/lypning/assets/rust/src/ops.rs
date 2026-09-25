@@ -962,6 +962,12 @@ impl Interp {
                 ));
             }
             if name == "args" {
+                if crate::err::opaque_assert(kind, msg) {
+                    return Err(unsupported(
+                        "exception",
+                        "AssertionError.args of an assert whose message was not a non-empty str",
+                    ));
+                }
                 if let Some((n, text)) = errno_args(kind, msg)? {
                     return Ok(Value::Tuple(Rc::new(vec![ival(n), Value::Str(text.into())])));
                 }

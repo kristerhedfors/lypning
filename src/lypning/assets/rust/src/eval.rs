@@ -104,11 +104,17 @@ pub struct Interp {
     /// try/except and the inner one must not lose the outer's exception when it
     /// finishes.
     handling: Vec<(&'static str, Rc<str>)>,
-    /// How many `try` bodies WITH an `except` clause are executing right now,
-    /// dynamically, across calls. Zero means an exception raised here cannot
-    /// be caught — only its traceback will show it, which reads `str()` — so
-    /// `assert` may answer with a message whose `args` it cannot carry.
-    trying: u32,
+    /// Where the executing FUNCTION's own scope sits in `chain`, one entry per
+    /// `assigned` frame: a name found BELOW it was found in an enclosing
+    /// function, which is the wrong answer when this function assigns the name
+    /// too (see [`Interp::lookup`]). Zero — never below — for a generator
+    /// frame, whose chain this does not track.
+    frame_floor: Vec<usize>,
+    /// Every name some function body in the program assigns, collected once by
+    /// [`Interp::run`]. Only asked on the NameError path: a name nobody's body
+    /// assigns cannot be a free variable of anything, so its message is the
+    /// plain `name 'x' is not defined` at any depth.
+    fn_locals: Names,
     /// Spent scope-chain vectors, kept to be filled again. See
     /// `call_func_inner`; capped at [`CHAIN_POOL_MAX`] so a deep recursion
     /// cannot leave the pool holding its whole depth for the rest of the run.
@@ -150,6 +156,7 @@ const SCOPE_POOL_MAX: usize = 64;
 
 impl Interp {
     pub fn new() -> Self {
+        crate::err::reset_opaque_asserts();
         Interp {
             globals: new_scope(),
             chain: Vec::new(),
@@ -162,7 +169,8 @@ impl Interp {
             steps: 0,
             expr_depth: 0,
             handling: Vec::new(),
-            trying: 0,
+            frame_floor: Vec::new(),
+            fn_locals: Names::new(),
             chain_pool: Vec::new(),
             scope_pool: Vec::new(),
             // Read once, here, rather than per statement. Zero — the CLI's
@@ -179,8 +187,18 @@ impl Interp {
             Some(Some(g)) if g.names.contains(name) => g.base.min(self.chain.len()),
             _ => 0,
         };
-        for s in self.chain[from..].iter().rev() {
+        for (i, s) in self.chain[from..].iter().enumerate().rev() {
             if let Some(v) = s.borrow().get(name) {
+                // Found in an ENCLOSING function's scope while this function
+                // assigns the name itself: the name is this frame's local, and
+                // unbound — `except E as x` in a closure unbinds `x`, and the
+                // outer `x` is not the one CPython reads.
+                if from + i < self.frame_floor.last().copied().unwrap_or(0)
+                    && self.assigned.last().is_some_and(|f| f.contains(name))
+                    && !self.declared_global(name)
+                {
+                    return Err(unbound_local(name));
+                }
                 return Ok(v.clone());
             }
         }
@@ -207,7 +225,9 @@ impl Interp {
         // Two scopes deep, the name may be one an ENCLOSING function assigns
         // later, and CPython's NameError then reads "cannot access free
         // variable"; which enclosing function assigns what is not kept here.
-        if self.chain.len() > 1 {
+        // Only for a name some function body assigns: any other name is not
+        // a free variable of anything, and its message is the plain one.
+        if self.chain.len() > 1 && self.fn_locals.contains(name) {
             return Err(unsupported(
                 "name-error",
                 &format!("NameError for '{name}' in a nested scope, whose message depends on enclosing assignments"),
@@ -296,6 +316,7 @@ impl Interp {
     /// Enter and leave a generator's creation frame (see [`Interp::gen_frame`]).
     /// The `global` table is moved in and back out, not cloned per element.
     pub(crate) fn push_gen_frame(&mut self, f: &mut GenFrame) {
+        self.frame_floor.push(0);
         self.assigned.push(f.0.clone());
         self.global_decls.push(f.1.take());
         self.gen_marks.push(self.assigned.len());
@@ -303,6 +324,7 @@ impl Interp {
 
     pub(crate) fn pop_gen_frame(&mut self, f: &mut GenFrame) {
         self.gen_marks.pop();
+        self.frame_floor.pop();
         self.assigned.pop();
         f.1 = self.global_decls.pop().flatten();
     }
@@ -342,9 +364,10 @@ impl Interp {
     // ---- statements -------------------------------------------------------
 
     pub fn run(&mut self, body: &[Stmt]) -> R<()> {
+        collect_fn_locals(body, &mut self.fn_locals);
         let flow = self.exec_block(body);
-        // An UNCAUGHT NameError or AttributeError in a program that names
-        // `itertools`, `difflib` or `time` refuses at the exit path
+        // An UNCAUGHT NameError or AttributeError in a program the core's
+        // walk routes past the core refuses at the exit path
         // (`err::forgot_import`, behind `io::hold`), not here.
         match flow? {
             Flow::Normal => Ok(()),
@@ -505,19 +528,17 @@ impl Interp {
                     // `call_builtin`). So a message that is not a non-empty
                     // str — `assert x, 5`, `assert x, ''` — would read back as
                     // `('5',)` or `()` where CPython says `(5,)` or `('',)`.
-                    // That is only observable by a handler: uncaught, the
-                    // traceback prints `str()` of it, which is exact. So
-                    // `assert len(b) == 15, len(b)` outside any `try` still
-                    // answers, and refuses only where it could be caught.
+                    // Only `args` and `repr()` can see that; `str()`, which
+                    // is what a traceback and `print(e)` read, is exact. So
+                    // the message is noted, and those two refuse on it
+                    // (`err::opaque_assert`) rather than the raise itself.
                     let m = match msg {
                         Some(m) => match self.eval(m)? {
                             Value::Str(s) if !s.is_empty() => s.to_string(),
-                            v if self.trying == 0 => fmt::to_str(&v)?,
-                            _ => {
-                                return Err(unsupported(
-                                    "exception",
-                                    "assert whose message is not a non-empty str, which AssertionError.args cannot carry",
-                                ))
+                            v => {
+                                let t = fmt::to_str(&v)?;
+                                crate::err::note_opaque_assert(&t);
+                                t
                             }
                         },
                         None => String::new(),
@@ -626,10 +647,7 @@ impl Interp {
                 els,
                 finally,
             } => {
-                let catches = !handlers.is_empty() as u32;
-                self.trying += catches;
                 let r = self.exec_block(body);
-                self.trying -= catches;
                 let out = match r {
                     // The `else` clause runs only when the body finished by
                     // FALLING OFF THE END. `break`, `continue` and `return` all
@@ -1710,6 +1728,7 @@ impl Interp {
         c.push(scope);
         let saved_chain = std::mem::replace(&mut self.chain, c);
         self.global_decls.push(None);
+        self.frame_floor.push(f.env.len());
         self.assigned.push(f.assigned.clone());
         let r = match &f.lambda {
             Some(body) => self.eval(body),
@@ -1720,6 +1739,7 @@ impl Interp {
             },
         };
         self.assigned.pop();
+        self.frame_floor.pop();
         self.global_decls.pop();
         // Cleared here rather than on reuse, so the frame's scopes are dropped
         // when the frame ends and not whenever the vector is next taken out.
@@ -1914,6 +1934,38 @@ fn assigned_names(body: &[Stmt], params: &Params) -> Names {
     }
     collect_assigned(body, &mut out);
     out
+}
+
+/// Every name any `def` body in `body` assigns, at any depth — the only names
+/// a `NameError` could be CPython's free-variable one for.
+fn collect_fn_locals(body: &[Stmt], out: &mut Names) {
+    for s in body {
+        match s {
+            Stmt::Def { params, body, .. } => {
+                for n in &params.names {
+                    out.insert(n.clone());
+                }
+                collect_assigned(body, out);
+                collect_fn_locals(body, out);
+            }
+            Stmt::If { arms, els } => {
+                arms.iter().for_each(|(_, b)| collect_fn_locals(b, out));
+                collect_fn_locals(els, out);
+            }
+            Stmt::For { body, els, .. } | Stmt::While { body, els, .. } => {
+                collect_fn_locals(body, out);
+                collect_fn_locals(els, out);
+            }
+            Stmt::Try { body, handlers, els, finally } => {
+                collect_fn_locals(body, out);
+                handlers.iter().for_each(|h| collect_fn_locals(&h.body, out));
+                collect_fn_locals(els, out);
+                collect_fn_locals(finally, out);
+            }
+            Stmt::With { body, .. } => collect_fn_locals(body, out),
+            _ => {}
+        }
+    }
 }
 
 fn unbound_local(name: &str) -> LypningError {

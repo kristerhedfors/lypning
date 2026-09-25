@@ -222,6 +222,32 @@ ANSWERED = [
     # --- round 2: annotations are lazy on 3.14 -------------------------------
     ("def f(a: print('ann'), *b: print('b'), **k: Undefined) -> print('r'):\n    pass\nprint('ok')",
      "ok\n", 0),
+    # --- review of the merged branch (CPython 3.14.5, 2026-09-25) ------------
+    # `except E as x` in a closure unbinds the CLOSURE's `x`: the enclosing
+    # function's `x` is not the one read
+    ("def outer():\n    x = 'outer'\n    def inner():\n        try:\n            int('q')\n"
+     "        except ValueError as x:\n            pass\n        return x\n    return inner()\n"
+     "try:\n    print(outer())\nexcept UnboundLocalError as e:\n    print(type(e).__name__, e)",
+     "UnboundLocalError cannot access local variable 'x' where it is not associated with a value\n", 0),
+    ("def outer():\n    y = 1\n    def inner():\n        print(y)\n        y = 2\n    inner()\n"
+     "try:\n    outer()\nexcept UnboundLocalError as e:\n    print(type(e).__name__, e)",
+     "UnboundLocalError cannot access local variable 'y' where it is not associated with a value\n", 0),
+    # a NameError two scopes deep on a name NO function assigns is the plain
+    # one, caught or not
+    ("def f():\n    def g():\n        try:\n            return zz\n        except NameError:\n"
+     "            return 0\n    return g()\nprint(f())",
+     "0\n", 0),
+    ("def f(xs):\n    try:\n        return [undefined for x in xs]\n    except NameError as e:\n"
+     "        return str(e)\nprint(f([1]))",
+     "name 'undefined' is not defined\n", 0),
+    # an assert's non-str message, caught and read through str(): exact
+    ("def check(v):\n    assert v > 0, v\ntry:\n    check(-1)\nexcept AssertionError as e:\n"
+     "    print('AE', e)",
+     "AE -1\n", 0),
+    # a bare annotated local no nested scope reads
+    ("def main():\n    count: int\n    count = 3\n    fn = lambda s: s.upper()\n"
+     "    print(count, fn('x'), sep='|')\nmain()",
+     "3|X\n", 0),
 ]
 
 #: Programs CPython rejects at compile time; the LAST stderr line is pinned

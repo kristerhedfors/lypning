@@ -330,13 +330,15 @@ pub const SERVED_MODULE_NAMES: &[&str] = &[
 pub fn forgot_import(e: &LypningError) -> Option<LypningError> {
     let ErrKind::Exc(x) = e.kind() else { return None };
     // A program lypning-l serves only because of a capability the core lacks
-    // and whose programs went to CPython before it, and got the hint
-    // (`route::hint_held`: itertools, difflib, time, statistics, textwrap,
-    // binascii, the `__future__` head, `random.Random`/`sample`/`shuffle` and
-    // `sys.version_info`). Any uncaught error CPython may end with a `Did you mean` refuses
+    // and whose programs went to CPython before it, and got the hint: the
+    // core's own walk routes it past the core (`route::hint_held` —
+    // itertools, difflib, time, statistics, textwrap, binascii, a served
+    // `__future__` head, `random.Random`/`sample`/`shuffle` and
+    // `sys.version_info`, as the walk finds them, never as words in the
+    // text). Any uncaught error CPython may end with a `Did you mean` refuses
     // here, and `io::hold` keeps the run reversible so this can. Not the other
-    // programs: they are the core's answer, and what the core answers
-    // lypning-l answers. The hints are 3.10's; 3.9 prints the bare line, which
+    // programs: the core routes them to itself, they are the core's answer,
+    // and what the core answers lypning-l answers. The hints are 3.10's; 3.9 prints the bare line, which
     // is what this engine prints (measured on 3.9.6, 3.11.15 and 3.14.5).
     #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
     if crate::io::held()
@@ -520,4 +522,36 @@ impl Drop for Nest {
 /// Resetting on the way in costs one store and removes the whole class.
 pub fn reset_nesting() {
     NEST.with(|n| n.set(0));
+}
+
+thread_local! {
+    /// The `str()` of every `assert` message that was not a non-empty `str`,
+    /// in this run. See [`opaque_assert`].
+    static OPAQUE_ASSERT: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// An `assert x, <msg>` whose message is not a non-empty `str` raised with
+/// `str(msg)` as its text: `args` and `repr()` of it would read `('5',)` where
+/// CPython reads `(5,)`, so those two refuse on it ([`opaque_assert`]) and
+/// everything that reads `str()` — a traceback, `print(e)` — answers.
+pub fn note_opaque_assert(msg: &str) {
+    OPAQUE_ASSERT.with(|o| {
+        let mut o = o.borrow_mut();
+        if !o.iter().any(|m| m == msg) {
+            o.push(msg.to_string());
+        }
+    });
+}
+
+/// Is this an `AssertionError` whose text some opaque `assert` of this run
+/// raised? By TEXT, since the exception is rebuilt on the way to its handler;
+/// a str-message assert that happens to say the same thing refuses too,
+/// which is the safe direction.
+pub fn opaque_assert(kind: &str, msg: &str) -> bool {
+    kind == "AssertionError" && OPAQUE_ASSERT.with(|o| o.borrow().iter().any(|m| m == msg))
+}
+
+/// Forget the opaque messages: a fresh run inherits none.
+pub fn reset_opaque_asserts() {
+    OPAQUE_ASSERT.with(|o| o.borrow_mut().clear());
 }

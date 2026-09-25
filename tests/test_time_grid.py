@@ -615,3 +615,26 @@ def test_a_name_error_the_core_would_answer_is_still_answered(program: str) -> N
     core = _run([str(CORE)], program)
     if core.returncode != engines.UNSUPPORTED_EXIT:
         assert (core.returncode, core.stdout, core.stderr) == (got.returncode, got.stdout, got.stderr)
+
+
+#: Issue #48, for `cap-time`: every row lypning-l's OWN walk refuses statically.
+_STATIC_REFUSALS = REFUSED + [p for _, p in AFTER_A_BARRIER]
+
+
+@needs_core
+@pytest.mark.parametrize("program", _STATIC_REFUSALS, ids=range(len(_STATIC_REFUSALS)))
+def test_the_core_never_routes_into_a_rung_whose_walk_refuses(program: str) -> None:
+    """The router never routes to a rung whose own walk refuses (#48).
+
+    The CORE is the binary that routes, and it carries this capability's
+    static refusals in its own walk (`time_call_block` and the `time` arms, uncfg'd), so a program lypning-l would
+    refuse before its first statement goes to CPython in one step rather than
+    costing a lypning-l spawn to be told no."""
+    mine = engines.route(program, binary=BINARY)
+    if mine.engine != engines.CPYTHON:
+        pytest.skip("lypning-l's walk does not refuse this row statically")
+    core = engines.route(program, binary=CORE)
+    assert core.engine == engines.CPYTHON, (
+        "the core routes a program lypning-l's walk refuses into lypning-l\n"
+        "  program: %r\n  core: %s %s: %s\n  lypning-l: %s: %s"
+        % (program, core.engine, core.kind, core.detail, mine.kind, mine.detail))

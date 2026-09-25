@@ -46,9 +46,10 @@ struct AnnScope {
     annotated: Vec<Rc<str>>,
     /// This scope is a function body, not the module.
     fun: bool,
-    /// A function body holds a bare `x: int`: the local it declares is never
-    /// bound, and a nested scope reading it must fail rather than find a global.
-    bare: bool,
+    /// The names a bare `x: int` in this function body declares: each local
+    /// is never bound by it, and a nested scope reading it must fail rather
+    /// than find a global.
+    bare: Vec<Rc<str>>,
     /// The token this scope starts at — a def's `(` — so a `global` can ask
     /// whether its name was spelled before it ([`Parser::lax`]).
     #[cfg(feature = "cap-future")]
@@ -110,6 +111,52 @@ pub fn parse(src: &str) -> R<Vec<Stmt>> {
     #[cfg(feature = "cap-future")]
     let body = crate::future::pass(body, &p.t, p.lax);
     body
+}
+
+/// Does a nested scope in these function-body tokens spell one of `bare`? A
+/// `lambda` reaches to the end of its logical line, a `def` to the end of its
+/// block (or of its line, for a one-line body), and an f-string holding a
+/// `lambda` is its own token. Over-reaching — a `;` after a lambda — only
+/// refuses more.
+fn bare_read_nested(toks: &[Token], bare: &[Rc<str>]) -> bool {
+    let spells = |t: &Token| match &t.tok {
+        Tok::Name(n) => bare.iter().any(|b| b.as_ref() == n),
+        Tok::FStr { raw, .. } => bare.iter().any(|b| raw.contains(b.as_ref())),
+        _ => false,
+    };
+    let line_end = |k: usize| toks[k..].iter().position(|t| matches!(t.tok, Tok::Newline)).map_or(toks.len(), |j| k + j);
+    for k in 0..toks.len() {
+        let end = match &toks[k].tok {
+            Tok::Name(n) if n == "lambda" => line_end(k),
+            Tok::Name(n) if n == "def" => {
+                let j = line_end(k);
+                if matches!(toks.get(j + 1).map(|t| &t.tok), Some(Tok::Indent)) {
+                    let mut depth = 0i32;
+                    let mut e = toks.len();
+                    for (i, t) in toks.iter().enumerate().skip(j + 1) {
+                        match t.tok {
+                            Tok::Indent => depth += 1,
+                            Tok::Dedent => depth -= 1,
+                            _ => {}
+                        }
+                        if depth == 0 {
+                            e = i + 1;
+                            break;
+                        }
+                    }
+                    e
+                } else {
+                    j
+                }
+            }
+            Tok::FStr { raw, .. } if raw.contains("lambda") => k + 1,
+            _ => continue,
+        };
+        if toks[k..end].iter().any(spells) {
+            return true;
+        }
+    }
+    false
 }
 
 impl Parser {
@@ -398,16 +445,14 @@ impl Parser {
             // A bare `x: int` makes `x` local and leaves it unbound, so a
             // lambda or nested def reading it raises NameError in CPython —
             // but this evaluator resolves a free name through the global it
-            // finds, at any point in the function. Rare, so refused wholesale
-            // rather than resolved: the tokens are the one place a lambda
-            // inside an f-string field is still visible.
-            if inner.bare
-                && self.t[start..self.i].iter().any(|t| match &t.tok {
-                    Tok::Name(n) => n == "lambda" || n == "def",
-                    Tok::FStr { raw, .. } => raw.contains("lambda"),
-                    _ => false,
-                })
-            {
+            // finds, at any point in the function. Refused rather than
+            // resolved, and only where a nested scope COULD read it: a bare
+            // name spelled inside the tokens of a `lambda` (to the end of its
+            // logical line) or a nested `def` (to the end of its block). The
+            // tokens are the one place a lambda inside an f-string field is
+            // still visible, and an f-string's raw text counts as a spelling.
+            let read = !inner.bare.is_empty() && bare_read_nested(&self.t[start..self.i], &inner.bare);
+            if read {
                 return Err(unsupported("annotation", "a nested scope beside a bare annotated local"));
             }
             if contains_yield(&body) {
@@ -883,7 +928,9 @@ impl Parser {
                         return Err(annotated_global());
                     }
                     sc.annotated.push(n.clone());
-                    sc.bare |= fun && value.is_none();
+                    if fun && value.is_none() {
+                        sc.bare.push(n.clone());
+                    }
                     return Ok(match value {
                         Some(value) => Stmt::Assign {
                             targets: vec![Target::Name(n)],

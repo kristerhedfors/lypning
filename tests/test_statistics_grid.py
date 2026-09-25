@@ -280,11 +280,11 @@ ROUTED_PAST_LYPNING_L = [
     "from statistics import fmean\nprint(fmean([1, 2]))",
     "import statistics as st\nprint(st.pvariance([1, 2]))",
     "from statistics import StatisticsError\nprint(1)",
+    # lypning-l's own walk refuses the handler statically (`exception: except
+    # statistics.StatisticsError` — no rung serves the class), so the core
+    # routes it past lypning-l too rather than spend a spawn there (#48).
+    S + "try: statistics.median([])\nexcept statistics.StatisticsError as e: print('SE', e)",
 ]
-# `except statistics.StatisticsError:` is NOT among them: the handler's type is
-# evaluated only when an exception reaches it, in CPython and here alike, so
-# the program runs on lypning-l and a handler that is reached refuses there
-# (`module-attr`, at runtime) — exit 90, never an answer.
 
 #: …and each of these to lypning-l.
 ROUTED_TO_LYPNING_L = [

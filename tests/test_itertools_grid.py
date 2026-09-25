@@ -63,6 +63,11 @@ BASICS = [
     I + "print(len(list(itertools.product(range(10), repeat=5))))",
     I + "print(list(itertools.product(iter([1, 2]), iter('ab'))))",
     I + "print(list(itertools.product(range(3), [])), list(itertools.product([], repeat=0)))",
+    # `repeat=0` is no pools: CPython never touches an argument — a
+    # non-iterable is not an error and a generator is not consumed.
+    I + "print(list(itertools.product(5, repeat=0)))",
+    I + "g = (x for x in [1, 2, 3])\nprint(list(itertools.product(g, repeat=0)), list(g))",
+    I + "g = (print('side') or x for x in [1])\nprint(list(itertools.product(g, 'ab', None, repeat=0)), list(g))",
     I + "print(list(itertools.combinations(range(4), 2)))",
     I + "print(list(itertools.combinations('ab', 0)), list(itertools.combinations('ab', 5)))",
     I + "print(list(itertools.combinations(iterable='abc', r=2)))",

@@ -149,36 +149,27 @@ thread_local! {
 /// instead of flushing, and an `os.rmdir` of a directory it did not make
 /// refuses instead of committing.
 ///
-/// Set for a program lypning-l serves only because of `cap-itertools`,
-/// `cap-difflib` or `cap-time`: every one of them went to CPython before (the
-/// core refuses the import statically), and their served surface keeps runtime
-/// refusals — `repr` of a product, `set-order`, a dynamic `getattr`, and above
-/// all an uncaught error whose last line CPython ends with a `Did you mean`
-/// suggestion this engine does not compute (`err::forgot_import`). A refusal
-/// needs a run that can still be taken back; a flush would turn it into an exit
-/// 1 with half the output on stdout, from the chain as well as from a pinned
-/// `-c`. The cost is a spawn for a program that prints more than 8 MiB. The
-/// core's own programs keep the early flush; nothing there changed.
+/// Set for a program lypning-l serves only because of a capability the core
+/// lacks — one the core's own walk routes PAST the core (`route::hint_held`):
+/// every one of them went to CPython before, and their served surface keeps
+/// runtime refusals — `repr` of a product, `set-order`, a dynamic `getattr`,
+/// and above all an uncaught error whose last line CPython ends with a `Did
+/// you mean` suggestion this engine does not compute (`err::forgot_import`).
+/// A refusal needs a run that can still be taken back; a flush would turn it
+/// into an exit 1 with half the output on stdout, from the chain as well as
+/// from a pinned `-c`. The cost is a spawn for such a program that prints more
+/// than 8 MiB.
 ///
-/// It is set from the SOURCE before anything runs ([`hold_for`] and
-/// `route::hint_held`, which also covers `time`, `statistics`, `textwrap`,
-/// `binascii`, the `__future__` head and `cap-random`'s names), so an error
-/// raised before the import, or under an import that never runs, refuses too:
-/// the core refuses every one of those programs statically, so CPython
-/// answered them. `import time` running (`modules::import`) holds as well.
+/// Decided from the WALK before anything runs, so an error raised before the
+/// import, or under an import that never runs, refuses too — the core routes
+/// those programs past itself all the same. A program the core routes to
+/// ITSELF is never held: it keeps the early flush and answers exactly as the
+/// core does (invariant 10), whatever its comments or strings say. The
+/// runtime calls (`import time`, `itertools`/`difflib` running) only ever
+/// fire in a program the walk already held.
 #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
 pub fn hold() {
     HELD.with(|h| *h.borrow_mut() = true);
-}
-
-/// [`hold`] when the source spells a module whose programs need it. A text
-/// match, so a string or a comment that says `itertools` also holds: an
-/// over-match costs a spawn past 8 MiB, a miss an exit 1.
-#[cfg(any(feature = "cap-itertools", feature = "cap-difflib"))]
-pub fn hold_for(src: &str) {
-    if src.contains("itertools") || src.contains("difflib") {
-        hold();
-    }
 }
 
 #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]

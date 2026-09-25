@@ -95,17 +95,7 @@ use std::rc::Rc;
 
 /// The names this capability serves — `route::MODULE_ATTRS`'s `time` row is
 /// held to this list by [`tests::the_route_table_names_exactly_what_is_served`].
-pub const SERVED: &[&str] = &[
-    "gmtime",
-    "monotonic",
-    "monotonic_ns",
-    "perf_counter",
-    "perf_counter_ns",
-    "sleep",
-    "strftime",
-    "time",
-    "time_ns",
-];
+pub const SERVED: &[&str] = crate::route::TIME_SERVED;
 
 /// `struct timespec` as the LEGACY `clock_gettime` symbol lays it out: `long`
 /// seconds and `long` nanoseconds. On every 64-bit target that is `time_t`;
@@ -363,30 +353,9 @@ fn strftime(fmt: &Value, t: &Value) -> R<Value> {
 
 /// Why this `strftime` format is not served, or `None` if it is — ASCII, and
 /// every `%` followed by one of `Y m d H M S %`. One function, so the WALK and
-/// the runtime refuse with the same words.
-pub fn format_block(f: &str) -> Option<&'static str> {
-    if !f.is_ascii() {
-        return Some("time.strftime() over a non-ASCII format");
-    }
-    let b = f.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%' {
-            match b.get(i + 1) {
-                Some(b'Y' | b'm' | b'd' | b'H' | b'M' | b'S' | b'%') => i += 1,
-                Some(_) => {
-                    return Some(
-                        "time.strftime() with a directive outside %Y %m %d %H %M %S %% \
-                         (the rest read the locale or the zone, or are platform-defined)",
-                    )
-                }
-                None => return Some("time.strftime() with a trailing '%'"),
-            }
-        }
-        i += 1;
-    }
-    None
-}
+/// the runtime refuse with the same words; it lives in `route.rs` because the
+/// core's walk asks it too.
+pub use crate::route::time_format_block as format_block;
 
 #[cfg(test)]
 mod tests {
