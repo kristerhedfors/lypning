@@ -1508,7 +1508,7 @@ fn num_binop(op: BinOp, a: Num, b: Num, both_bool: bool) -> R<Value> {
                 // nan at exit 0 where CPython answers 1.4142135623730951j.
                 return Err(unsupported(
                     "complex",
-                    "a negative float raised to a fractional power (Python returns a complex number)",
+                    "a negative float to a fractional power",
                 ));
             }
             let r = crate::pow::pow(x, y);
@@ -1659,7 +1659,7 @@ fn identity(a: &Value, b: &Value) -> R<bool> {
         if x.is_nan() || y.is_nan() {
             return Err(unsupported(
                 "nan-identity",
-                "`is` over a NaN, which is not equal to itself, so CPython decides it by object identity",
+                "`is` over a NaN",
             ));
         }
     }
@@ -1673,7 +1673,7 @@ fn identity(a: &Value, b: &Value) -> R<bool> {
     if let (Value::DictView(..), Value::DictView(..)) = (a, b) {
         return Err(unsupported(
             "dict-view",
-            "`is` between two dict views, whose identity here is the dict's rather than the view's",
+            "`is` between two dict views",
         ));
     }
     Ok(false)

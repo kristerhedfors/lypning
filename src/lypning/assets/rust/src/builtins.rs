@@ -101,7 +101,7 @@ fn float_sum_agreed(f: f64, c12: f64, c14: f64) -> R<f64> {
     } else {
         Err(unsupported(
             "float-sum",
-            "sum() over floats where CPython 3.11, 3.12 and 3.14 round differently (3.12+ compensates floats, 3.14 compensates ints in the float loop too); the answers differ",
+            "sum() over floats, which CPython versions round differently (3.12+ compensates floats, 3.14 compensates ints in the float loop too); the answers differ",
         ))
     }
 }
@@ -680,7 +680,7 @@ pub fn system_exit_msg(args: &Args) -> R<String> {
         // the arm below turns it into a message and an exit 1.
         Some(Value::Int(i)) if i.small().is_none() => Err(unsupported(
             "bigint",
-            "sys.exit() of an integer past 64 bits, which CPython cannot put in a status word either",
+            "sys.exit() of an integer past 64 bits",
         )),
         Some(v @ (Value::None | Value::Int(_) | Value::Bool(_))) => fmt::to_str(v),
         Some(Value::Str(s))
@@ -830,7 +830,7 @@ pub fn call_builtin(
                 return Err(unsupported(
                     "exception",
                     &format!(
-                        "{name}({}), whose argument is not a string and so cannot be read back                          from the message",
+                        "{name}({}), of a non-str argument                          from the message",
                         fmt::repr(other)?
                     ),
                 ))

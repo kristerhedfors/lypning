@@ -3108,7 +3108,7 @@ fn text_chunk(fo: &mio::FileObj, chunk: Vec<u8>, whole: bool) -> R<Vec<u8>> {
     if !whole {
         return Err(unsupported(
             "file-read",
-            "read(n) across a \\r under newline=None, which CPython translates into one character",
+            "read(n) across a \\r under newline=None",
         ));
     }
     let mut out = Vec::with_capacity(chunk.len());

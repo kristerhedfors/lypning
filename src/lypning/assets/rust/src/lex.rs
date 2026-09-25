@@ -301,13 +301,7 @@ impl<'a> Lexer<'a> {
     fn unexpected_indent(&self) -> LypningError {
         unsupported(
             "indent",
-            &format!(
-                "line {} is indented and no suite opened a block; `python -c` \
-                 dedents the command on 3.13+ but not before, so whether this is \
-                 an error at all — and which one — is the reference \
-                 interpreter's to say",
-                self.line
-            ),
+            &format!("line {} is indented where no block opened", self.line),
         )
     }
 

@@ -1588,7 +1588,7 @@ fn bound_key(recv: &Value, name: &'static str) -> R<HKey> {
             return Err(unsupported(
                 "identity",
                 &format!(
-                    "a bound method of a {} as a dict or set key, whose receiver's identity CPython answers from interning",
+                    "a bound method of a {} as a dict or set key, a key by identity",
                     type_name(recv)
                 ),
             ))
