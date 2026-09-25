@@ -26,7 +26,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   and each split is logged, counts only, in `prefill-splits.jsonl`.
 - The finish job sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`.
 - `.github/scripts/eval2_shape.py` and `eval2-shape.yml` print chunk prompt
-  lengths, aggregates only. `EVAL2.md` amendment of 2026-09-26.
+  lengths, aggregates only. Recorded in `training/EVAL2.md` §4, 2026-09-26.
 
 **2026-09-25** — Finish a pilot from its saved SFT adapter, and select new checkpoints case-weighted ([#127](https://github.com/kristerhedfors/lypning/pull/127))
 
