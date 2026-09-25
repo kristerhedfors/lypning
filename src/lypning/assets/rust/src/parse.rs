@@ -194,6 +194,18 @@ impl Parser {
     fn peek_at(&self, n: usize) -> &Tok {
         &self.t[(self.i + n).min(self.t.len() - 1)].tok
     }
+    /// `from __future__ import annotations` makes every annotation lazy on
+    /// any version. Only lypning-l serves a `__future__` head; the core
+    /// refuses the import before anything runs, so it never asks.
+    #[cfg(feature = "cap-future")]
+    fn future_annotations(&self) -> bool {
+        crate::route::future_names(&self.t, "annotations") > 0
+    }
+    #[cfg(not(feature = "cap-future"))]
+    fn future_annotations(&self) -> bool {
+        false
+    }
+
     fn line(&self) -> u32 {
         self.t[self.i.min(self.t.len() - 1)].line
     }
@@ -922,14 +934,16 @@ impl Parser {
             // Annotated assignment: `x: int = 1`. The annotation itself is
             // parsed and dropped: a 3.14 reference evaluates none of them here.
             // Before 3.14 one at module level is EVALUATED and stored, so
-            // `x: Undefined = 1` is a NameError there. Refused unless the
-            // evaluation cannot raise or print: a builtin type, a string, None,
-            // or a subscript or tuple of those (`list[int]`).
-            self.bump();
-            let ann = self.expr()?;
-            if crate::err::REF_PY_MINOR < 14 && !self.scope.fun && !inert_annotation(&ann) {
-                return Err(unsupported("annotation", "a module-level annotation before 3.14"));
+            // `x: Undefined = 1` is a NameError there — unless the program
+            // imports `from __future__ import annotations`. Refused: telling a
+            // harmless annotation from one that raises costs code the frozen
+            // core's text segment does not have (42 B, measured on musl).
+            // Compiled away on a 3.14 reference.
+            if crate::err::REF_PY_MINOR < 14 && !self.scope.fun && !self.future_annotations() {
+                return Err(unsupported("annotation", "a module-level annotation"));
             }
+            self.bump();
+            self.expr()?;
             let value = if self.eat_op("=") { Some(self.value_list()?) } else { None };
             let msg = match &first {
                 // A bare NAME is "simple"; `(x)` is not, and neither binds nor
@@ -1655,7 +1669,7 @@ impl Parser {
                     // program can read; from 3.14 (PEP 649) they are lazy. A
                     // compile-time constant, so a 3.14 build carries none of it.
                     "__annotations__" if crate::err::REF_PY_MINOR < 14 => {
-                        return Err(unsupported("annotation", "__annotations__ before 3.14"));
+                        return Err(unsupported("annotation", "__annotations__"));
                     }
                     _ => {}
                 }
@@ -2258,20 +2272,6 @@ fn no_star(e: Expr) -> R<Expr> {
         return Err(unsupported("unpack", "* in a tuple display"));
     }
     Ok(e)
-}
-
-/// An annotation whose evaluation cannot raise or have an effect.
-fn inert_annotation(e: &Expr) -> bool {
-    match e {
-        Expr::Name(n) => matches!(
-            n.as_ref(),
-            "int" | "str" | "float" | "bool" | "bytes" | "list" | "dict" | "tuple" | "set" | "object"
-        ),
-        Expr::Str(_) | Expr::None => true,
-        Expr::Index(b, i) => inert_annotation(b) && inert_annotation(i),
-        Expr::Tuple(v) => v.iter().all(inert_annotation),
-        _ => false,
-    }
 }
 
 fn annotated_global() -> LypningError {

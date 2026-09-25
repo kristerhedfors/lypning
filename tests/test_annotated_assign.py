@@ -145,6 +145,16 @@ def test_an_annotated_assignment_matches_cpython(arm, row) -> None:
     engine, head = arm
     program, stdout, code, last = row
     got = _run([_binary(engine)], head + program)
+    # The pinned bytes are 3.14's, where annotations are lazy (PEP 649). Before
+    # 3.14 a module-level one is evaluated and stored, and an engine built
+    # against such a reference refuses it (`annotation`) rather than guess —
+    # the suite's interpreter is the engine's reference (test_build).
+    if (sys.version_info < (3, 14) and got.returncode == engines.UNSUPPORTED_EXIT
+            and ": unsupported: annotation: " in got.stderr):
+        line = got.stderr.strip()
+        assert got.stdout == "" and "\n" not in line, got.stderr
+        assert line.startswith("%s: unsupported: annotation: " % engine), line
+        return
     # Under a head the program is lypning-l's only through `cap-future`, and an
     # uncaught NameError there refuses (`route::hint_held`): CPython may end it
     # with a suggestion this engine does not compute.
