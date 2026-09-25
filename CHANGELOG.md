@@ -14,6 +14,35 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-25** — Finish a pilot from its saved SFT adapter, and select new checkpoints case-weighted (#TBD)
+
+- A `finish` stage (`launch.py finish`, `round02.yml` `stage: finish` with
+  `finish_of` and `sft_step`, h200 at 720m, billed only on `SUBMIT`) runs
+  `training/hf/round02_finish.sh`. It evaluates the test split and eval-2 of
+  a pilot that completed SFT and then died, using that pilot's saved adapter.
+  The steps are the pilot's 7f and 7g, command for command, with a checkpoint
+  upload after every stage.
+- `finish_lineage.py` refuses before any weight load and names the field. It
+  checks the pilot's SFT completion, the seal, both bundle digests,
+  `verifier_sha256`, the engine, the pilot's Space revision (fetched, never
+  the head), Qwen, the seeds, the draws, the chunking and the density.
+  `code_sha256` may differ; both digests and the commits between them are
+  recorded as `finish_lineage`. `finish_preflight.py` checks the Space
+  revision for free before submit.
+- A step other than the pilot rule's needs a dated entry in
+  `finish_lineage.OVERRIDES`. Seed 1111 (HF job `6ab52a686b030d633f68e503`) is
+  registered at step 1,050, where its rule chose 350. `arm_check` joins a
+  pilot and its finish as one seed. Recorded in `training/EVAL2.md` §4
+  (amendment of 2026-09-25) and `training/PLAN.md` Step 4.
+- `CheckpointGate` rules are versioned. The default for new selections is now
+  `coverage-case-weighted/2`: case-weighted coverage correct-and-native, with
+  the same paired margin. `best.json` records the version. Its null admission
+  stays at the stated 10% in `test_gate_admission.py`, and on a fixture shaped
+  like seed 1111 it picks step 1,050 where v1 picks 350. `code_sha256` moves;
+  `verifier_sha256` does not.
+- `projection.py --finish` prices the job at 445.2 of 648 minutes (re-run
+  2026-09-25, at the ~65 draws/min of the pilot's base-dev).
+
 **2026-09-24** — Count an engine-mismatch draw in GPU evaluation and GRPO instead of aborting the arm ([#126](https://github.com/kristerhedfors/lypning/pull/126))
 
 - The seed-1111 arm-A pilot (HF job `6ab52a686b030d633f68e503`, Actions

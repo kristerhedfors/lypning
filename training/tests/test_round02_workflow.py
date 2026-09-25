@@ -240,7 +240,7 @@ def env_value(name):
 def test_every_dispatchable_stage_is_a_launcher_stage():
     options = re.search(r"      stage:\n(?:        .*\n)*?        options: \[([^\]]*)\]", ROUND02)
     stages = [v.strip() for v in options.group(1).split(",")]
-    assert stages == ["smoke", "pilot", "hwsmoke", "eval2"]
+    assert stages == ["smoke", "pilot", "hwsmoke", "eval2", "finish"]
     assert set(stages) == set(load_by_path("launch").STAGES)
     submit = job(ROUND02, "submit")
     for stage in stages:
@@ -249,7 +249,7 @@ def test_every_dispatchable_stage_is_a_launcher_stage():
 
 def test_the_hardware_smoke_and_the_split_eval2_bill_only_on_a_dispatched_submit():
     decide = submit_condition()
-    for stage in ("hwsmoke", "eval2"):
+    for stage in ("hwsmoke", "eval2", "finish"):
         assert decide(stage=stage, submit="SUBMIT") is True, stage
         assert decide(stage=stage, submit="nope") is False, stage
         assert decide(stage=stage) is False, stage
@@ -266,7 +266,7 @@ def test_the_hardware_smoke_bills_the_pilot_flavor_at_its_own_ceiling():
     assert "--bank-path" not in body and "--yes" in body
     assert env_value("HWSMOKE_TIMEOUT") == load_by_path("launch").HWSMOKE_TIMEOUT
     probe = job(ROUND02, "preflight")
-    for stage in ("pilot", "hwsmoke", "eval2"):
+    for stage in ("pilot", "hwsmoke", "eval2", "finish"):
         assert "github.event.inputs.stage == '%s'" % stage in probe, stage
 
 
@@ -324,3 +324,81 @@ def test_arm_a_is_the_operator_approved_configuration():
     assert '--eval-every "${PILOT_EVAL_EVERY}" --eval2 "${PILOT_EVAL2}"' in submit
     assert '--steps "${PILOT_STEPS}"' in submit
     assert '--steps "${PILOT_STEPS}"' in job(ROUND02, "token-floor"), "the floor counts the billed dose"
+
+
+# --- the finish (2026-09-25) --------------------------------------------------
+
+def finish_body():
+    submit = job(ROUND02, "submit")
+    body = submit[submit.index('elif [ "${STAGE_IN}" = "finish" ]'):]
+    return body[:body.index("elif", 5)]
+
+
+def test_a_finish_is_one_job_id_and_one_step_checked_in_bash_then_preflighted_for_free():
+    import os
+    import shutil
+    import subprocess
+    assert "FINISH_OF: ${{ github.event.inputs.finish_of || '' }}" in ROUND02
+    assert "SFT_STEP: ${{ github.event.inputs.sft_step || '' }}" in ROUND02
+    body = finish_body()
+    launch_at = body.index("launch.py finish")
+    for flag in ('--finish-of "${FINISH_OF}"', '--sft-step "${SFT_STEP}"', "--eval-draws 16",
+                 '--seed "${PILOT_SEED}"', '--split-seed "${PILOT_SPLIT_SEED}"',
+                 '--score-workers "${PILOT_SCORERS}"', '--pool-max-hosts "${PILOT_POOL_HOSTS}"',
+                 '--flavor "${PILOT_FLAVOR}" --timeout "${PILOT_TIMEOUT}"', "--yes --follow"):
+        assert flag in body[launch_at:], flag
+    # The free Space-revision check runs before anything is billed.
+    assert body.index("python .github/scripts/finish_preflight.py") < launch_at
+    checks = re.findall(r'\[\[ "\$\{(FINISH_OF|SFT_STEP)\}" =~ (\S+) \]\]', body)
+    assert dict(checks) == {"FINISH_OF": "^[0-9a-f]{24}$", "SFT_STEP": "^[1-9][0-9]*$"}
+    assert all(body.index(name) < launch_at for name, _ in checks)
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is not installed")
+
+    def shell(name, pattern, value):
+        return subprocess.run([bash, "-c", '[[ "${%s}" =~ %s ]]' % (name, pattern)],
+                              env=dict(os.environ, **{name: value}),
+                              stdin=subprocess.DEVNULL).returncode == 0
+    patterns = dict(checks)
+    assert shell("FINISH_OF", patterns["FINISH_OF"], "6ab52a686b030d633f68e503")
+    for bad in EVAL2_OF_BAD:
+        assert not shell("FINISH_OF", patterns["FINISH_OF"], bad), repr(bad)
+    assert shell("SFT_STEP", patterns["SFT_STEP"], "1050")
+    for bad in ("", "0", "-350", "1050\n", "1050 350", "1e3", "01050"):
+        assert not shell("SFT_STEP", patterns["SFT_STEP"], bad), repr(bad)
+
+
+def test_the_finish_preflight_refuses_what_the_job_would_refuse_for_free():
+    spec = importlib.util.spec_from_file_location(
+        "finish_preflight", ROOT / ".github" / "scripts" / "finish_preflight.py")
+    pre = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pre)
+    lineage = pre.lineage_module()
+    job = "6ab52a686b030d633f68e503"
+    manifest = {"job": job, "status": "failed", "last_stage": "test", "grpo_steps": 0, "steps": 1050,
+                "sft_selected_step": 350, "space": "o/verifier", "space_revision": "a" * 40}
+    files = {"round-02/%s/%s" % (job, name) for name in (
+        "sft/best.json", "sft/adapter-1050/seal.json", "sft/adapter-1050/experiment.json",
+        "pilot/bundle.json", "eval2/bundle.json")}
+    here = {"job": job, "step": 1050, "space": "o/verifier", "space_head": "a" * 40,
+            "revision_serves_engine": True}
+    assert pre.problems(manifest, files, here, lineage) == []
+
+    def refused(**change):
+        m, h, f = dict(manifest), dict(here), set(files)
+        for key, value in change.items():
+            if key in ("space_head", "revision_serves_engine", "step"):
+                h[key] = value
+            elif key == "drop":
+                f.discard("round-02/%s/%s" % (job, value))
+            else:
+                m[key] = value
+        return {line.split(":", 1)[0] for line in pre.problems(m, f, h, lineage)}
+    assert refused(space_head="d" * 40) == {"space_revision"}
+    assert refused(revision_serves_engine=False) == {"space_revision"}
+    assert refused(last_stage="sft") == {"sft_completed"}
+    assert refused(grpo_steps=20) == {"grpo_steps"}
+    assert refused(drop="sft/adapter-1050/seal.json") == {"selected_step"}
+    assert "selection_override" in refused(step=700)
+    assert refused(space="o/other") == {"space"}

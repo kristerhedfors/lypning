@@ -203,6 +203,28 @@ SELECTION_POPULATION = "coverage"
 
 _COUNT = {"correct": "correct", "correct_native": "native"}
 
+#: The selection rules, by version; `best.json` records the one it ran under
+#: (`report()["rule"]["version"]`), so a selection is re-read under its own rule.
+#:
+#: v1 ranks on the coverage slice's FAMILY macro: every family weighs the
+#: same, whatever its size. Seed 1111's arm-A pilot (HF job
+#: 6ab52a686b030d633f68e503, 2026-09-24) showed what that costs when dev
+#: families include small ones: one small family's swing moves the macro by
+#: its full share, the macro ranks the checkpoints on it, and the pooled
+#: evidence points elsewhere (`EVAL2.md` section 4, amendment of 2026-09-25).
+#:
+#: v2 ranks on the coverage slice's CASE-WEIGHTED correct-and-native rate --
+#: the mean of per-case rates, every case one unit -- with the same paired
+#: margin: `SELECTION_Z` case-clustered standard errors of the paired
+#: per-case delta (`paired_case_standard_error`). Gate A and retention are
+#: unchanged. Its null half is measured in `tests/test_gate_admission.py`.
+SELECTION_RULE_V1 = "coverage-family-macro/1"
+SELECTION_RULE_V2 = "coverage-case-weighted/2"
+SELECTION_RULES = (SELECTION_RULE_V1, SELECTION_RULE_V2)
+#: The rule every NEW selection runs under (amendment of 2026-09-25). A reader
+#: re-making an old selection names v1 explicitly.
+SELECTION_RULE = SELECTION_RULE_V2
+
 
 def _clustered_variance(families):
     """Variance of a family macro, from per-case values grouped by family.
@@ -278,6 +300,50 @@ def paired_standard_error(base, candidate, key="correct_native"):
          for fb, fc in zip(b["families"], c["families"])]))
 
 
+def _case_rates(stats, count):
+    """(per-case rates, pooled binomial variance) over a slice's case clusters."""
+    families = _clusters(stats)["families"]
+    rates = [x / d for fam in families for x, d in zip(fam[count], fam["draws"])]
+    draws = sum(sum(fam["draws"]) for fam in families)
+    if draws <= 0 or not rates:
+        raise TrainingError("a slice with no draws cannot be selected on")
+    pooled = sum(sum(fam[count]) for fam in families) / draws
+    return rates, pooled * (1.0 - pooled) / draws
+
+
+def case_weighted_rate(stats, key="correct_native"):
+    """A slice's mean per-case rate: every case one unit, whatever its family's size.
+
+    Equal to `summarize`'s `case_weighted_native` (or `_correct`) under the
+    equal draws per case `summarize` requires; computed from the case
+    clusters so that the score and its standard error read the same numbers.
+    """
+    rates, _ = _case_rates(stats, _COUNT[key])
+    return sum(rates) / len(rates)
+
+
+def case_standard_error(stats, key="correct_native"):
+    """Case-clustered standard error of `case_weighted_rate`: the cases are the units."""
+    rates, single = _case_rates(stats, _COUNT[key])
+    return math.sqrt(_clustered_variance([(rates, single)]))
+
+
+def paired_case_standard_error(base, candidate, key="correct_native"):
+    """Case-clustered standard error of the paired case-weighted delta.
+
+    `paired_standard_error` with every case in one pool instead of inside its
+    family: the per-case deltas' sample variance over the case count. The
+    same cases, in the same order, in both arms -- or refused.
+    """
+    count = _COUNT[key]
+    b, c = _clusters(base), _clusters(candidate)
+    if b["digest"] != c["digest"] or len(b["families"]) != len(c["families"]):
+        raise TrainingError("paired selection needs the same cases in both evaluations")
+    rb, vb = _case_rates(base, count)
+    rc, vc = _case_rates(candidate, count)
+    return math.sqrt(_clustered_variance([([xc - xb for xb, xc in zip(rb, rc)], vb + vc)]))
+
+
 def pooled_standard_error(stats, key="correct"):
     """Binomial standard error over a slice's pooled draws.
 
@@ -307,13 +373,15 @@ class CheckpointGate:
        than `RETENTION_Z` standard errors -- at least `tolerance` -- below
        base. An aggregate gain must not hide a fallback-control collapse.
     3. **Selection.** Among the eligible, the largest correct-and-native
-       family macro of the `population` slice (coverage), whose paired gain
-       over base must clear `z` case-clustered standard errors of that delta
-       (`paired_standard_error`). Without that margin a pure argmax admits
-       pure noise about half the time, because the best of several noisy draws
-       is biased upward. Controls are not ranked: a control family flipping
-       from fallback to native is not the effect being trained for, so
-       controls count only through rules 1 and 2.
+       rate of the `population` slice (coverage), whose paired gain over base
+       must clear `z` case-clustered standard errors of that delta. Under
+       `rule` v2 (the default since 2026-09-25) the rate is case-weighted and
+       the error `paired_case_standard_error`; under v1 it is the family
+       macro and `paired_standard_error`. Without that margin a pure argmax
+       admits pure noise about half the time, because the best of several
+       noisy draws is biased upward. Controls are not ranked: a control
+       family flipping from fallback to native is not the effect being
+       trained for, so controls count only through rules 1 and 2.
 
     Step 0 is the incumbent and stays selectable: nothing displaces it unless
     it clears the bar. Every observation is kept in `report()`, admitted or
@@ -328,8 +396,12 @@ class CheckpointGate:
     best_step: int = 0
     best: dict = None
     observations: list = field(default_factory=list)
+    rule: str = SELECTION_RULE
 
     def __post_init__(self):
+        if self.rule not in SELECTION_RULES:
+            raise TrainingError("unknown selection rule %r; one of %s"
+                                % (self.rule, ", ".join(SELECTION_RULES)))
         self.baseline = deepcopy(self.baseline)
         self.best = deepcopy(self.baseline)
         self._selected(self.baseline)   # refuse, at step 0, a baseline selection cannot read
@@ -341,6 +413,18 @@ class CheckpointGate:
             raise TrainingError("checkpoint selection needs the %r population" % self.population)
         _clusters(stats)
         return stats
+
+    def _score(self, stats):
+        """The rate this rule ranks on, read from a selection slice."""
+        if self.rule == SELECTION_RULE_V1:
+            return stats["correct_native"]
+        return case_weighted_rate(stats)
+
+    def _error(self, base, candidate):
+        """The case-clustered standard error of the paired delta this rule tests."""
+        if self.rule == SELECTION_RULE_V1:
+            return paired_standard_error(base, candidate)
+        return paired_case_standard_error(base, candidate)
 
     def _retention(self, metrics):
         """Population slices whose correctness fell further than their noise."""
@@ -361,9 +445,9 @@ class CheckpointGate:
         stop that cut seed 1111's GRPO off at step 15 of a registered 20.
         """
         base, candidate = self._selected(self.baseline), self._selected(metrics)
-        score = candidate["correct_native"]
-        delta = score - base["correct_native"]
-        error = paired_standard_error(base, candidate)
+        score = self._score(candidate)
+        delta = score - self._score(base)
+        error = self._error(base, candidate)
         margin = self.z * error
         lost = self._retention(metrics)
         reasons = []
@@ -373,7 +457,7 @@ class CheckpointGate:
             reasons.append("retention")
         if delta < margin:
             reasons.append("margin")
-        if not reasons and score <= self._selected(self.best)["correct_native"]:
+        if not reasons and score <= self._score(self._selected(self.best)):
             reasons.append("not-best")
         self.observations.append({"step": step, "correct": metrics["correct"],
                                   "correct_native": metrics["correct_native"],
@@ -386,14 +470,18 @@ class CheckpointGate:
 
     def report(self):
         base = self._selected(self.baseline)
+        v1 = self.rule == SELECTION_RULE_V1
         return dict(self.best, step=self.best_step, rule={
-            "metric": "by_population.%s.correct_native" % self.population,
+            "version": self.rule,
+            "metric": ("by_population.%s.correct_native" if v1 else
+                       "by_population.%s.case_weighted_native") % self.population,
             "selection_population": self.population, "gate_a_tolerance": self.tolerance,
             "selection_z": self.z, "retention_z": RETENTION_Z,
             "margin": "selection_z x the case-clustered standard error of the paired "
                       "delta over base; per observation",
-            "baseline_standard_error": macro_standard_error(base),
+            "baseline_standard_error": (macro_standard_error(base) if v1
+                                        else case_standard_error(base)),
             "baseline_correct": self.baseline["correct"],
-            "baseline_correct_native": base["correct_native"],
+            "baseline_correct_native": self._score(base),
             "selection_is_post_hoc": True, "early_stopping": False,
         }, observed=list(self.observations))

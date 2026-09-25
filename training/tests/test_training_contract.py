@@ -15,7 +15,7 @@ from pipeline.training_contract import (BASE_MODEL, CONTRACT_VERSION, adapter_id
     complete, decoding, draw_seed, learning_rate, model_config_identity, probe_report, seal_adapter, validate_probe)
 from pipeline import training_contract as contract_module
 from pipeline.training_data import split_cases, validate_cases, validate_pilot, validate_reference_scores
-from pipeline.training_metrics import CheckpointGate, paired_comparison, summarize
+from pipeline.training_metrics import SELECTION_RULE_V1, CheckpointGate, paired_comparison, summarize
 
 
 def test_source_and_ast_components_do_not_cross_splits():
@@ -239,7 +239,12 @@ def test_a_capability_regression_is_reported_and_no_longer_a_floor():
     `best.json`, read after the fact, not a veto cast on one draw of noise."""
     baseline = summarize(evaluation_rows())
     baseline["by_capability"]["csv"]["correct"] = 1
-    gate = CheckpointGate(baseline)
+    # Rule v1, named: in this two-case fixture one case of two moves, which the
+    # case-weighted rule (v2, the default) rightly reads as within noise -- a
+    # per-case paired error of 0.5 -- so only v1's family macro, whose one-case
+    # families carry no between-case spread, shows the point being made here,
+    # which is about capability floors and holds under either rule.
+    gate = CheckpointGate(baseline, rule=SELECTION_RULE_V1)
     # Family "one" turns correct and native: the coverage macro selection reads
     # rises by .5, and the csv capability sits at .5, below the 1 set above.
     candidate = summarize([dict(r, correct=True, native=True) if r["family"] == "one" else r

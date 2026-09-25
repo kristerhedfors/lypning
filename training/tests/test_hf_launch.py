@@ -546,3 +546,66 @@ def test_a_pilot_carries_its_cadence_and_eval2_mode(monkeypatch, capsys):
     with pytest.raises(SystemExit):
         launch.main(pilot_argv("--eval2", "later"))
     capsys.readouterr()
+
+
+# --- the finish stage (2026-09-25) --------------------------------------------
+
+FINISH_JOB = "6ab52a686b030d633f68e503"
+
+
+def test_a_finish_launch_names_one_pilot_job_and_one_positive_step(monkeypatch, capsys):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    assert launch.STAGES["finish"] == "training/hf/round02_finish.sh"
+    assert launch.STAGE_LIMITS["finish"] == ("h200", "720m", "720m") and "finish" in launch.POOLED
+    for bad in EVAL2_OF_BAD:
+        assert launch.main(stage_argv("finish", "--finish-of", bad, "--sft-step", "1050")) == 2, repr(bad)
+        err = capsys.readouterr()
+        assert "--finish-of" in err.err and err.out == "", repr(bad)
+    for step in ("0", "-350"):
+        assert launch.main(stage_argv("finish", "--finish-of", FINISH_JOB, "--sft-step", step)) == 2
+        assert "--sft-step" in capsys.readouterr().err
+    assert launch.main(stage_argv("finish", "--finish-of", FINISH_JOB)) == 2
+    assert "--sft-step" in capsys.readouterr().err
+    assert launch.main(stage_argv("finish", "--finish-of", FINISH_JOB, "--sft-step", "1050")) == 2
+    assert "HF_TOKEN" in capsys.readouterr().err, "admitted, and no bank is needed"
+    # Only the finish stage takes them.
+    for extra in (("--finish-of", FINISH_JOB), ("--sft-step", "1050")):
+        assert launch.main(stage_argv("eval2", "--eval2-of", PILOT_JOB, *extra)) == 2
+        assert "only for the finish stage" in capsys.readouterr().err
+        assert launch.main(pilot_argv(*extra)) == 2
+        assert "only for the finish stage" in capsys.readouterr().err
+
+
+def test_a_finish_carries_the_pool_the_evaluation_fields_and_their_ceilings(monkeypatch, capsys):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    env = launch.job_env(args("finish", finish_of=FINISH_JOB, sft_step=1050, score_workers=48,
+                              pool_max_hosts=16))
+    assert env == {"SPACE_REPO": "o/space", "SPACE_REV": "a" * 40, "QWEN_REV": "b" * 40,
+                   "WORK_REPO": "o/work", "FINISH_OF": FINISH_JOB, "SFT_STEP": "1050",
+                   "EVAL_DRAWS": "16", "SEED": "1111", "SPLIT_SEED": "1111", "EVAL_SEQUENCES": "256",
+                   "SCORE_WORKERS": "48", "NTX_POOL_SANDBOXES_PER_HOST": "4", "NTX_POOL_MAX_HOSTS": "16"}
+    good = ("--finish-of", FINISH_JOB, "--sft-step", "1050")
+    for extra, message in ((("--seed", "4444"), "pre-registered"),
+                           (("--split-seed", "4444"), "pre-registered"),
+                           (("--pool-sandboxes-per-host", "8", "--pool-max-hosts", "8",
+                             "--score-workers", "12"), "--pool-sandboxes-per-host must not exceed"),
+                           (("--pool-max-hosts", "17"), "cost ceiling"),
+                           (("--timeout", "721m"), "720m ceiling"),
+                           (("--eval-draws", "0"), "must be positive")):
+        assert launch.main(stage_argv("finish", *(good + extra))) == 2
+        assert message in capsys.readouterr().err, extra
+
+
+def test_a_finish_dry_run_prints_its_plan(monkeypatch, capsys):
+    import json
+    import sys
+    import types
+
+    monkeypatch.setenv("HF_TOKEN", "t")
+    monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(HfApi=HardwareApi))
+    assert launch.main(stage_argv("finish", "--finish-of", FINISH_JOB, "--sft-step", "1050",
+                                  "--score-workers", "48", "--pool-max-hosts", "16")) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert (plan["stage"], plan["finish_of"], plan["sft_step"]) == ("finish", FINISH_JOB, 1050)
+    assert (plan["flavor"], plan["timeout"], plan["eval_draws"]) == ("h200", "720m", 16)
+    assert "bank_path" not in plan and "steps" not in plan

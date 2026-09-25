@@ -42,8 +42,10 @@ import random
 
 import pytest
 
-from pipeline.training_metrics import (CheckpointGate, case_clusters, macro_standard_error,
-                                       paired_standard_error, summarize)
+from pipeline.training_metrics import (SELECTION_RULE, SELECTION_RULE_V1, SELECTION_RULE_V2,
+                                       SELECTION_RULES, CheckpointGate, case_clusters,
+                                       case_weighted_rate, macro_standard_error,
+                                       paired_case_standard_error, paired_standard_error, summarize)
 from pipeline.training_types import TrainingError
 
 #: Dev baseline of seed 1111, from sft/best.json: draws, correct, correct-native.
@@ -162,7 +164,8 @@ def old_one_arm_margin_admits(base, candidate, z=1.2816):
             and candidate["correct_native"] >= base["correct_native"] + z * se)
 
 
-def admission_rate(lift_correct, lift_native, kappa, trials=2000, seed=7, draws=K, old=False):
+def admission_rate(lift_correct, lift_native, kappa, trials=2000, seed=7, draws=K, old=False,
+                   rule=SELECTION_RULE):
     rng = random.Random(seed)
     admitted = 0
     for _ in range(trials):
@@ -172,7 +175,7 @@ def admission_rate(lift_correct, lift_native, kappa, trials=2000, seed=7, draws=
         if old:
             admitted += old_one_arm_margin_admits(base, candidate)
             continue
-        gate = CheckpointGate(baseline=base)
+        gate = CheckpointGate(baseline=base, rule=rule)
         gate.observe(25, candidate)
         admitted += gate.best_step == 25
     return admitted / trials
@@ -191,20 +194,22 @@ def test_the_simulated_metrics_are_summarize_s_own():
         assert real["by_population"][name]["case_clusters"] == fast["by_population"][name]["case_clusters"]
 
 
+@pytest.mark.parametrize("rule", SELECTION_RULES)
 @pytest.mark.parametrize("kappa", KAPPAS)
-def test_noise_is_admitted_at_the_stated_ten_percent_under_clustered_draws(kappa):
+def test_noise_is_admitted_at_the_stated_ten_percent_under_clustered_draws(kappa, rule):
     """The null half: a checkpoint that IS base -- same case latents, fresh
     draws for both arms -- clears the paired margin at the rule's 10%.
 
-    Measured 2026-09-22 at 4,000 trials, seed 7: 10.53% at KAPPA 2, 9.23%
-    at KAPPA 20. The margin is the 90th percentile of the delta's own
-    distribution, so the rate sits AT 10% by construction and a seeded
-    estimate falls either side of it; asserting a bare `<= 0.10` would be a
-    choice of seed. The bound is 10% plus three Monte Carlo standard errors
-    (1.4pp at 4,000 trials): it fails a rule that over-admits -- the old one
-    drew 17.4% here -- and not a seed that drew 10.5%."""
+    Measured 2026-09-22 at 4,000 trials, seed 7, rule v1: 10.53% at KAPPA 2,
+    9.23% at KAPPA 20. Rule v2 (case-weighted), measured 2026-09-25 on the
+    same trials: 10.50% and 9.18%. The margin is the 90th percentile of the
+    delta's own distribution, so the rate sits AT 10% by construction and a
+    seeded estimate falls either side of it; asserting a bare `<= 0.10` would
+    be a choice of seed. The bound is 10% plus three Monte Carlo standard
+    errors (1.4pp at 4,000 trials): it fails a rule that over-admits -- the
+    old one drew 17.4% here -- and not a seed that drew 10.5%."""
     trials = 4000
-    null = admission_rate(0.0, 0.0, kappa, trials=trials)
+    null = admission_rate(0.0, 0.0, kappa, trials=trials, rule=rule)
     assert null <= 0.10 + 3 * math.sqrt(0.10 * 0.90 / trials), null
 
 
@@ -233,6 +238,12 @@ def test_power_is_what_this_dev_split_can_show_and_draws_buy_it_back():
     Getting 80% by lowering z would be exactly the tuning `SELECTION_Z`
     forbids; the lever is `--eval-draws`, an operator decision.
 
+    Those numbers are rule v1's. The assertions run the default rule, v2
+    (case-weighted), which on the same trials (measured 2026-09-25) admitted
+    +10pp native 38.95% (KAPPA 2) and 64.75% (KAPPA 20), +5pp correct with
+    +10pp native 89.15% and 100%, and at k=16 76.0% and 97.7%: this split's
+    coverage families are near-equal in size, so the two rules nearly agree.
+
     Asserted here: the floors this split does reach, so a change that loses
     power fails, and the k=16 recovery."""
     assert admission_rate(0.0, 0.10, 20.0) >= 0.55
@@ -241,22 +252,120 @@ def test_power_is_what_this_dev_split_can_show_and_draws_buy_it_back():
     assert admission_rate(0.0, 0.10, 20.0, trials=600, draws=16) >= 0.80
 
 
-def test_the_margin_is_the_ten_percent_rule_and_not_a_tuned_constant():
+@pytest.mark.parametrize("rule", SELECTION_RULES)
+def test_the_margin_is_the_ten_percent_rule_and_not_a_tuned_constant(rule):
     """The margin of every observation is z case-clustered standard errors of
-    the paired delta, recorded next to the delta it was compared with."""
+    the paired delta, recorded next to the delta it was compared with, and
+    `best.json` names the rule version it ran under."""
     base = metrics_of(observed())
     better = observed({k: (n, c, c if k not in CONTROL else nn) for k, (n, c, nn) in DEV.items()})
     candidate = metrics_of(better)
-    gate = CheckpointGate(baseline=base)
+    gate = CheckpointGate(baseline=base, rule=rule)
     gate.observe(25, candidate)
     seen = gate.report()["observed"][0]
-    error = paired_standard_error(base["by_population"]["coverage"],
-                                  candidate["by_population"]["coverage"])
+    b, c = base["by_population"]["coverage"], candidate["by_population"]["coverage"]
+    if rule == SELECTION_RULE_V1:
+        error, delta = paired_standard_error(b, c), c["correct_native"] - b["correct_native"]
+        metric = "by_population.coverage.correct_native"
+    else:
+        error, delta = paired_case_standard_error(b, c), case_weighted_rate(c) - case_weighted_rate(b)
+        metric = "by_population.coverage.case_weighted_native"
     assert seen["standard_error"] == error
     assert seen["margin"] == gate.z * error
-    assert seen["delta"] == pytest.approx(candidate["by_population"]["coverage"]["correct_native"]
-                                          - base["by_population"]["coverage"]["correct_native"])
-    assert gate.report()["rule"]["metric"] == "by_population.coverage.correct_native"
+    assert seen["delta"] == pytest.approx(delta)
+    assert gate.report()["rule"]["metric"] == metric
+    assert gate.report()["rule"]["version"] == rule
+
+
+def test_new_selections_default_to_the_case_weighted_rule_and_unknown_rules_are_refused():
+    assert SELECTION_RULE == SELECTION_RULE_V2
+    assert CheckpointGate(baseline=metrics_of(observed())).rule == SELECTION_RULE_V2
+    with pytest.raises(TrainingError, match="unknown selection rule"):
+        CheckpointGate(baseline=metrics_of(observed()), rule="coverage-best-guess/3")
+
+
+def test_the_case_weighted_rate_is_summarize_s_own_case_weighted_native():
+    counts = redraw(random.Random(5), dev_cases(random.Random(5), 2.0))
+    coverage = summarize(records_of(counts))["by_population"]["coverage"]
+    assert case_weighted_rate(coverage) == pytest.approx(coverage["case_weighted_native"])
+    assert case_weighted_rate(coverage, "correct") == pytest.approx(coverage["case_weighted_correct"])
+    assert paired_case_standard_error(coverage, coverage) == 0.0
+
+
+# --- seed 1111 arm A: a dev split with a tiny family (amendment 2026-09-25) --
+
+#: SHAPED like seed 1111's arm-A SFT selection (HF job 6ab52a686b030d633f68e503,
+#: 2026-09-24), not its rows, which are private: seven dev families, one of
+#: them a two-case coverage family, k = 16. Pooled coverage correct-and-native
+#: rises steadily over 350 / 700 / 1,050 by roughly the +1.9 / +2.6 / +3.1pp
+#: the operator read from that job, and the all-family correctness by roughly
+#: -0.9 / 0.0 / +0.6pp; the tiny family alone swings up at 350 and down after.
+ARM_A_BIG = ("alpha", "beta", "gamma", "delta")
+ARM_A_TINY = "tiny"
+ARM_A_CONTROLS = ("ctl-a", "ctl-b")
+ARM_A_DRAWS = 16
+#: Per-case native-draw deltas over base, cycled over the big families' cases.
+ARM_A_LIFT = {350: [2, 1, 1, 1, 1, 1, -1], 700: [2, 2, 1, 1, 1, 1, 1, 1, 1, 1, -1],
+              1050: [2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, -1]}
+ARM_A_TINY_LIFT = {0: (0, 0), 350: (7, 5), 700: (-3, -1), 1050: (-3, -1)}
+
+
+def arm_a_rows(step):
+    """One dev evaluation of the shaped fixture at `step`, as `summarize` reads it."""
+    rows = []
+
+    def case(family, i, population, correct, native):
+        for d in range(ARM_A_DRAWS):
+            rows.append(dict(family=family, case_id="%s-%02d" % (family, i), draw=d,
+                             population=population, correct=d < correct, native=d < native))
+
+    for j in range(45 * len(ARM_A_BIG)):
+        correct, native = 15, (5, 8, 11, 13)[j % 4]
+        if step:
+            lift = ARM_A_LIFT[step]
+            native += lift[j % 25] if j % 25 < len(lift) else 0
+        if step == 350 and j % 4 == 0:
+            correct -= 1          # a small correctness cost at the first checkpoint
+        if step == 1050 and j % 6 == 1:
+            correct += 1          # and a small correctness gain at the last
+        case(ARM_A_BIG[j // 45], j % 45, "coverage", correct, native)
+    for i, lift in enumerate(ARM_A_TINY_LIFT[step]):
+        case(ARM_A_TINY, i, "coverage", 15, 8 + lift)
+    for family in ARM_A_CONTROLS:
+        for i in range(45):
+            case(family, i, "fallback-control", 14, 0)
+    return rows
+
+
+def test_a_tiny_dev_family_steers_the_family_macro_and_not_the_case_weighted_rule():
+    """The amendment of 2026-09-25, on a fixture shaped like seed 1111's arm A.
+
+    Rule v1 ranks the coverage FAMILY macro, in which the two-case family
+    weighs as much as a 45-case one: its swing at step 350 carries the macro
+    and 350 is selected, while every later checkpoint -- better on the pooled
+    evidence -- is rejected for the margin. Rule v2 ranks the case-weighted
+    rate, every case one unit, and selects 1,050, the checkpoint the pooled
+    evidence favours; its null half is the test above."""
+    metrics = {step: summarize(arm_a_rows(step)) for step in (0, 350, 700, 1050)}
+    base = metrics[0]
+
+    def pooled(step, key):
+        return case_weighted_rate(metrics[step]["by_population"]["coverage"], key) \
+            - case_weighted_rate(base["by_population"]["coverage"], key)
+    shaped = {350: (0.019, -0.009), 700: (0.026, 0.0), 1050: (0.031, 0.006)}
+    for step, (native, correct) in shaped.items():
+        assert pooled(step, "correct_native") == pytest.approx(native, abs=0.005), step
+        assert metrics[step]["correct"] - base["correct"] == pytest.approx(correct, abs=0.004), step
+
+    selected = {}
+    for rule in SELECTION_RULES:
+        gate = CheckpointGate(baseline=base, rule=rule)
+        for step in (350, 700, 1050):
+            gate.observe(step, metrics[step])
+        selected[rule] = gate.best_step
+        report = gate.report()
+        assert report["step"] == gate.best_step and report["rule"]["version"] == rule
+    assert selected == {SELECTION_RULE_V1: 350, SELECTION_RULE_V2: 1050}
 
 
 def test_the_standard_error_counts_cases_not_draws():

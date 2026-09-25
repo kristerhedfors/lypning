@@ -573,6 +573,67 @@ is frozen, so eval-2 would meet the same abort. The rule now, for every arm
   carried over: nothing in the tree resumes a pilot from them, and
   `split_eval2` refuses an adapter whose `code_sha256` differs. Its completed
   SFT dev evaluations held no mismatch, so their rows are unchanged by it.
+  *(Superseded 2026-09-25, below: seed 1111 is finished from its saved
+  adapters, not re-run.)*
+
+**Seed 1111 is finished at step 1,050, not re-run (operator, 2026-09-25).**
+The pilot's manifest says `failed` at `last_stage: test`, and it has no
+`eval2-deferred.json`. It uploaded `sft/adapter-{0,350,700,1050}` with seals,
+`sft/best.json`, `sft/evaluations.jsonl`, base-dev and both bundles under
+`round-02/6ab52a686b030d633f68e503/`. Its rule selected step 350. The dev
+selector's coverage family macro is fragile when dev families are small:
+pooled dev correct-and-native over base was +1.9, +2.6 and +3.1pp at 350, 700
+and 1,050, and correctness moved −0.9, 0.0 and +0.6pp. The operator chose to
+evaluate step 1,050. The dated amendment is `EVAL2.md` §4, 2026-09-25.
+
+- **A `finish` stage** (`launch.py finish`, `round02.yml` dispatch
+  `stage: finish`, `finish_of`, `sft_step`; h200, `PILOT_TIMEOUT` 720m; bills
+  only with `submit: SUBMIT`). It runs `training/hf/round02_finish.sh`. The
+  job installs `pinned_deps.sh`, then downloads from the private repo only the
+  pilot's manifest, `sft/best.json`, `sft/evaluations.jsonl`, the one sealed
+  adapter and both bundles. It fetches `lypning-l` from the Space at the
+  pilot's recorded revision and refuses if that revision is no longer
+  fetchable; it never falls back to the head. `finish_lineage.py` then checks
+  every identity field before the handshake and names any that differs: SFT
+  complete, GRPO absent, the seal, both digests recomputed, `verifier_sha256`,
+  the engine, the Space head, the Qwen revision, the seeds, the draws, the
+  chunking and the density. Last it runs the pilot's 7f and 7g command for
+  command (`base-test`, `sft-test`, `base-eval2`, `sft-eval2`), writes both
+  reports and uploads a checkpoint after every stage.
+- **Newer code, recorded.** `code_sha256` may differ from the pilot's, and
+  `finish_lineage` in the manifest lists both digests, the moved files and
+  the commits between them. The finish free-checks, in `submit`, that the
+  pilot's Space revision is still the head bootstrap resolved
+  (`.github/scripts/finish_preflight.py`), because the pool serves only the
+  head.
+- **Selection from here on.** Seeds 2222 and 3333 select under rule v2,
+  `coverage-case-weighted/2` (`training_metrics.SELECTION_RULE`). It ranks
+  case-weighted coverage correct-and-native with the same paired margin. Its
+  null admission is 10.50% / 9.18% at κ 2 / 20, measured 2026-09-25 over 4,000
+  trials (`training/tests/test_gate_admission.py`). The finish also records
+  what v2 selects on the pilot's own dev draws (`reselection`).
+
+The finish job's projection, re-run 2026-09-25 with
+`python3 training/hf/projection.py --finish`. It prices the job at ~65
+draws/min end to end, the rate the operator read from base-dev of the pilot
+it finishes (2026-09-24). Load and download are the h200 smoke's, and the
+10-minute prep is a stated constant.
+
+| stage | draws | minutes |
+|---|---|---|
+| prep (deps, pilot artifacts, engine, lineage, handshake) | 0 | 10.6 |
+| base-test (315 cases × 4 draws) | 1,260 | 19.5 |
+| sft-test | 1,260 | 19.5 |
+| base-eval2 (803 cases × 16 draws) | 12,848 | 197.8 |
+| sft-eval2 | 12,848 | 197.8 |
+| **total** | **28,216** | **445.2** of a 648.0 budget (720m less 10%) |
+
+It fits with 202.8 minutes spare, and it stays inside the budget down to 44.3
+draws/min. The test arms run at the 4 draws the pilot's 7f runs at, which is
+`train_verified`'s default: 7f passes no `--eval-draws`. Dispatch, after this
+merges:
+`gh workflow run round02.yml --ref main -f stage=finish -f submit=SUBMIT -f seed=1111 -f finish_of=6ab52a686b030d633f68e503 -f sft_step=1050`.
+Not dispatched here.
 
 ## Kill criteria (unchanged, `LADDER.md` §6)
 

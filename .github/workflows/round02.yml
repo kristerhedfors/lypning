@@ -15,10 +15,10 @@ on:
   workflow_dispatch:
     inputs:
       stage:
-        description: "smoke (starter fixture), pilot (needs a reviewed bank), hwsmoke (h200 measurement, no bank) or eval2 (a deferred pilot's eval-2; needs eval2_of)"
+        description: "smoke (starter fixture), pilot (needs a reviewed bank), hwsmoke (h200 measurement, no bank), eval2 (a deferred pilot's eval-2; needs eval2_of) or finish (test and eval-2 of a pilot that completed SFT; needs finish_of and sft_step)"
         default: smoke
         type: choice
-        options: [smoke, pilot, hwsmoke, eval2]
+        options: [smoke, pilot, hwsmoke, eval2, finish]
       submit:
         description: "type SUBMIT to actually bill a GPU job"
         default: ""
@@ -38,6 +38,14 @@ on:
         type: string
       eval2_of:
         description: "eval2: the completed pilot job (24-hex HF job id) that ran with PILOT_EVAL2 separate"
+        default: ""
+        type: string
+      finish_of:
+        description: "finish: the pilot job (24-hex HF job id) that completed SFT and died before its test and eval-2"
+        default: ""
+        type: string
+      sft_step:
+        description: "finish: the SFT checkpoint to evaluate; a step other than the pilot's rule-selected one must be registered in training/hf/finish_lineage.py OVERRIDES"
         default: ""
         type: string
 
@@ -156,6 +164,12 @@ env:
   # revision and engine identity itself; only the shape is checked in `submit`.
   PILOT_BUNDLES_FROM: ${{ github.event.inputs.bundles_from || '' }}
   EVAL2_OF: ${{ github.event.inputs.eval2_of || '' }}
+  # A finish runs a pilot's test split and eval-2 from ONE saved SFT adapter.
+  # The step is checked in `submit` for shape only; the job refuses a step the
+  # pilot's rule did not select unless `finish_lineage.OVERRIDES` registers it
+  # with its dated amendment, so a dispatch input cannot pick a checkpoint.
+  FINISH_OF: ${{ github.event.inputs.finish_of || '' }}
+  SFT_STEP: ${{ github.event.inputs.sft_step || '' }}
 
 jobs:
   preflight:
@@ -183,7 +197,8 @@ jobs:
           FLAVOR: >-
             ${{ (contains(github.event.head_commit.message, '[submit-pilot]') ||
                  github.event.inputs.stage == 'pilot' || github.event.inputs.stage == 'hwsmoke' ||
-                 github.event.inputs.stage == 'eval2') && env.PILOT_FLAVOR || env.FLAVOR }}
+                 github.event.inputs.stage == 'eval2' || github.event.inputs.stage == 'finish') &&
+                 env.PILOT_FLAVOR || env.FLAVOR }}
         run: python .github/scripts/round02_preflight.py
 
   # Free. Building the Space and the artifact repo is idempotent and costs
@@ -339,8 +354,8 @@ jobs:
   # smoke only when nothing asked for a pilot -- a message carrying both
   # markers is a pilot. `!cancelled()`, not `always()`: always() is true in a
   # cancelled run too, so cancelling after bootstrap would still bill a smoke.
-  # The hardware smoke and the split eval-2 are dispatch-only: no commit
-  # marker reaches them, and each needs submit=SUBMIT.
+  # The hardware smoke, the split eval-2 and the finish are dispatch-only: no
+  # commit marker reaches them, and each needs submit=SUBMIT.
   submit:
     name: submit the GPU job (BILLED)
     needs: [preflight, bootstrap, token-floor]
@@ -350,7 +365,8 @@ jobs:
         ((contains(github.event.head_commit.message, '[submit-pilot]') ||
           (github.event.inputs.stage == 'pilot' && github.event.inputs.submit == 'SUBMIT')) &&
          needs.token-floor.result == 'success') ||
-        ((github.event.inputs.stage == 'hwsmoke' || github.event.inputs.stage == 'eval2') &&
+        ((github.event.inputs.stage == 'hwsmoke' || github.event.inputs.stage == 'eval2' ||
+          github.event.inputs.stage == 'finish') &&
          github.event.inputs.submit == 'SUBMIT') ||
         (!contains(github.event.head_commit.message, '[submit-pilot]') &&
          github.event.inputs.stage != 'pilot' &&
@@ -408,6 +424,30 @@ jobs:
               --qwen-revision "${QWEN_REV}" \
               --work-repo "${OWNER}/${WORK_REPO_NAME}" \
               --eval2-of "${EVAL2_OF}" --eval-draws 16 --seed "${PILOT_SEED}" \
+              --score-workers "${PILOT_SCORERS}" --pool-max-hosts "${PILOT_POOL_HOSTS}" \
+              --flavor "${PILOT_FLAVOR}" --timeout "${PILOT_TIMEOUT}" --yes --follow
+          # A finish: one HF job id and one positive step, each validated on
+          # the whole value; then, for free, the pilot's recorded Space
+          # revision must still be the head bootstrap resolved, because the
+          # pool serves only the head and the job would refuse it after deps.
+          # Every other identity field is refused in the job, before a load.
+          elif [ "${STAGE_IN}" = "finish" ]; then
+            if ! [[ "${FINISH_OF}" =~ ^[0-9a-f]{24}$ ]]; then
+              echo "finish_of must be a 24-hex HF job id" >&2
+              exit 1
+            fi
+            if ! [[ "${SFT_STEP}" =~ ^[1-9][0-9]*$ ]]; then
+              echo "sft_step must be a positive integer" >&2
+              exit 1
+            fi
+            python .github/scripts/finish_preflight.py
+            python training/hf/launch.py finish \
+              --branch "${GITHUB_REF_NAME}" --commit "${GITHUB_SHA}" \
+              --space "${SPACE_REPO}" --space-revision "${SPACE_REV}" \
+              --qwen-revision "${QWEN_REV}" \
+              --work-repo "${OWNER}/${WORK_REPO_NAME}" \
+              --finish-of "${FINISH_OF}" --sft-step "${SFT_STEP}" --eval-draws 16 \
+              --seed "${PILOT_SEED}" --split-seed "${PILOT_SPLIT_SEED}" \
               --score-workers "${PILOT_SCORERS}" --pool-max-hosts "${PILOT_POOL_HOSTS}" \
               --flavor "${PILOT_FLAVOR}" --timeout "${PILOT_TIMEOUT}" --yes --follow
           # A pilot is a banked stage: it needs the bank, a bigger GPU and a

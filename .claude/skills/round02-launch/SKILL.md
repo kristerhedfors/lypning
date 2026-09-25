@@ -106,7 +106,12 @@ sequences plus one 256 call forced to full length, and SFT seconds per step,
 then projects the approved arm against 720m (`training/hf/projection.py`;
 `projection_bounds.upper` prices every call at full length). `eval2` (`eval2_of` = a completed pilot
 job that ran `separate`) runs that job's step 7g after `split_eval2.py`
-verifies every identity field (`PLAN.md` Step 4).
+verifies every identity field (`PLAN.md` Step 4). `finish` (`finish_of` = a
+pilot that completed SFT and then died, `sft_step` = the checkpoint; h200,
+720m) runs that pilot's 7f and 7g from its saved adapter after
+`finish_lineage.py` verifies every identity field but `code_sha256`, which it
+records; a step other than the rule's must be in `finish_lineage.OVERRIDES`
+(`EVAL2.md` §4, amendment of 2026-09-25).
 
 ## What it costs, and what one job is not
 

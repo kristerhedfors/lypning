@@ -166,6 +166,9 @@ manifest = {"job": job, "status": os.environ["STATUS"], "exit_code": int(os.envi
             "eval2_mode": os.environ["EVAL2_MODE"],
             "eval2_deferred": os.path.exists("work/round-02/eval2-deferred.json"),
             "sft_selected_step": read("work/round-02/sft/best.json").get("step"),
+            # Which selection rule chose it (`training_metrics.SELECTION_RULES`);
+            # None for a best.json written before rules were versioned (v1).
+            "sft_selection_rule": (read("work/round-02/sft/best.json").get("rule") or {}).get("version"),
             "eval_sequences": int(os.environ["EVAL_SEQUENCES"]), "score_workers": int(os.environ["SCORE_WORKERS"]),
             "pool_sandboxes_per_host": int(os.environ["NTX_POOL_SANDBOXES_PER_HOST"]),
             "pool_max_hosts": int(os.environ["NTX_POOL_MAX_HOSTS"]),
