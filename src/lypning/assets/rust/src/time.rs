@@ -240,11 +240,15 @@ fn sleep_duration(v: &Value) -> R<std::time::Duration> {
             None => return Err(refuse("time.sleep() of an integer past 64 bits")),
         },
         Value::Float(f) => *f,
+        // `_PyTime_FromObject`'s wording is the reference's: 3.14 added
+        // "or float", and 3.9 still said "an integer is required".
         other => {
-            return Err(type_err(format!(
-                "'{}' object cannot be interpreted as an integer or float",
-                type_name(other)
-            )))
+            let t = type_name(other);
+            return Err(type_err(match crate::err::REF_PY_MINOR {
+                m if m >= 14 => format!("'{t}' object cannot be interpreted as an integer or float"),
+                m if m >= 10 => format!("'{t}' object cannot be interpreted as an integer"),
+                _ => format!("an integer is required (got type {t})"),
+            }));
         }
     };
     if s.is_nan() {

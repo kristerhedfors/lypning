@@ -488,11 +488,15 @@ def test_a_name_error_on_time_refuses_so_cpython_prints_the_hint(program: str) -
     ("*=", "TypeError: unsupported operand type(s) for *=: 'module' and 'int'"),
 ])
 def test_an_augmented_assignment_to_the_module_names_the_in_place_operator(op: str, line: str) -> None:
-    """The bytes are CPython 3.14.5's. The engine printed `for +:`, dropping the
-    `=` CPython writes for an in-place operator."""
+    """The engine printed `for +:`, dropping the `=` CPython writes for an
+    in-place operator. Held to the reference's last line; the written one is
+    CPython 3.14.5's, checked on 3.14."""
     got = _run([str(BINARY)], T + "time %s 1" % op)
+    ref = _run([sys.executable], T + "time %s 1" % op)
     assert got.returncode == 1 and got.stdout == "", got.stderr
-    assert got.stderr.strip().splitlines()[-1] == line
+    assert got.stderr.strip().splitlines()[-1] == ref.stderr.strip().splitlines()[-1]
+    if sys.version_info[:2] == (3, 14):
+        assert ref.stderr.strip().splitlines()[-1] == line
 
 
 #: An uncaught error CPython 3.14 may end with a `Did you mean` suggestion, in a

@@ -199,10 +199,6 @@ REFUSED = [
     I + "print(len(itertools.product.mro()))",
     I + "itertools.combinations.mro",
     I + "x = itertools.product\nprint(x.mro()[-1])",
-    # CPython 3.14 annotates an error inside a json container with a note,
-    # which is its traceback's last line
-    I + "import json\njson.dumps({'k': itertools.product('a')})",
-    I + "import json\njson.dumps([1, itertools.combinations('a', 1)])",
     # an uncaught NameError: CPython ends it with a suggestion
     I + "del itertools\nprint(itertools)",
     I + "print(json)",
@@ -301,6 +297,27 @@ def _run(argv: list[str], program: str) -> subprocess.CompletedProcess:
                               cwd=d, timeout=120)
 
 
+def _answer(argv: list[str], program: str) -> tuple:
+    """(stdout, exit, last stderr line or None) — what a row is compared on."""
+    got = _run(argv, program)
+    return got.stdout, got.returncode, (got.stderr.strip().splitlines() or [None])[-1]
+
+
+def _reference(program: str) -> tuple:
+    """The REFERENCE interpreter's answer: the one running this suite, which
+    `test_build` holds equal to the engine's compiled-in reference minor. A
+    row's expected bytes are asked of it rather than written down, because the
+    engine follows its reference and a few of these wordings moved between
+    versions (`in` on a non-container, json's container note)."""
+    return _answer([sys.executable], program)
+
+
+#: The bytes written next to a row are CPython 3.14.5's; they are checked, as a
+#: record of what the fix answers, only where the suite runs 3.14.
+PINNED_314 = pytest.mark.skipif(sys.version_info[:2] != (3, 14),
+                                reason="bytes pinned to CPython 3.14.5")
+
+
 def _refusal_problem(got: subprocess.CompletedProcess) -> str | None:
     if got.returncode != engines.UNSUPPORTED_EXIT:
         return "exit %d, not %d" % (got.returncode, engines.UNSUPPORTED_EXIT)
@@ -378,8 +395,9 @@ def test_the_capability_is_on_the_larger_variant_only() -> None:
     assert {r["cap"]: r["modules"] for r in table["caps"]}["cap-itertools"] == ["itertools"]
 
 
-#: Round-1 verifier findings, pinned to CPython 3.14.5's exact bytes
-#: (2026-09-24) rather than to whatever interpreter runs the suite:
+#: Round-1 verifier findings. Each row is held to the reference interpreter's
+#: bytes; the ones written here are CPython 3.14.5's (2026-09-24), checked
+#: only on 3.14 (`test_the_written_bytes_are_cpython_314s`):
 #: `product` with no iterables is ONE empty tuple at any `repeat` (it hung,
 #: spinning `repeat` times over nothing); an all-keyword `combinations` call
 #: says "keyword arguments"; `combinations` with a small `r > n` is `[]`.
@@ -408,14 +426,12 @@ PINNED = [
 @needs_l
 @pytest.mark.parametrize("case", PINNED, ids=range(len(PINNED)))
 def test_the_round_one_findings_match_cpython_bytes(case) -> None:
-    program, out, code, err = case
-    got = _run([str(BINARY)], program)
-    last = (got.stderr.strip().splitlines() or [None])[-1]
-    assert (got.stdout, got.returncode, last) == (out, code, err), (program, got.stderr)
+    program = case[0]
+    assert _answer([str(BINARY)], program) == _reference(program), program
 
 
 #: Shared (core) code: a module as a dict/set key, and `posixpath` as the
-#: same object as `os.path`. Exact CPython 3.14.5 bytes.
+#: same object as `os.path`. Written: CPython 3.14.5's bytes.
 CORE_PINNED = [
     ("import math\nprint({math: 1}[math], len({math, math}), math in {math: 0})",
      "1 1 True\n"),
@@ -431,14 +447,15 @@ CORE_PINNED = [
 @needs_core
 @pytest.mark.parametrize("case", CORE_PINNED, ids=range(len(CORE_PINNED)))
 def test_a_module_is_hashable_by_identity_on_every_variant(case) -> None:
-    program, out = case
+    program = case[0]
+    want = _reference(program)
+    assert want[1] == 0, want
     for binary in (CORE, BINARY):
-        got = _run([str(binary)], program)
-        assert (got.stdout, got.returncode) == (out, 0), (binary, program, got.stderr)
+        assert _answer([str(binary)], program) == want, (binary, program)
 
 
-#: Round-2 verifier findings, pinned to CPython 3.14.5's exact bytes
-#: (2026-09-25): `isinstance` against the classes is ANSWERED (and a tuple is
+#: Round-2 verifier findings; written bytes are CPython 3.14.5's
+#: (2026-09-25), held as above: `isinstance` against the classes is ANSWERED (and a tuple is
 #: tried left to right); json names `type(o).__name__`, not the dotted
 #: tp_name; the operand messages are the left operand's own.
 PINNED_2 = [
@@ -471,14 +488,13 @@ PINNED_2 = [
 @needs_l
 @pytest.mark.parametrize("case", PINNED_2, ids=range(len(PINNED_2)))
 def test_the_round_two_findings_match_cpython_bytes(case) -> None:
-    program, out, code, err = case
-    got = _run([str(BINARY)], program)
-    last = (got.stderr.strip().splitlines() or [None])[-1]
-    assert (got.stdout, got.returncode, last) == (out, code, err), (program, got.stderr)
+    program = case[0]
+    assert _answer([str(BINARY)], program) == _reference(program), program
 
 
 #: Shared (core) code reached through the round-2 findings: each message is
-#: CPython 3.14.5's, caught and printed or uncaught, on EVERY variant.
+#: the reference CPython's, caught and printed or uncaught, on EVERY variant
+#: (written: 3.14.5's; `1 in 5` is "is not iterable" before 3.14).
 CORE_PINNED_2 = [
     ("'x' + 1", "", 1, 'TypeError: can only concatenate str (not "int") to str'),
     ("[1] + (2,)", "", 1, 'TypeError: can only concatenate list (not "tuple") to list'),
@@ -542,18 +558,34 @@ def test_the_shared_messages_match_cpython_bytes_on_every_variant(case) -> None:
             assert len(got.stderr.strip().splitlines()) == 1, (binary, program, got.stderr)
             continue
         last = (got.stderr.strip().splitlines() or [None])[-1]
-        assert (got.stdout, got.returncode, last) == (out, code, err), (
+        assert (got.stdout, got.returncode, last) == _reference(program), (
             binary, program, got.stderr)
 
 
-#: A json error INSIDE a container carries a 3.14 note; the core refuses it
-#: cleanly rather than print a last line CPython does not.
+#: A json error INSIDE a container carries a note from CPython 3.14 on, which
+#: is its traceback's last line; on a 3.14 reference the engine refuses it
+#: cleanly rather than print a last line CPython does not (`json.rs`), and on
+#: an older one it answers the plain error, as that CPython does.
+JSON_IN_A_CONTAINER = [
+    "import json\njson.dumps({'k': [1, {2}]})",
+    I + "import json\njson.dumps({'k': itertools.product('a')})",
+    I + "import json\njson.dumps([1, itertools.combinations('a', 1)])",
+]
+
+
 @needs_core
-def test_a_json_error_inside_a_container_refuses_on_every_variant() -> None:
-    for binary in (CORE, BINARY):
-        got = _run([str(binary)], "import json\njson.dumps({'k': [1, {2}]})")
-        assert got.returncode == engines.UNSUPPORTED_EXIT and got.stdout == "", (
-            binary, got.stderr)
+@pytest.mark.parametrize("program", JSON_IN_A_CONTAINER, ids=range(len(JSON_IN_A_CONTAINER)))
+def test_a_json_error_inside_a_container_refuses_on_every_variant(program: str) -> None:
+    want = _reference(program)
+    for binary in (CORE, BINARY) if "itertools" not in program else (BINARY,):
+        got = _run([str(binary)], program)
+        if sys.version_info >= (3, 14):
+            assert got.returncode == engines.UNSUPPORTED_EXIT and got.stdout == "", (
+                binary, got.stderr)
+            assert len(got.stderr.strip().splitlines()) == 1, (binary, got.stderr)
+        else:
+            last = (got.stderr.strip().splitlines() or [None])[-1]
+            assert (got.stdout, got.returncode, last) == want, (binary, program, got.stderr)
 
 
 #: Round-3 verifier findings. An uncaught AttributeError in a program that
@@ -637,7 +669,7 @@ def test_the_chain_answers_the_round_three_findings_with_cpython_bytes(case) -> 
 
 #: Sequence repetition by a non-int names the COUNT, left operand first, as
 #: `PyNumber_Multiply` does: `'x' * itertools.product('a')` (round 3) said
-#: "cannot be interpreted as an integer". Shared code; CPython 3.14.5 bytes.
+#: "cannot be interpreted as an integer". Shared code; written: CPython 3.14.5.
 CORE_PINNED_3 = [
     ("'x' * 1.5", "TypeError: can't multiply sequence by non-int of type 'float'"),
     ("1.5 * 'x'", "TypeError: can't multiply sequence by non-int of type 'float'"),
@@ -658,13 +690,26 @@ CORE_PINNED_3 = [
 @needs_core
 @pytest.mark.parametrize("case", CORE_PINNED_3, ids=range(len(CORE_PINNED_3)))
 def test_sequence_repetition_names_the_count_on_every_variant(case) -> None:
-    program, err = case
+    program = case[0]
+    want = _reference(program)
+    assert want[:2] == ("", 1), want
     for binary in (CORE, BINARY):
-        got = _run([str(binary)], program)
-        last = (got.stderr.strip().splitlines() or [None])[-1]
-        assert (got.stdout, got.returncode, last) == ("", 1, err), (binary, program, got.stderr)
-    got = _run([str(BINARY)], I + "x = 'x' * itertools.product('a')")
-    assert got.stderr.strip().splitlines()[-1] == (
-        "TypeError: can't multiply sequence by non-int of type 'itertools.product'")
-    ok = _run([str(CORE)], "print('ab' * True, [0] * 2, 2 * (1,), b'a' * False)")
-    assert ok.stdout == "ab [0, 0] (1, 1) b''\n", ok.stderr
+        assert _answer([str(binary)], program) == want, (binary, program)
+    mul = I + "x = 'x' * itertools.product('a')"
+    assert _answer([str(BINARY)], mul) == _reference(mul)
+    ok = "print('ab' * True, [0] * 2, 2 * (1,), b'a' * False)"
+    assert _answer([str(CORE)], ok) == _reference(ok)
+
+
+#: Every row above whose bytes are written down, as the reference that wrote
+#: them printed them: a record of the fix, checked where it was recorded.
+_WRITTEN = ([(p, o, c, e) for p, o, c, e in PINNED + PINNED_2 + CORE_PINNED_2 if c != 90]
+            + [(p, o, 0, None) for p, o in CORE_PINNED]
+            + [(p, "", 1, e) for p, e in CORE_PINNED_3])
+
+
+@PINNED_314
+@pytest.mark.parametrize("case", _WRITTEN, ids=range(len(_WRITTEN)))
+def test_the_written_bytes_are_cpython_314s(case) -> None:
+    program, out, code, err = case
+    assert _reference(program) == (out, code, err), program

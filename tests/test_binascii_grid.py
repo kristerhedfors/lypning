@@ -47,8 +47,7 @@ SERVED = [
     B + 'print(binascii.a2b_base64("aGk="), binascii.a2b_base64(b""), binascii.a2b_base64(b"===="))',
     B + 'print(binascii.b2a_base64(b"hi"), binascii.b2a_base64(b"hi", newline=False), '
         'binascii.b2a_base64(b""), binascii.b2a_base64(b"abc", newline=True))',
-    B + 'print(binascii.b2a_base64(b"hi", newline=None), binascii.b2a_base64(b"hi", newline=0), '
-        'binascii.b2a_base64(b"hi", newline=1))',
+    B + 'print(binascii.b2a_base64(b"hi", newline=0), binascii.b2a_base64(b"hi", newline=1))',
     B + "d = bytes(range(256))\n"
         "print(binascii.unhexlify(binascii.hexlify(d)) == d, "
         "binascii.a2b_base64(binascii.b2a_base64(d)) == d, binascii.hexlify(d).decode() == d.hex())",
@@ -345,6 +344,33 @@ def test_the_served_rows_answer_exactly_what_cpython_answers(program: str) -> No
         "  lypning-l: %r exit %d %s\n  cpython:   %r exit %d %s"
         % (program, got.stdout, got.returncode, got.stderr.strip()[-200:],
            ref.stdout, ref.returncode, ref.stderr.strip()[-200:]))
+
+
+#: `newline` is read by truth from CPython 3.12; before that it was a C `int`,
+#: so `None` (and a `str`, a `bytes`) is a TypeError the engine does not word
+#: and refuses, statically and at runtime (`binascii::truth`).
+NEWLINE_BY_TRUTH = [
+    B + 'print(binascii.b2a_base64(b"hi", newline=None))',
+    B + 'x = None\nprint(binascii.b2a_base64(b"hi", newline=x))',
+    B + 'x = ""\nprint(binascii.b2a_base64(b"hi", newline=x), binascii.b2a_base64(b"hi", newline=b"1"))',
+    B + 'print(binascii.b2a_base64(b"hi", newline=2**40))',
+]
+
+
+@needs_l
+@pytest.mark.parametrize("program", NEWLINE_BY_TRUTH, ids=range(len(NEWLINE_BY_TRUTH)))
+def test_newline_follows_the_references_conversion(program: str) -> None:
+    got = _run([str(BINARY)], program)
+    ref = _run([sys.executable], program)
+    if sys.version_info >= (3, 12):
+        # Served where the walk reads the literal; a value it cannot read
+        # (row 89 above) may still refuse, and a refusal is never wrong.
+        if program != NEWLINE_BY_TRUTH[0] and _refusal_problem(got) is None:
+            return
+        assert (got.stdout, got.returncode) == (ref.stdout, ref.returncode), (program, got.stderr)
+    else:
+        assert ref.returncode == 1, (program, ref.stdout)
+        assert _refusal_problem(got) is None, (program, got.returncode, got.stderr)
 
 
 @needs_l

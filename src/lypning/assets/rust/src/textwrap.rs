@@ -217,13 +217,22 @@ fn dedent(v: &Value) -> R<Value> {
         | Value::List(_)
         | Value::Tuple(_)
         | Value::Dict(_)
-        | Value::Set(_) => {
+        // Before 3.14 the error came out of `re.sub` instead, and is not this.
+        | Value::Set(_) if crate::err::REF_PY_MINOR >= 14 => {
             return Err(type_err(format!("expected str object, not '{}'", crate::value::type_name(v))))
         }
         v => return Err(refuse(&format!("textwrap.dedent() over a {}", crate::value::type_name(v)))),
     };
     let lines: Vec<&str> = text.split('\n').collect();
     let isspace = |l: &str| !l.is_empty() && l.chars().all(py_space);
+    // Before 3.14 `dedent` read only `' '` and `'\t'` as indentation, by
+    // regex: a blank line holding any other whitespace kept its characters and
+    // counted towards the margin. Everything else agrees, so only that refuses.
+    if crate::err::REF_PY_MINOR < 14
+        && lines.iter().any(|l| isspace(l) && !l.chars().all(|c| matches!(c, ' ' | '\t')))
+    {
+        return Err(refuse("textwrap.dedent() of a blank line holding whitespace other than ' ' or '\\t' (worded by the pre-3.14 regex)"));
+    }
     let mut l1: Option<&str> = None;
     let mut l2: Option<&str> = None;
     for l in lines.iter().copied().filter(|l| !l.is_empty() && !isspace(l)) {
@@ -490,11 +499,16 @@ fn wrap(text: &str, o: &Opts) -> R<Vec<String>> {
 /// `_handle_long_word`.
 fn long_word(chunks: &mut [Vec<char>], cur: &mut Vec<Vec<char>>, cur_len: i64, width: i64, o: &Opts) -> bool {
     let space_left = if width < 1 { 1 } else { width - cur_len };
-    if o.break_long && space_left > 0 {
+    // `and space_left > 0` is 3.13's; before it a full line took an empty
+    // piece (`chunk[:0]`), which then shields the whitespace before it from
+    // `drop_whitespace`. The hyphen search is 3.10's. `cur_len <= width`, so
+    // `space_left` is never negative.
+    use crate::err::REF_PY_MINOR;
+    if o.break_long && (space_left > 0 || REF_PY_MINOR < 13) {
         let chunk = chunks.last_mut().expect("the caller checked");
         let sl = space_left as usize;
         let mut end = sl;
-        if o.break_hyph && chunk.len() > sl {
+        if o.break_hyph && REF_PY_MINOR >= 10 && chunk.len() > sl {
             // `chunk.rfind('-', 0, space_left)`, then a non-hyphen before it.
             if let Some(h) = chunk[..sl].iter().rposition(|c| *c == '-') {
                 if h > 0 && chunk[..h].iter().any(|c| *c != '-') {

@@ -5,10 +5,14 @@ them was in the conformance battery, so every gate was green while they were
 wrong. Each row runs on both `lypning` and `lypning-l`, from a fresh temp cwd
 (invariant 4). It must end in one of two ways:
 
-  * ``ANSWERED``: the same stdout and exit code as CPython. The expected bytes
-    are pinned below as CPython 3.14.5 printed them on 2026-09-24, and the row
-    is also run against the interpreter running this test. A refusal FAILS
-    these rows, because each one is a fix, and a fix that quietly turned into a
+  * ``ANSWERED``: the same stdout and exit code as the REFERENCE CPython —
+    the interpreter running this test, which is the one the engine was built
+    against (`build.reference_python_env`). The bytes written next to each
+    row are what CPython 3.14.5 printed on 2026-09-24; they document the fix
+    and are checked only on a 3.14 interpreter, because several rows (PEP 649,
+    the free-variable and unbound-local wordings) are worded differently by
+    older ones and the engine follows its reference. A refusal FAILS these
+    rows, because each one is a fix, and a fix that quietly turned into a
     refusal is a regression.
   * ``REFUSED``: a clean refusal. Exit 90, nothing on stdout, one ``<engine>:
     unsupported: …`` line on stderr (invariant 2). Each of these rows exited 1
@@ -78,7 +82,7 @@ import pytest
 
 from lypning import engines, paths
 
-#: (program, CPython 3.14.5 stdout, CPython exit)
+#: (program, CPython 3.14.5 stdout, CPython 3.14.5 exit)
 ANSWERED = [
     # --- PEP 479 -----------------------------------------------------------
     ("try:\n    print(list(next(iter([])) for x in [1]))\n"
@@ -250,8 +254,9 @@ ANSWERED = [
      "3|X\n", 0),
 ]
 
-#: Programs CPython rejects at compile time; the LAST stderr line is pinned
-#: (CPython 3.14.5, 2026-09-24), and both exit 1.
+#: Programs CPython rejects at compile time, and exit 1. The LAST stderr line
+#: written here is CPython 3.14.5's (2026-09-24); the engine is held to the
+#: reference interpreter's own last line, which 3.9 words "invalid syntax".
 SYNTAX = [
     ("def f(**k, x):\n    pass", "SyntaxError: arguments cannot follow var-keyword argument"),
     ("def f(**k: int, x):\n    pass", "SyntaxError: arguments cannot follow var-keyword argument"),
@@ -344,6 +349,12 @@ BUILT = [pytest.param(e, b, id=e) for e, b in VARIANTS if b is not None]
 CORE = dict(VARIANTS).get(engines.LYPNING)
 
 
+#: The written-down bytes are one version's; every other version is compared
+#: live, engine against the interpreter running the suite.
+PINNED_314 = pytest.mark.skipif(sys.version_info[:2] != (3, 14),
+                                reason="bytes pinned to CPython 3.14.5")
+
+
 def _run(argv: list[str], program: str) -> subprocess.CompletedProcess:
     with tempfile.TemporaryDirectory() as d:
         return subprocess.run(argv + ["-c", program], capture_output=True, text=True,
@@ -374,14 +385,16 @@ def test_both_variants_are_measured() -> None:
 def test_the_fixed_rows_answer_what_cpython_answers(
         engine: str, binary: Path, program: str, stdout: str, code: int) -> None:
     got = _run([str(binary)], program)
-    assert (got.stdout, got.returncode) == (stdout, code), (
-        "%s disagrees with the pinned CPython bytes.\n  program: %r\n"
-        "  got:     %r exit %d %s\n  pinned:  %r exit %d"
-        % (engine, program, got.stdout, got.returncode, got.stderr.strip()[-200:],
-           stdout, code)
+    ref = _run([sys.executable], program)
+    assert (got.stdout, got.returncode) == (ref.stdout, ref.returncode), (
+        "%s disagrees with the reference CPython %s.\n  program: %r\n"
+        "  got:       %r exit %d %s\n  reference: %r exit %d"
+        % (engine, sys.version.split()[0], program, got.stdout, got.returncode,
+           got.stderr.strip()[-200:], ref.stdout, ref.returncode)
     )
 
 
+@PINNED_314
 @pytest.mark.parametrize("program,stdout,code", ANSWERED, ids=range(len(ANSWERED)))
 def test_the_pinned_bytes_are_this_cpythons_bytes(program: str, stdout: str, code: int) -> None:
     ref = _run([sys.executable], program)
@@ -413,10 +426,14 @@ def test_the_walk_sends_a_starred_display_to_cpython(program: str) -> None:
 @pytest.mark.parametrize("program,last", SYNTAX, ids=range(len(SYNTAX)))
 def test_the_syntax_errors_are_cpythons(engine: str, binary: Path, program: str, last: str) -> None:
     got = _run([str(binary)], program)
-    assert (got.stdout, got.returncode, got.stderr.strip().splitlines()[-1:]) == ("", 1, [last]), (
+    ref = _run([sys.executable], program)
+    want = ("", 1, ref.stderr.strip().splitlines()[-1:])
+    assert ref.returncode == 1, (ref.returncode, ref.stderr, program)
+    assert (got.stdout, got.returncode, got.stderr.strip().splitlines()[-1:]) == want, (
         "%s: %r exit %d %r\n  program: %r" % (engine, got.stdout, got.returncode, got.stderr, program))
 
 
+@PINNED_314
 @pytest.mark.parametrize("program,last", SYNTAX, ids=range(len(SYNTAX)))
 def test_the_pinned_syntax_errors_are_this_cpythons(program: str, last: str) -> None:
     ref = _run([sys.executable], program)

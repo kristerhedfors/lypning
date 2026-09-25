@@ -119,8 +119,17 @@ pub fn block(
 }
 
 /// The truth value of a keyword's VALUE, for the few types whose truthiness is
-/// fixed; anything else is `None` and refuses — the safe direction.
+/// fixed; anything else is `None` and refuses — the safe direction. Before
+/// 3.12 `newline` was converted as a C `int` rather than by truth, so on such
+/// a reference only a `bool` or an `int` in C `int` range is read.
 fn truth(v: &Value) -> Option<bool> {
+    if crate::err::REF_PY_MINOR < 12 {
+        return match v {
+            Value::Bool(b) => Some(*b),
+            Value::Int(i) => i.small().filter(|n| *n as i32 as i64 == *n).map(|n| n != 0),
+            _ => None,
+        };
+    }
     match v {
         Value::None => Some(false),
         Value::Bool(b) => Some(*b),

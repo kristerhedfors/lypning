@@ -2870,10 +2870,14 @@ fn binascii_call_block(
     let kws: Vec<(&str, Option<bool>)> = kws
         .iter()
         .map(|(k, v)| {
+            // `binascii::truth`, over literals: before 3.12 `newline` is a C
+            // `int`, so `None` is a TypeError and a wide int an OverflowError.
+            let int = crate::err::REF_PY_MINOR < 12;
             let t = match v {
                 Expr::True => Some(true),
-                Expr::False | Expr::None => Some(false),
-                Expr::Int(n) => n.small().map(|i| i != 0),
+                Expr::False => Some(false),
+                Expr::None if !int => Some(false),
+                Expr::Int(n) => n.small().filter(|i| !int || *i as i32 as i64 == *i).map(|i| i != 0),
                 _ => None,
             };
             (*k, t)
