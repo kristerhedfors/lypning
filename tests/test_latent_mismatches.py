@@ -282,6 +282,11 @@ REFUSED = [
     "a=[1,2]\nb=0,*a\nprint(b)",
     "def f(a):\n    return 0, *a\nprint(f([1]))",
     "a=[1]\nfor x in 0, *a:\n    print(x)",
+    # a leading star then a trailing comma, closed by `;`, `)` or `]`: the
+    # starred branch of `expr_list` stopped only at a newline or `=`, so this
+    # was a SyntaxError at exit 1
+    "a=[1,2];t=*a,;print(t)",
+    "a=[1,2]\nprint([*a,])",
     "[a, *b] = [1,2,3]\nprint(a, b)",
     # an exception whose `args` the flat (kind, message) value cannot carry
     "try:\n    raise ValueError('')\nexcept ValueError as e:\n    print(e.args, repr(e))",

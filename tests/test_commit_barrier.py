@@ -374,3 +374,83 @@ def test_the_chain_runs_the_side_effect_exactly_once(tmp_path, program, made, _i
     assert got.result.returncode == ref.returncode, got.result.stderr
     assert _tree(chain) == _tree(alone)
     assert _tree(chain).count("D") == made, "the side effect did not run exactly once"
+
+
+# ---- the staged moves the disk cannot see ----------------------------------
+#
+# `os.rename` COPIES into the barrier: a staged write of the target and a staged
+# delete of the source. `os.remove` stages a delete; `os.rmdir` and `os.mkdir`
+# ask the disk. Where the disk and the stage disagree, each of these answered
+# wrongly — and three of them destroyed a file at exit 0. They refuse now, and
+# CPython does the real thing one spawn later.
+
+#: `(setup, program, why)`. `setup` is shell run in the cwd first.
+STAGED_MOVES = [
+    ("echo hi > a", "import os; os.rename('a', 'a'); print(os.path.exists('a'))",
+     "rename-self-deleted-the-file"),
+    ("echo hi > a", "import os; os.rename('a', './a'); print(os.path.exists('a'))",
+     "rename-self-other-spelling"),
+    ("", "import os; open('a','w').write('x'); os.rename('a', 'a'); print(open('a').read())",
+     "rename-self-of-a-staged-file"),
+    ("echo hi > a", "import os; os.rename('a', 'nodir/b'); print(1)",
+     "rename-into-a-missing-dir-lost-the-source"),
+    ("echo hi > a && chmod 755 a", "import os; os.rename('a', 'b'); print(1)",
+     "rename-dropped-the-mode"),
+    ("", "import os; os.mkdir('d'); open('d/f','w').write('x'); os.rmdir('d'); print('ok')",
+     "rmdir-over-a-staged-file"),
+    ("mkdir d", "import os; os.remove('d'); print(1)", "remove-of-a-directory"),
+    ("mkdir d", "import pathlib; pathlib.Path('d').unlink(); print(1)", "unlink-of-a-directory"),
+    ("", "import os; open('a','w').write('x'); os.mkdir('a/b'); print(1)",
+     "mkdir-under-a-staged-file"),
+    ("", "import os; open('a','w').write('x'); os.makedirs('a/b'); print(1)",
+     "makedirs-under-a-staged-file"),
+]
+
+
+def _setup(cwd, setup: str) -> None:
+    import subprocess
+    if setup:
+        subprocess.run(setup, shell=True, cwd=cwd, check=True)
+
+
+def _modes(root) -> list:
+    return sorted((str(q.relative_to(root)), q.stat().st_mode) for q in root.rglob("*"))
+
+
+@pytest.mark.parametrize("setup, program, _why", STAGED_MOVES, ids=[w for _s, _p, w in STAGED_MOVES])
+def test_a_staged_move_the_disk_cannot_see_refuses(lypning_bin, tmp_path, setup, program, _why) -> None:
+    cwd = _fresh(tmp_path, "engine")
+    _setup(cwd, setup)
+    before = _modes(cwd)
+    r = engines.run(engines.LYPNING, program, cwd=cwd)
+    assert r.returncode == UNSUPPORTED_EXIT, (r.returncode, r.stdout, r.stderr)
+    assert r.stdout == ""
+    assert _modes(cwd) == before, "a refusal left the disk changed"
+
+
+@pytest.mark.parametrize("setup, program, _why", STAGED_MOVES, ids=[w for _s, _p, w in STAGED_MOVES])
+def test_the_chain_answers_a_staged_move_as_cpython_does(tmp_path, setup, program, _why) -> None:
+    chain, alone = _fresh(tmp_path, "chain"), _fresh(tmp_path, "alone")
+    _setup(chain, setup)
+    _setup(alone, setup)
+    got = engines.dispatch(program, cwd=chain)
+    ref = engines.run(engines.CPYTHON, program, cwd=alone)
+    assert (got.result.returncode, got.result.stdout) == (ref.returncode, ref.stdout), \
+        got.result.stderr
+    assert got.result.stderr.strip().splitlines()[-1:] == ref.stderr.strip().splitlines()[-1:]
+    assert _modes(chain) == _modes(alone)
+
+
+def test_a_rename_between_files_the_run_wrote_is_still_served(lypning_bin, tmp_path) -> None:
+    """The one shape the copy IS a rename for, so it keeps running native."""
+    program = "import os; open('a','w').write('x'); os.rename('a', 'b'); print(open('b').read())"
+    r = engines.run(engines.LYPNING, program, cwd=_fresh(tmp_path, "engine"))
+    assert (r.returncode, r.stdout) == (0, "x\n"), r.stderr
+    assert _tree(tmp_path / "engine") == ["b"]
+
+
+def test_a_missing_source_names_both_paths(lypning_bin, tmp_path) -> None:
+    r = engines.run(engines.LYPNING, "import os; os.rename('nope', 'b')", cwd=_fresh(tmp_path, "e"))
+    assert r.returncode == 1
+    assert r.stderr.strip().splitlines()[-1] == \
+        "FileNotFoundError: [Errno 2] No such file or directory: 'nope' -> 'b'"

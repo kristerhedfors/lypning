@@ -614,14 +614,7 @@ pub fn call_module_method(
             Value::None
         }
         ("os", "remove" | "unlink") => {
-            let p = s(0)?;
-            if !mio::path_exists(&p) {
-                return Err(LypningError::exc(
-                    "FileNotFoundError",
-                    format!("[Errno 2] No such file or directory: '{p}'"),
-                ));
-            }
-            mio::stage_delete(&p);
+            mio::remove_file(&s(0)?)?;
             Value::None
         }
         ("os", "rmdir") => {
@@ -645,20 +638,34 @@ pub fn call_module_method(
                     return Err(unsupported("rename", &format!("os.{name}() of '{p}', which is not a regular file")));
                 }
             }
+            // This arm COPIES: it stages the bytes under the new name and a
+            // delete of the old one. That is a rename only between files this
+            // run made. A file already on disk at either end carries a mode,
+            // an owner and timestamps the kernel's rename keeps and a staged
+            // write does not — the copy of an executable lands as 0o644 — and
+            // one path under two spellings stages its own delete last and
+            // loses the file. A destination whose directory is missing is
+            // CPython's two-path `FileNotFoundError`, which the barrier would
+            // raise only at commit, after the source was gone. All four go to
+            // CPython.
+            let on_disk = |p: &str| !mio::is_staged_deleted(p) && std::fs::symlink_metadata(p).is_ok();
+            let dir_ok = match std::path::Path::new(&b).parent() {
+                Some(d) if !d.as_os_str().is_empty() => d.is_dir(),
+                _ => true,
+            };
+            if on_disk(&a) || on_disk(&b) || mio::same_staged_path(&a, &b) || !dir_ok {
+                return Err(unsupported(
+                    "rename",
+                    &format!("os.{name}('{a}', '{b}') that is not a move between files this run wrote"),
+                ));
+            }
             let content = match mio::effective_content(&a)? {
                 Some(c) => c,
                 None => {
-                    if mio::is_staged_deleted(&a) {
-                        return Err(LypningError::exc(
-                            "FileNotFoundError",
-                            format!("[Errno 2] No such file or directory: '{a}'"),
-                        ));
-                    }
-                    // `os.rename` here COPIES: it stages the bytes under the
-                    // new name and stages a delete of the old one. So it reads
-                    // whole files too, and a device would never finish.
-                    mio::require_regular_file(&a)?;
-                    std::fs::read(&a).map_err(|e| mio::os_error(&a, &e))?
+                    return Err(LypningError::exc(
+                        "FileNotFoundError",
+                        format!("[Errno 2] No such file or directory: '{a}' -> '{b}'"),
+                    ));
                 }
             };
             mio::stage_write(&b, content);

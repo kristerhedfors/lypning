@@ -1101,7 +1101,7 @@ impl Parser {
             }
             let mut items = vec![e];
             while self.eat_op(",") {
-                if matches!(self.peek(), Tok::Newline | Tok::Eof) || self.is_op("=") {
+                if self.ends_expr_list() {
                     break;
                 }
                 items.push(self.star_element()?);
@@ -1114,19 +1114,25 @@ impl Parser {
         }
         let mut items = vec![first];
         while self.eat_op(",") {
-            if matches!(self.peek(), Tok::Newline | Tok::Eof)
-                || self.is_op("=")
-                || self.is_op(")")
-                || self.is_op("]")
-                || self.is_op("}")
-                || self.is_op(";")
-                || self.is_op(":")
-            {
+            if self.ends_expr_list() {
                 break;
             }
             items.push(self.star_element()?);
         }
         Ok(Expr::Tuple(items))
+    }
+
+    /// After a trailing comma, the tokens that close an expression list. One
+    /// check for both branches of `expr_list`: the starred one once stopped
+    /// only at newline and `=`, so `t=*a,;print(t)` died as a SyntaxError.
+    fn ends_expr_list(&self) -> bool {
+        matches!(self.peek(), Tok::Newline | Tok::Eof)
+            || self.is_op("=")
+            || self.is_op(")")
+            || self.is_op("]")
+            || self.is_op("}")
+            || self.is_op(";")
+            || self.is_op(":")
     }
 
     /// An element after the first in a `(…)`, `[…]` or `{…}` display. The

@@ -210,6 +210,11 @@ fn armed() -> bool {
 /// How far an [`arm`]ed run that is not yet [`held`] buffers before it
 /// flushes as the core does. Past it a capability that runs later finds a
 /// committed run, and the program keeps its output, as any committed run does.
+///
+/// Refusing here instead was tried and is wrong: an armed program whose
+/// capability never runs is one the core answers, and a refusal would be
+/// `lypning-l` doing worse than the core on it (invariant 10). The price is an
+/// uncaught error after 64 MiB that ends without CPython's `Did you mean`.
 #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
 pub const ARMED_LIMIT: usize = 8 * COMMIT_THRESHOLD;
 
@@ -689,6 +694,25 @@ pub fn stage_delete(path: &str) {
     });
 }
 
+/// `os.remove`, `os.unlink` and `Path.unlink` — one implementation.
+///
+/// A directory is refused: staged as a file delete it would fail only at
+/// commit, after the program has printed, where CPython raises at once — and
+/// with the platform's error (`EPERM` on macOS, `EISDIR` on Linux).
+pub fn remove_file(path: &str) -> R<()> {
+    if !path_exists(path) {
+        return Err(LypningError::exc(
+            "FileNotFoundError",
+            format!("[Errno 2] No such file or directory: '{path}'"),
+        ));
+    }
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir()) {
+        return Err(unsupported("remove", &format!("removing '{path}', which is a directory")));
+    }
+    stage_delete(path);
+    Ok(())
+}
+
 pub fn stage_write(path: &str, bytes: Vec<u8>) {
     note_write(path);
     let k = stage_key(path);
@@ -795,6 +819,18 @@ pub fn make_dir(path: &str, parents: bool, exist_ok: bool) -> R<()> {
 /// real, one spawn later. The test is the staging layer's alone, so the two
 /// halves of a `mkdir` now consult exactly one.
 fn staged_delete_blocks(path: &str) -> R<()> {
+    // The parent is a file this run has staged: the disk has no such path, so
+    // `create_dir` says `ENOENT` where CPython says `ENOTDIR`.
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        if !parent.as_os_str().is_empty()
+            && PENDING.with(|p| p.borrow().files.contains_key(&stage_key(&parent.to_string_lossy())))
+        {
+            return Err(unsupported(
+                "mkdir",
+                &format!("mkdir('{path}') under a file this run has not committed"),
+            ));
+        }
+    }
     if is_staged_deleted(path) {
         return Err(unsupported(
             "mkdir",
@@ -825,7 +861,21 @@ fn note_made(p: &std::path::Path) {
 /// it and the run stays routable. Removing anyone else's is irreversible in a
 /// way `create_dir` cannot fake: the mode, the timestamps and the ownership are
 /// gone. That one commits.
+///
+/// A directory that holds a STAGED entry is refused: the disk cannot see a
+/// staged write (CPython's `ENOTEMPTY`, which this engine answered with an
+/// empty `rmdir` and then lost the write at commit) nor a staged delete (the
+/// disk's `ENOTEMPTY` where CPython succeeds).
+///
+/// A [`held`] run refuses a foreign one. An [`arm`]ed run does not, for the
+/// reason [`ARMED_LIMIT`] gives: the core answers it.
 pub fn remove_dir(path: &str) -> R<()> {
+    if staged_under(path) {
+        return Err(unsupported(
+            "rmdir",
+            &format!("os.rmdir('{path}') of a directory holding an entry this run has not committed"),
+        ));
+    }
     let real = std::fs::canonicalize(path).ok();
     #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
     if held() && !real.as_ref().is_some_and(|r| MADE.with(|m| m.borrow().contains(r))) {
@@ -850,6 +900,21 @@ pub fn remove_dir(path: &str) -> R<()> {
         mark_committed(WHY_FOREIGN_RMDIR);
     }
     Ok(())
+}
+
+/// Does this run hold back a write or a delete of some path inside `dir`?
+fn staged_under(dir: &str) -> bool {
+    let mut prefix = stage_key(dir);
+    prefix.push('/');
+    PENDING.with(|p| p.borrow().files.keys().any(|k| k.starts_with(&prefix)))
+        || DELETED.with(|d| d.borrow().iter().any(|k| k.starts_with(&prefix)))
+}
+
+/// Do two spellings name one staged file? `os.rename('a', './a')` stages a
+/// write of the target and then a delete of the source, and when both are one
+/// key the delete wins and the file is gone.
+pub fn same_staged_path(a: &str, b: &str) -> bool {
+    stage_key(a) == stage_key(b)
 }
 
 /// Does the path exist, as the PROGRAM sees it?
