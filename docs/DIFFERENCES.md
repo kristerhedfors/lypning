@@ -168,13 +168,14 @@ the user's own — is `unsupported: module: import <name>` on both engines, and
 
 ### 4.3 Modules served in part
 
-Ten modules on `lypning-l` are served as a named list of attributes rather than
+Eleven modules on `lypning-l` are served as a named list of attributes rather than
 whole, so the walk in the *smaller* engine can decide statically whether the
 larger one would answer. Everything not listed is `unsupported: module-attr:
 <module>.<name>` — including under `from <module> import <name>`:
 
 | module | served | source |
 |---|---|---|
+| `ast` | `literal_eval` | `route.rs:AST_SERVED` — over a `str` only; `parse`, `walk`, `dump` and the node classes are CPython's, and every input CPython raises or warns on refuses |
 | `base64` | `b64decode` `b64encode` `urlsafe_b64decode` `urlsafe_b64encode` | `route.rs:BASE64_SERVED` |
 | `binascii` | `a2b_base64` `a2b_hex` `b2a_base64` `b2a_hex` `hexlify` `unhexlify` | `route.rs:BINASCII_SERVED` — `Error` and `crc32` are CPython's |
 | `csv` | `DictReader` `QUOTE_ALL` `QUOTE_MINIMAL` `QUOTE_NONE` `QUOTE_NONNUMERIC` `reader` | `route.rs:MODULE_ATTRS` — the writers are CPython's |
@@ -193,12 +194,13 @@ rather than in the smaller engine's walk, which costs one spawn and no answer.
 
 ## 5. What `lypning-l` adds
 
-`lypning-l` is the same crate built with sixteen `cap-*` features
+`lypning-l` is the same crate built with seventeen `cap-*` features
 (`engines.VARIANT_CAPS`, `route.rs:CAPS`, and `lypning route --spectrum` from
 either binary):
 
 | capability | what it adds | source |
 |---|---|---|
+| `cap-ast` | the `ast` module — `literal_eval` over a `str`, and no other name (`ast.parse` refuses) | `pyast.rs` |
 | `cap-base64` | the `base64` module, four functions of it | `base64.rs` |
 | `cap-bigint` | no module: integers past 64 bits, exact | `bigint.rs` |
 | `cap-binascii` | the `binascii` module, six functions of it | `binascii.rs` |

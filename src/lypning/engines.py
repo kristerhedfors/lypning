@@ -57,7 +57,9 @@ SPECTRUM = (LYPNING, LYPNING_L)
 #: :func:`chain_after_refusal`: a sibling built with the same set cannot answer
 #: at runtime what a smaller one could not, so it is not tried.
 #:
-#: ``cap-base64`` (``b64encode`` / ``b64decode`` / ``urlsafe_b64encode`` /
+#: ``cap-ast`` (``import ast`` and ``ast.literal_eval`` over a ``str``; every
+#: other name, ``ast.parse`` included, refuses as ``module-attr`` from the
+#: WALK), ``cap-base64`` (``b64encode`` / ``b64decode`` / ``urlsafe_b64encode`` /
 #: ``urlsafe_b64decode``; the rest of the module refuses as ``module-attr`` from
 #: the WALK), ``cap-binascii`` (``hexlify`` / ``b2a_hex`` / ``unhexlify`` /
 #: ``a2b_hex`` / ``a2b_base64`` / ``b2a_base64``; ``Error``, ``crc32`` and the
@@ -97,7 +99,7 @@ SPECTRUM = (LYPNING, LYPNING_L)
 VARIANT_CAPS: dict = {
     LYPNING: (),
     LYPNING_L: (
-        "cap-base64", "cap-bigint", "cap-binascii", "cap-collections",
+        "cap-ast", "cap-base64", "cap-bigint", "cap-binascii", "cap-collections",
         "cap-csv", "cap-difflib", "cap-future", "cap-glob", "cap-hashlib",
         "cap-itertools", "cap-pathlib", "cap-random", "cap-re",
         "cap-statistics", "cap-textwrap", "cap-time",

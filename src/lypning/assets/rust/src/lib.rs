@@ -139,6 +139,12 @@ pub mod statistics;
 #[cfg(feature = "cap-textwrap")]
 pub mod textwrap;
 
+/// `import ast` and `ast.literal_eval` — the `cap-ast` capability. Not
+/// `ast.rs`, which is the engine's own syntax tree. Absent from the smaller
+/// variant entirely, not merely unreachable in it.
+#[cfg(feature = "cap-ast")]
+pub mod pyast;
+
 /// `time.time` / `monotonic` / `perf_counter` (and their `_ns` forms),
 /// `time.sleep`, and the one fused `strftime(<literal>, gmtime())` UTC stamp —
 /// the `cap-time` capability. Absent from the smaller variant entirely, not

@@ -14,6 +14,25 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-25** — A coverage round from the latest sessions' programs: `cap-ast`, `bytes.fromhex`, and five wrong answers the harvest exposed (PR pending)
+
+- The corpus is harvested from the sessions since 2026-09-07: 5,752 new
+  programs, 14,653 in total. The routers show most are blocked by
+  `subprocess` and project imports, which stay refusals.
+- `cap-ast` in lypning-l: `import ast` and `ast.literal_eval` over a `str`,
+  parsed at the token level with a screen that refuses anything `lex.rs` and
+  CPython could read differently. Every error is a refusal. `ast.parse` and
+  the rest route to CPython.
+- `cap-binascii`: `bytes.fromhex` and UTF-8 `decode(errors='replace')`. The
+  core routes `.fromhex()` to lypning-l.
+- Shared, the core included: `except ((A, B), C)`, `except A, B` and an
+  f-string reusing its own quote refuse instead of raising the parser's
+  SyntaxError. An exception attribute the value does not keep refuses
+  instead of AttributeError. An in-place operator mutates its dict, set or
+  list, and `dict |= iterable` refuses.
+- The frozen core stays in 9 musl blocks by shortening eight long refusal
+  details. Its read-only segment had 44 B of slack.
+
 **2026-09-25** — lypning-l: hold where the capability runs, one parse for every variant, refuse the staged moves the disk cannot see ([#128](https://github.com/kristerhedfors/lypning/pull/128))
 
 - The walk only arms a run. The hold starts where a capability the core

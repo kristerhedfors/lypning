@@ -55,6 +55,7 @@ pub const SPECTRUM: &[Variant] = &[
         // so the binary's own answer, this table and `engines.VARIANT_CAPS` are
         // one list and not three that happen to agree.
         caps: &[
+            "cap-ast",
             "cap-base64",
             "cap-bigint",
             "cap-binascii",
@@ -199,7 +200,16 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// refusal it raises is the `random` kind, which is only-CPython. Its routing
 /// half is [`CAP_ATTRS`], the attributes it adds to those two modules; the row
 /// is here so the spectrum declares the feature like every other.
+///
+/// `cap-ast` serves the `ast` MODULE — `literal_eval` over a `str`, and only
+/// the names [`MODULE_ATTRS`] lists ([`AST_SERVED`]; `ast.parse` is NOT one,
+/// because `parse.rs` accepts programs CPython's `ast.parse` rejects) — and
+/// answers no runtime kind: every `ast:` refusal is an input whose answer
+/// CPython owns (a `ValueError` naming an AST node, a warning, an escape or a
+/// number `lex.rs` may misread), and there is no rung above lypning-l to carry
+/// it to.
 pub const CAPS: &[(&str, &[&str], &[&str])] = &[
+    ("cap-ast", &["ast"], &[]),
     ("cap-base64", &["base64"], &[]),
     ("cap-bigint", &[], &["bigint", "int-div-precision"]),
     ("cap-binascii", &["binascii"], &["fromhex"]),
@@ -263,6 +273,15 @@ pub const CAPS: &[(&str, &[&str], &[&str])] = &[
 /// by its own `the_route_table_names_exactly_what_is_served`.
 pub const MODULE_ATTRS: &[(&str, &[&str])] = &[
     ("__future__", FUTURE_SERVED),
+    // Held to `pyast.rs` by its own
+    // `the_route_table_names_exactly_what_is_served`. `parse`, `walk`,
+    // `dump`, `unparse`, the node classes and `NodeVisitor` are blocked HERE,
+    // in the core's walk, and never reach the variant. Deliberately NO
+    // pre-run stop in lypning-l's own walk, as `textwrap` has: an `ast.parse`
+    // that never runs (`if False:`) is the core's answer (invariant 10), and
+    // one that runs refuses where it is evaluated, in a run `import ast` has
+    // already held reversible ([`HINT_HELD_CAPS`]).
+    ("ast", AST_SERVED),
     ("base64", BASE64_SERVED),
     // Held to `binascii.rs` by its own
     // `the_route_table_names_exactly_what_is_served`. `Error`, `crc32`,
@@ -312,6 +331,11 @@ pub const MODULE_ATTRS: &[(&str, &[&str])] = &[
     // own walk to refuse, before its first statement.
     ("time", TIME_SERVED),
 ];
+
+/// The `ast` names lypning-l serves — `route.rs`'s own table, for the reason
+/// [`BINASCII_SERVED`] is: the binary that routes has no `pyast.rs`.
+/// `ast.parse` is deliberately absent — see `pyast.rs`.
+pub const AST_SERVED: &[&str] = &["literal_eval"];
 
 /// The `time` names lypning-l serves — `route.rs`'s own table, for the reason
 /// [`TEXTWRAP_SERVED`] is: the CORE walks every served `time` call too
@@ -2048,10 +2072,10 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                     // own walk (#48). The same holds for every module a
                     // capability of this branch added — `statistics`
                     // (`except statistics.StatisticsError`), `itertools`,
-                    // `difflib`, `textwrap`, `time`: none serves a class.
+                    // `difflib`, `textwrap`, `time`, `ast`: none serves a class.
                     // `except csv.Error` keeps the route it had before these
                     // rows existed.
-                    if let Some((m @ ("binascii" | "statistics" | "itertools" | "difflib" | "textwrap" | "time"), leaf)) =
+                    if let Some((m @ ("binascii" | "statistics" | "itertools" | "difflib" | "textwrap" | "time" | "ast"), leaf)) =
                         dotted.as_ref().map(|(m, l)| (m.as_str(), *l))
                     {
                         req.escalate(m, leaf);
@@ -3680,6 +3704,7 @@ pub fn static_stop_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
 /// suggestion, which no variant computes (`err::forgot_import`).
 #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
 const HINT_HELD_CAPS: &[&str] = &[
+    "cap-ast",
     "cap-binascii",
     "cap-difflib",
     "cap-future",
