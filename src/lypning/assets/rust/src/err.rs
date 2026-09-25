@@ -154,7 +154,11 @@ pub const ENGINE: &str = env!("LYPNING_ENGINE");
 /// measurement that fixed it.
 pub const REF_PY_MINOR: u32 = parse_minor(env!("LYPNING_REF_PY"));
 /// `REF_PY_MINOR` was named by the caller or measured from a live interpreter,
-/// not `build.rs`'s fallback guess.
+/// not `build.rs`'s fallback guess. Everything that branches on the minor
+/// answers the same either way (the fallback is the newest calibrated
+/// behaviour), except a boundary that cannot be guessed (`future.rs`, PEP 649)
+/// and a program that PRINTS the version: `sys.version_info` is served only
+/// when this is true.
 pub const REF_PY_KNOWN: bool = env!("LYPNING_REF_PY_KNOWN").as_bytes()[0] == b'1';
 
 /// Build-dependent facts measured against the selected CPython, not guessed

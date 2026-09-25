@@ -166,7 +166,7 @@ rather than in the smaller engine's walk, which costs one spawn and no answer.
 
 ## 5. What `lypning-l` adds
 
-`lypning-l` is the same crate built with fourteen `cap-*` features
+`lypning-l` is the same crate built with fifteen `cap-*` features
 (`engines.VARIANT_CAPS`, `route.rs:CAPS`, and `lypning route --spectrum` from
 either binary):
 
@@ -182,6 +182,7 @@ either binary):
 | `cap-hashlib` | the `hashlib` module — four constructors | `hashlib.rs` |
 | `cap-itertools` | the `itertools` module — `product`, `combinations` | `itertools.rs` |
 | `cap-pathlib` | the `pathlib` module — `Path` | `pathlib.rs` |
+| `cap-random` | no module: `random.Random(int)`, `random.sample`, `random.shuffle`, and `sys.version_info` as `[0]`, `[:2]`, `.major`/`.minor` or against a tuple of at most two items | `randobj.rs` |
 | `cap-re` | the `re` module and its matcher | `re.rs` |
 | `cap-statistics` | the `statistics` module — four functions of it | `statistics.rs` |
 | `cap-textwrap` | the `textwrap` module — five functions of it | `textwrap.rs` |

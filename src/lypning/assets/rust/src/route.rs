@@ -65,6 +65,7 @@ pub const SPECTRUM: &[Variant] = &[
             "cap-hashlib",
             "cap-itertools",
             "cap-pathlib",
+            "cap-random",
             "cap-re",
             "cap-statistics",
             "cap-textwrap",
@@ -185,6 +186,12 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// `module_of` that detail, which is `__future__`. Its refusal kinds (`future`,
 /// `annotation`) are shapes CPython owns — a `SyntaxError`, a `_Feature` value,
 /// annotations as strings — so the kind column stays empty.
+///
+/// `cap-random` is the first row with NEITHER column: it serves no module —
+/// `random` and `sys` are the core's own — and no runtime kind, because every
+/// refusal it raises is the `random` kind, which is only-CPython. Its routing
+/// half is [`CAP_ATTRS`], the attributes it adds to those two modules; the row
+/// is here so the spectrum declares the feature like every other.
 pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-base64", &["base64"], &[]),
     ("cap-bigint", &[], &["bigint", "int-div-precision"]),
@@ -196,6 +203,7 @@ pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-hashlib", &["hashlib"], &[]),
     ("cap-itertools", &["itertools"], &[]),
     ("cap-pathlib", &["pathlib"], &[]),
+    ("cap-random", &[], &[]),
     ("cap-re", &["re"], &[]),
     ("cap-statistics", &["statistics"], &[]),
     ("cap-textwrap", &["textwrap"], &[]),
@@ -340,6 +348,47 @@ pub const FUTURE_SERVED: &[&str] = &[
     "unicode_literals",
     "with_statement",
 ];
+
+/// The attributes a capability adds to a module EVERY variant serves — the
+/// core's own `random` and `sys` — as `(cap, module, served anywhere, served in
+/// a shape)`, space-separated. Carried by every variant for the reason
+/// [`MODULE_ATTRS`] is: the binary that routes is the core, whose `get_attr`
+/// refuses these names and which therefore records `module-attr: random.sample`
+/// as its blocker. Without this table [`answers`] could only say no, and a
+/// capability on a core module would be dead from the router's side (F3).
+///
+/// The last column is the names served only in the SHAPES the walk blesses
+/// ([`bless_cap_shapes`]): `random.Random` as the callee of a one-argument call,
+/// and `sys.version_info` as `[0]`/`[1]`, `[:n]` with `n <= 2`, `.major`/
+/// `.minor`, or an operand compared with a tuple literal of at most two items.
+/// Anywhere else — and for every name a listed module's row does not carry — no
+/// rung serves the attribute, and the walk says so in the route's stop slot, so
+/// a program whose FIRST blocker lypning-l answers is still not sent there to
+/// be refused one statement in.
+pub const CAP_ATTRS: &[(&str, &str, &[&str], &[&str])] = &[
+    ("cap-random", "random", &["sample", "shuffle"], &["Random"]),
+    ("cap-random", "sys", &[], &["version_info"]),
+];
+
+/// Does `v` serve `module.name` out of [`CAP_ATTRS`] — `shaped` when the walk
+/// blessed the shape it was spelled in? `sys.version_info` is answered only by
+/// a build whose reference version was MEASURED ([`crate::err::REF_PY_KNOWN`]).
+#[inline(never)]
+fn cap_attr(v: &Variant, module: &str, name: &str, shaped: bool) -> bool {
+    (module != "sys" || crate::err::REF_PY_KNOWN)
+        && CAP_ATTRS.iter().any(|(c, m, any, shape)| {
+            *m == module && v.caps.contains(c) && (any.contains(&name) || (shaped && shape.contains(&name)))
+        })
+}
+
+/// Is `module.name` an attribute of a [`CAP_ATTRS`] module that NO rung of
+/// the spectrum serves, spelled the way it is? `false` for every other module,
+/// which leaves their routing exactly as it was.
+/// The top row is asked alone because `caps` is cumulative
+/// (`caps_are_cumulative_and_every_cap_is_declared`).
+fn no_rung_serves(module: &str, name: &str, shaped: bool) -> bool {
+    CAP_ATTRS.iter().any(|r| r.1 == module) && !cap_attr(&SPECTRUM[SPECTRUM.len() - 1], module, name, shaped)
+}
 
 /// Does some variant on the spectrum answer `module.name`, as far as
 /// [`MODULE_ATTRS`] can say? `true` for every module the table does not list —
@@ -496,16 +545,18 @@ fn module_of(detail: &str) -> &str {
 ///
 /// Asked only of rungs at or above this one. A `module` blocker is answered by
 /// a variant that serves the module; a runtime kind (`bigint`, `format-spec`,
-/// …) by one whose capability lists it in `CAPS`. `module-attr` is never
-/// claimed until the attribute surface is a table (it is a `match` in
-/// `modules::get_attr` today), because claiming a module's attribute by the
-/// module's name alone is exactly how a program would reach a sibling that
-/// refuses it again — a spawn wasted, and the ledger already paid for that
-/// lesson once. With one row in the spectrum every answer here is `false`.
+/// …) by one whose capability lists it in `CAPS`. `module-attr` is claimed only
+/// out of [`CAP_ATTRS`] — a TABLE of names, never a module's name alone,
+/// because claiming an attribute by its module is exactly how a program would
+/// reach a sibling that refuses it again — a spawn wasted, and the ledger
+/// already paid for that lesson once.
 pub fn answers(v: &Variant, kind: &str, detail: &str) -> bool {
     match kind {
         "module" => served_module(v, module_of(detail)),
-        "module-attr" => false,
+        // Only out of [`CAP_ATTRS`], and a shape-only name is claimed here
+        // because the walk has already put every UNBLESSED spelling of it in
+        // the stop slot, which overrides this verdict.
+        "module-attr" => detail.rsplit_once('.').is_some_and(|(m, n)| cap_attr(v, m, n, true)),
         _ => CAPS.iter().any(|(c, _, kinds)| v.caps.contains(c) && kinds.contains(&kind)),
     }
 }
@@ -942,7 +993,7 @@ pub fn route(src: &str) -> Route {
             // wins the slot; a method no rung models is the fallback. Both mark
             // the whole spectrum rather than one rung.
             let method = method_wide_stop(req.method_stop.take(), &imports);
-            let stop = req.spectrum_stop.take().or(method);
+            let stop = req.spectrum_stop.take().or(req.route_stop.take()).or(method);
             match req.blocker {
                 None => finish_route(String::new(), String::new(), imports, reads_stdin, stop),
                 Some((kind, detail)) => {
@@ -1103,6 +1154,17 @@ struct Requirements {
     /// borrows one live AST for its whole run, so no node is freed and no
     /// address is reused; nothing is dereferenced through these.
     glob_blessed: Vec<*const Expr>,
+    /// The `random.Random` / `sys.version_info` nodes whose PARENT is one of
+    /// the shapes [`CAP_ATTRS`] serves them in, by identity like
+    /// `glob_blessed`. Filled by [`bless_cap_shapes`] before the child is
+    /// walked.
+    cap_blessed: Vec<*const Expr>,
+    /// A refusal no rung serves, for the ROUTE only: an unblessed shape or an
+    /// unlisted name on a [`CAP_ATTRS`] module. Not read by
+    /// [`static_stop_check`] — a direct run of either variant refuses at the
+    /// attribute itself, at the same point in both, so there is no answer a
+    /// pre-run refusal would protect and one the core would lose.
+    route_stop: Option<(String, String)>,
     /// The refusal that stops EVERY rung of the spectrum, as `(kind, detail)`,
     /// recorded even when an EARLIER blocker won the `--plan` row. A program
     /// whose first blocker is something lypning-l runs anyway (the walker is
@@ -1200,6 +1262,13 @@ impl Requirements {
     fn stop_only(&mut self, kind: &str, detail: String) {
         if self.spectrum_stop.is_none() {
             self.spectrum_stop = Some((kind.to_string(), detail));
+        }
+    }
+
+    /// See [`Requirements::route_stop`].
+    fn stop_route(&mut self, kind: &str, detail: String) {
+        if self.route_stop.is_none() {
+            self.route_stop = Some((kind.to_string(), detail));
         }
     }
 
@@ -1574,7 +1643,13 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                 );
                 for (n, _) in names {
                     if crate::modules::get_attr(&m, n).is_err() {
-                        req.block("module-attr", format!("{module}.{n}"));
+                        let d = format!("{module}.{n}");
+                        // `from random import Random`: a shape-only name
+                        // bound bare is a shape no rung serves.
+                        if no_rung_serves(module, n, false) {
+                            req.stop_route("module-attr", d.clone());
+                        }
+                        req.block("module-attr", d);
                     }
                 }
             }
@@ -1885,6 +1960,10 @@ pub(crate) const CAP_METHODS: &[(&str, &str)] = &[
          parts read_bytes read_text relative_to stem suffix suffixes unlink with_name with_stem \
          with_suffix write_bytes write_text",
     ),
+    // The methods of a `random.Random(int)` instance, `randobj::METHODS`:
+    // no probe type has any of them, so without the row every instance
+    // program would stop on its first `.randint()` in the core's walk.
+    ("random", "choice getrandbits randint random randrange sample seed shuffle"),
     // `re::PATTERN_METHODS`, `re::MATCH_METHODS` and the seven read-only
     // attributes. `groupindex`, `scanner`, `expand`, `lastindex`,
     // `lastgroup` and `regs` are deliberately absent: a shape the engine does
@@ -3351,6 +3430,106 @@ fn calls_stdin(func: &Expr, args: &[Expr]) -> bool {
 /// `aliases` is `import x as y`, so `r.seed(7)` after `import random as r`
 /// resolves to the module and its attributes are decided, not guessed at as
 /// method names — the third spelling in the ledger (`py-0e241643581e`).
+/// Bless the `random.Random` / `sys.version_info` child of `e` when `e` is one
+/// of the shapes [`CAP_ATTRS`] serves it in, and put a `random.<f>(…)` call
+/// spelled in a way no rung serves in the route's stop slot. `true` only for
+/// `sys.version_info.major` / `.minor`, which the caller must not then treat
+/// as a method name.
+///
+/// Every test is SYNTACTIC — a literal index, a literal slice bound, a tuple
+/// LITERAL of at most two items — because the runtime half
+/// (`randobj::version_info`) serves exactly what these spellings can reach and
+/// refuses the rest, and a walk that admitted a computed index would admit a
+/// program the runtime refuses one statement in.
+fn bless_cap_shapes(e: &Expr, req: &mut Requirements) -> bool {
+    let aliases = &req.aliases;
+    let vi = |x: &Expr| module_attr_named(x, aliases, "sys", "version_info");
+    let small = |x: &Expr, hi: i64| matches!(x, Expr::Int(i) if i.small().is_some_and(|v| (0..=hi).contains(&v)));
+    let mut blessed: Option<&Expr> = None;
+    let mut attr = false;
+    match e {
+        Expr::Attr(b, n) if matches!(n.as_ref(), "major" | "minor") && vi(b) => {
+            blessed = Some(&**b);
+            attr = true;
+        }
+        Expr::Index(b, i) if small(i, 1) && vi(b) => blessed = Some(&**b),
+        Expr::Slice { base, lo: None, hi: Some(h), step: None } if small(h, 2) && vi(base) => {
+            blessed = Some(&**base)
+        }
+        // Exactly one `version_info` operand, every other one a tuple literal
+        // of at most two items, and no `in` / `is` anywhere in the chain.
+        Expr::Compare { first, rest } => {
+            let mut ok = true;
+            for i in 0..=rest.len() {
+                let x = if i == 0 { &**first } else { &rest[i - 1].1 };
+                if i > 0 {
+                    ok &= !matches!(rest[i - 1].0, CmpOp::In | CmpOp::NotIn | CmpOp::Is | CmpOp::IsNot);
+                }
+                if vi(x) {
+                    ok &= blessed.is_none();
+                    blessed = Some(x);
+                } else {
+                    ok &= matches!(x, Expr::Tuple(t) if t.len() <= 2
+                        && !t.iter().any(|y| matches!(y, Expr::Starred(_))));
+                }
+            }
+            if !ok {
+                blessed = None;
+            }
+        }
+        Expr::Call { func, args, star, kwargs, dstar } => {
+            let (arity, n) = match &**func {
+                Expr::Attr(_, n) => match n.as_ref() {
+                    "Random" | "shuffle" => (1, n),
+                    "sample" => (2, n),
+                    _ => return false,
+                },
+                _ => return false,
+            };
+            if !module_attr_named(func, aliases, "random", n) {
+                return false;
+            }
+            // A literal seed this engine cannot hash the way CPython does.
+            let bad_seed = n.as_ref() == "Random"
+                && matches!(
+                    args.first(),
+                    Some(Expr::None | Expr::Float(_) | Expr::Str(_) | Expr::Bytes(_) | Expr::FString(_)
+                        | Expr::Tuple(_) | Expr::List(_) | Expr::Set(_) | Expr::Dict(_))
+                );
+            if args.len() != arity || !star.is_empty() || !kwargs.is_empty() || !dstar.is_empty() || bad_seed {
+                req.stop_route("random", "random.Random/sample/shuffle() with arguments no rung serves".into());
+            } else if n.as_ref() == "Random" {
+                blessed = Some(&**func);
+            }
+        }
+        _ => {}
+    }
+    if let Some(p) = blessed {
+        req.cap_blessed.push(p);
+    }
+    attr
+}
+
+/// Is `x` spelled `<module m>.n`, the module resolved as [`resolve_module`]
+/// resolves it? Out of line: [`bless_cap_shapes`] asks it at every node.
+#[inline(never)]
+fn module_attr_named(x: &Expr, aliases: &[(String, String)], m: &str, n: &str) -> bool {
+    matches!(x, Expr::Attr(b, a) if a.as_ref() == n
+        && matches!(resolve_module(b, aliases), Some(crate::value::Value::Module(r)) if r == m))
+}
+
+/// A `random.Random` instance's method names — `.randint`, `.shuffle`, `.seed`
+/// — admitted ONLY for a program that imports `random`, by the argument
+/// [`pathlib_method`] makes. The names are [`CAP_METHODS`]'s row.
+#[cfg(feature = "cap-random")]
+fn random_method(req: &Requirements, n: &str) -> bool {
+    req.imports.contains("random") && cap_serves("random", n)
+}
+#[cfg(not(feature = "cap-random"))]
+fn random_method(_req: &Requirements, _n: &str) -> bool {
+    false
+}
+
 fn resolve_module(e: &Expr, aliases: &[(String, String)]) -> Option<crate::value::Value> {
     match e {
         Expr::Name(n) => {
@@ -3400,6 +3579,7 @@ fn capability_module(e: &Expr, req: &Requirements) -> Option<String> {
 }
 
 fn walk_expr(e: &Expr, req: &mut Requirements) {
+    let shaped_attr = bless_cap_shapes(e, req);
     match e {
         Expr::Name(n) => {
             // The `time` module, or a served `time` function, anywhere but the
@@ -3451,6 +3631,11 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                 return;
             }
             walk_expr(b, req);
+            // `sys.version_info.major`: an attribute of a value, not a method
+            // name for the union below to be pessimistic about.
+            if shaped_attr {
+                return;
+            }
             if matches!(n.as_ref(), "stdin" | "__stdin__") {
                 req.reads_stdin = true;
             }
@@ -3512,7 +3697,17 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             }
             if let Some(crate::value::Value::Module(m)) = resolve_module(b, &req.aliases) {
                 if crate::modules::get_attr(&crate::value::Value::Module(m), n).is_err() {
-                    req.block("module-attr", format!("{m}.{n}"));
+                    // A blessed shape of a name THIS binary serves in that
+                    // shape is not a blocker here; anywhere else it is, and
+                    // when no rung serves it spelled this way, a stop.
+                    let shaped = req.cap_blessed.contains(&(e as *const Expr));
+                    let d = format!("{m}.{n}");
+                    if no_rung_serves(m, n, shaped) {
+                        req.stop_route("module-attr", d.clone());
+                    }
+                    if !(shaped && cap_attr(&SPECTRUM[self_index()], m, n, true)) {
+                        req.block("module-attr", d);
+                    }
                     // `base64.b32encode` is a `module-attr` blocker in both
                     // variants, so the ROUTE is already right — but a blocker
                     // is not a stop, and the run has to refuse before the
@@ -3545,7 +3740,11 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                 // function the module was served to run.
                 return;
             }
-            if !known_method(n) && !pathlib_method(req, n) && !re_method(req, n) && !hash_method(req, n)
+            if !known_method(n)
+                && !pathlib_method(req, n)
+                && !re_method(req, n)
+                && !hash_method(req, n)
+                && !random_method(req, n)
             {
                 // The iteration-74 defect class, and the reason `hashlib` was
                 // rejected there: the walk keeps the FIRST blocker, and for a

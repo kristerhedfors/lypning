@@ -93,6 +93,12 @@ pub enum Iter {
     /// `Iter` arm for the reason the two above give, and never a `Value`.
     #[cfg(feature = "cap-itertools")]
     Itertools(Box<crate::itertools::Combo>),
+    /// A `random.Random(int)` instance: its OWN MT19937 state, `None` only for
+    /// the length of a method call that has swapped it into `Interp::rng`. Not
+    /// an iterator, and an `Iter` for the reason `Hash` above is one
+    /// (`randobj.rs`).
+    #[cfg(feature = "cap-random")]
+    Rng(Option<Box<crate::random::Mt>>),
 }
 
 /// Where a text stream's next line ends, given what `open(newline=…)` asked for.
@@ -444,6 +450,12 @@ impl Interp {
             Iter::Hash(_) => return Err(crate::hashlib::not_iterable()),
             #[cfg(feature = "cap-itertools")]
             Iter::Itertools(c) => crate::itertools::next(c),
+            // `'Random' object is not iterable` in CPython; refused, which
+            // also covers `x in r`, whose wording moved in 3.14.
+            #[cfg(feature = "cap-random")]
+            Iter::Rng(_) => {
+                return Err(crate::err::unsupported("random", "iterating a Random instance"))
+            }
             Iter::Stdin => match mio::stdin_line()? {
                 Some(b) => Some(Value::Str(decode_text(
                     &b,

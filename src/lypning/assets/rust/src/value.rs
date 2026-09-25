@@ -1336,6 +1336,8 @@ fn bound_kind(recv: &Value, name: &str) -> Callable {
             // that come straight off the C `_random.Random`: `random()` and
             // `getrandbits()`.
             ("random", "seed" | "randint" | "randrange" | "choice") => Method,
+            #[cfg(feature = "cap-random")]
+            ("random", "sample" | "shuffle") => Method,
             // The receiver `ops::get_attr` gives `Path.cwd`, a classmethod —
             // and a classmethod read off the class is a bound method of it.
             #[cfg(feature = "cap-pathlib")]
@@ -1364,6 +1366,13 @@ fn bound_kind(recv: &Value, name: &str) -> Callable {
         // `method` exactly as `Path.cwd` off the class is.
         #[cfg(feature = "cap-pathlib")]
         Value::Path(..) => Method,
+        // `random.Random` is a pure-Python subclass of the C `_random.Random`:
+        // the two it inherits are C, the rest are `random.py`'s functions.
+        #[cfg(feature = "cap-random")]
+        Value::IterObj(_, crate::randobj::TYPE) => match name {
+            "random" | "getrandbits" => Builtin,
+            _ => Method,
+        },
         // `_sre.SRE_Pattern`'s six vectorcall methods. `findall` and `split` are
         // METH_VARARGS and stay the ordinary name.
         //

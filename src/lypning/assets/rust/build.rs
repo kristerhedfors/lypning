@@ -75,9 +75,13 @@ fn main() {
         .ok()
         .filter(|s| parse_minor(s).is_some())
         .or_else(|| probed.as_ref().map(|p| p.0.clone()));
-    // Whether the minor was NAMED or MEASURED rather than guessed: a site whose
-    // answer turns on a version boundary it cannot guess safely (`future.rs`:
-    // PEP 649, 3.14) refuses on a guessed minor instead of picking a side.
+    // Whether the minor was NAMED or MEASURED — handed down by `lypning build`
+    // out of `engines.find_cpython()`, or asked of a python here — rather than
+    // the fallback guess. A site whose answer turns on a version boundary it
+    // cannot guess safely (`future.rs`: PEP 649, 3.14) refuses on a guessed
+    // minor instead of picking a side, and `sys.version_info` is answered only
+    // when it is known (`randobj.rs`): a guessed minor is a wrong number at
+    // exit 0.
     println!("cargo:rustc-env=LYPNING_REF_PY_KNOWN={}", named.is_some() as u8);
     let ref_py = named.unwrap_or_else(|| REF_PY_FALLBACK.to_string());
     println!("cargo:rustc-env=LYPNING_REF_PY={ref_py}");

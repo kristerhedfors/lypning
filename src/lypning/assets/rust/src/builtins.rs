@@ -1953,6 +1953,10 @@ pub fn call_builtin(
             if crate::hashlib::as_hasher(&v).is_some() {
                 return Err(crate::hashlib::not_iterable());
             }
+            #[cfg(feature = "cap-random")]
+            if crate::randobj::as_random(&v).is_some() {
+                return Err(unsupported("random", "iter() of a Random instance"));
+            }
             if let Value::IterObj(..) = v {
                 return Ok(v);
             }

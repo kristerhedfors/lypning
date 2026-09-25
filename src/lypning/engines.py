@@ -73,7 +73,11 @@ SPECTRUM = (LYPNING, LYPNING_L)
 #: refuses as ``module-attr`` from the WALK, out of the same table),
 #: ``cap-difflib`` (``import difflib`` and nothing on it: its table row is
 #: EMPTY, so every ``difflib.<name>`` refuses from the WALK),
-#: ``cap-pathlib`` (``pathlib.Path``), ``cap-re`` (the ``re`` matcher),
+#: ``cap-pathlib`` (``pathlib.Path``), ``cap-random`` (``random.Random(int)``,
+#: ``random.sample`` / ``random.shuffle``, and ``sys.version_info`` as ``[0]``,
+#: ``[:2]``, ``.major`` / ``.minor`` or compared with a tuple of at most two
+#: items; it serves no module, so its routing half is ``route::CAP_ATTRS``),
+#: ``cap-re`` (the ``re`` matcher),
 #: ``cap-statistics`` (``mean`` / ``median`` / ``median_low`` / ``median_high``;
 #: every other name refuses as ``module-attr`` from the WALK, out of
 #: ``route::MODULE_ATTRS``),
@@ -93,7 +97,7 @@ VARIANT_CAPS: dict = {
     LYPNING_L: (
         "cap-base64", "cap-bigint", "cap-collections", "cap-csv", "cap-difflib",
         "cap-future", "cap-glob", "cap-hashlib", "cap-itertools", "cap-pathlib",
-        "cap-re", "cap-statistics", "cap-textwrap", "cap-time",
+        "cap-random", "cap-re", "cap-statistics", "cap-textwrap", "cap-time",
     ),
 }
 
