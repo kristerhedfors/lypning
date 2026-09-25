@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-25** — A coverage round from the latest sessions' programs: `cap-ast`, `bytes.fromhex`, and five wrong answers the harvest exposed (PR pending)
+**2026-09-25** — A coverage round from the latest sessions' programs: `cap-ast`, `bytes.fromhex`, and five wrong answers the harvest exposed ([#129](https://github.com/kristerhedfors/lypning/pull/129))
 
 - The corpus is harvested from the sessions since 2026-09-07: 5,752 new
   programs, 14,653 in total. The routers show most are blocked by
