@@ -1291,6 +1291,9 @@ struct Requirements {
     /// [`core_admits`], and the core never asks it.
     #[cfg(feature = "cap-random")]
     core_attr: bool,
+    /// `.fromhex` was spelled — `cap-binascii`'s, which the core lacks.
+    #[cfg(feature = "cap-binascii")]
+    fromhex: bool,
     imports: BTreeSet<String>,
     blocker: Option<(String, String)>,
     aliases: Vec<(String, String)>,
@@ -3741,6 +3744,10 @@ fn core_lacks(req: &Requirements, future_head: bool) -> Vec<&'static str> {
     if req.core_attr {
         out.push("cap-random");
     }
+    #[cfg(feature = "cap-binascii")]
+    if req.fromhex {
+        out.push("cap-binascii");
+    }
     if future_head {
         out.push("cap-future");
     }
@@ -4271,6 +4278,12 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                 // went to CPython, refused by the method name of the very
                 // function the module was served to run.
                 return;
+            }
+            // `bytes.fromhex` is `cap-binascii`'s, a capability the core
+            // lacks: the run is armed for it as for an import (`core_lacks`).
+            #[cfg(feature = "cap-binascii")]
+            if n.as_ref() == "fromhex" {
+                req.fromhex = true;
             }
             if !known_method(n)
                 && !pathlib_method(req, n)

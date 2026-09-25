@@ -246,6 +246,8 @@ mod tests {
 /// digit that is not hex, a lone or split digit, whitespace inside a pair —
 /// refuses, and so does a non-`str` argument (3.14 also takes bytes-like).
 pub fn fromhex(args: &Args, kw: &[(Rc<str>, Value)]) -> R<Value> {
+    // The core lacks this: from here the run must stay refusable (`io::hold`).
+    crate::io::hold();
     let s = match (args.len(), kw.is_empty(), args.first()) {
         (1, true, Some(Value::Str(s))) => s.clone(),
         _ => return Err(unsupported("binascii", "bytes.fromhex() of anything but one str")),

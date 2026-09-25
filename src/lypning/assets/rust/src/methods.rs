@@ -2372,6 +2372,13 @@ fn bytes_method(
     check_arity("bytes", name, args, &kw)?;
     Ok(match name {
         "decode" => {
+            // Only `encoding` and `errors`, two at most: anything else is
+            // CPython's TypeError, which the arms below answered past. In
+            // lypning-l, where `bytes.fromhex` routes these programs.
+            #[cfg(feature = "cap-binascii")]
+            if args.len() + kw.len() > 2 || !kw.iter().all(|(k, _)| matches!(k.as_ref(), "encoding" | "errors")) {
+                return Err(unsupported("bytes-method", "decode() arguments"));
+            }
             let errors = crate::args::bind(args, &kw, 1, "errors", name)?;
             // UTF-8 with `errors='replace'`: each maximal ill-formed subpart
             // becomes one U+FFFD, which is both CPython's decoder and
@@ -2385,6 +2392,7 @@ fn bytes_method(
                     _ => false,
                 };
                 if e.as_ref() == "replace" && utf8 {
+                    crate::io::hold();
                     return Ok(Value::Str(String::from_utf8_lossy(b).into_owned().into()));
                 }
             }

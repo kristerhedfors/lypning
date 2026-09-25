@@ -83,6 +83,9 @@ REFUSED = [
     "print(bytes.fromhex('4'))",                                   # ValueError
     "print(bytes.fromhex(b'0a'))",                                 # 3.14 only
     "print(b'a\\xff'.decode('ascii', 'replace'))",               # another codec
+    "print(bytes.fromhex('ff').decode(errors='replace', foo=1))",  # TypeError
+    "print(bytes.fromhex('6f6b').decode('utf-8', 'replace', bogus=0))",
+    "print(bytes.fromhex('6f6b').decode(error='replace'))",
     B + 'print(binascii.hexlify("ab"))',                          # TypeError
     B + 'print(binascii.hexlify(b"\\x01\\xff\\x02", b":"))',       # sep
     B + 'print(binascii.hexlify(b"\\x01\\xff\\x02", "-", 2))',     # sep, bytes_per_sep

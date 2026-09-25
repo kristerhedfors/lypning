@@ -70,6 +70,7 @@ PROBES = [m + t for m in MENTIONS for t in TAILS] + [m + BIG for m in MENTIONS[:
 #: core routes them past itself and refuses where the capability runs, so the
 #: hold applies and the uncaught error refuses.
 HELD = [
+    "x = bytes.fromhex('41')\nundefined_name",
     "import itertools\nprint(1)\nprnt(1)",
     "def f():\n    pass\nimport time\nundefined_name",
     "import random\nprint(random.Random(5).randint(1, 3))\nundefined_name",
