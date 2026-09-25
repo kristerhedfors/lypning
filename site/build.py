@@ -48,7 +48,7 @@ PAGES = [
     ("docs/VERIFICATION.md", "docs/verification.html", "Verification", "Every contract as a command, its expected output from a dated run of record, and the test that pins it."),
     ("docs/LYPNING.md", "docs/lypning.html", "Design", "The mixture, the classifier, and the commit barrier that makes falling onward safe."),
     ("docs/SUBSET.md", "docs/subset.html", "The subset", "What the engines implement, and the rules that decide what they refuse."),
-    ("docs/L-COVERAGE.md", "docs/l-coverage.html", "L coverage", "CSV, named-regex and numeric coverage boundaries, verification and next-round data directions."),
+    ("docs/L-COVERAGE.md", "docs/l-coverage.html", "L coverage", "What lypning-l answers that the core does not — CSV, named regex, exact numerics, ast.literal_eval, hex and lossy text — and where each stops."),
     ("docs/BIGINT-NUMERIC.md", "docs/bigint-numeric.html", "Exact numeric conversions", "Wide integer byte conversion and exact finite float ratios in lypning-l."),
     ("docs/DIFFERENCES.md", "docs/differences.html", "vs Python",
      "How lypning and lypning-l differ from Python: the architecture, the names each one resolves, and what falls through to CPython."),

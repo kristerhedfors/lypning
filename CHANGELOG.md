@@ -30,8 +30,16 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   SyntaxError. An exception attribute the value does not keep refuses
   instead of AttributeError. An in-place operator mutates its dict, set or
   list, and `dict |= iterable` refuses.
-- The frozen core stays in 9 musl blocks by shortening eight long refusal
-  details. Its read-only segment had 44 B of slack.
+- The frozen core stays in 9 musl blocks by shortening fourteen long
+  refusal details. Its read-only segment had 44 B of slack.
+- `lypning conformance --mixture both` reaches MISMATCH 0, UNSAFE 0 and
+  dispatcher agreement on this macOS host for the first time. Float `**`
+  calls the host libm's `pow` on macOS (two programs filed as "drift" were
+  this). A 3.14-built engine refuses the two errors whose wording 3.14
+  changed. Before 3.14, module-level annotations refuse. Listing
+  `os.environ` is run-specific in the grader.
+- The Pages landing page has a dated **Coverage** section. `L-COVERAGE.md`
+  gains the `ast` and hex rows.
 
 **2026-09-25** — lypning-l: hold where the capability runs, one parse for every variant, refuse the staged moves the disk cannot see ([#128](https://github.com/kristerhedfors/lypning/pull/128))
 

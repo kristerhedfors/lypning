@@ -26,25 +26,38 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
-## 2026-09-25 · iteration 84 — coverage from the latest sessions' own programs, and a read-only segment with 44 B of room
+## 2026-09-26 · iteration 84 — coverage from the latest sessions' own programs, and MISMATCH 0 on every arm
 
 Focus: coverage. The corpus was harvested from the sessions since 2026-09-07
 first, and the baseline was measured on the enlarged corpus, so before and
-after share one denominator: 14,653 programs, 10,173 of them runnable (this
-run, 2026-09-25, macOS arm64 host build, engine and oracle CPython 3.14.5).
+after share one denominator: the run loaded 14,816 programs and graded 10,173
+of them (macOS arm64 host build, graded against CPython 3.14.5).
 
-| | before (harvest only) | after |
+| | before (harvest only) | after (2026-09-26, commit f6b0728) |
 |---|---|---|
-| lypning-l MATCH / UNSUPPORTED / MISMATCH | 7,324 / 2,840 / 9 | 7,357 / 2,811 / 5 |
-| lypning MATCH / MISMATCH | 4,581 / 9 | 4,581 / 5 |
-| all arms MISMATCH | 34 | 22 |
+| lypning-l MATCH / UNSUPPORTED / MISMATCH | 7,324 / 2,840 / 9 | 7,357 / 2,816 / 0 |
+| lypning MATCH / MISMATCH | 4,581 / 9 | 4,583 / 0 |
+| all arms MISMATCH | 34 | **0** |
+| UNSAFE | 7 | 0 |
+| dispatchers agree | 10,171 / 10,173 | 10,173 / 10,173 |
 | monotone violations | 0 | 0 |
-| core, musl (scratch probe) | 1,175,760 B, 9 blocks | 1,175,760 B, 9 blocks |
+| core, musl (scratch probe, 3.11 build) | 1,175,760 B, 9 blocks | 1,175,760 B, 9 blocks |
 
-The 22 left are the 3.14 drift rows (float repr, `%c`, the dict-key
-wording, now five programs) and two dispatcher rows where the harness's own
-`LYPNING_CPYTHON` shows up in a program that lists `os.environ`. Both were
-there before this round.
+The first run on this host at MISMATCH 0 on every arm. What cleared the
+standing rows:
+
+- **Two were not drift.** `py-53786ee8ed26` and `py-ab7286f43b7a` had been
+  filed as "3.14 float repr drift" since 2026-09-17. A docs review re-ran them.
+  CPython 3.9, 3.11 and 3.14 on this Mac all print one value, and the engine
+  printed one ulp lower. `pow.rs` reproduces Linux glibc's FMA `pow`, which is
+  what CI grades against, and a Mac's CPython calls Apple's libm. A macOS build
+  now calls the host `pow`.
+- **Three were 3.14's new error wording** (the dict-key and `%c` TypeErrors).
+  The one site that raises each cannot tell its contexts apart, so a
+  3.14-built engine refuses there and CPython words it.
+- **Two were the instrument.** The `lypning run` arm pins its sibling binaries
+  through its own environment variables. A program listing `os.environ` saw
+  them, so the whole environment is now run-specific.
 
 **What the new programs are blocked by.** `lypning-l route` over the 1,999
 new programs it cannot serve: `subprocess` (377), `sys.path` (342; the
