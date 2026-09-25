@@ -26,6 +26,54 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-09-25 · iteration 84 — coverage from the latest sessions' own programs, and a read-only segment with 44 B of room
+
+Focus: coverage. The corpus was harvested from the sessions since 2026-09-07
+first, and the baseline was measured on the enlarged corpus, so before and
+after share one denominator: 14,653 programs, 10,173 of them runnable (this
+run, 2026-09-25, macOS arm64 host build, engine and oracle CPython 3.14.5).
+
+| | before (harvest only) | after |
+|---|---|---|
+| lypning-l MATCH / UNSUPPORTED / MISMATCH | 7,324 / 2,840 / 9 | 7,357 / 2,811 / 5 |
+| lypning MATCH / MISMATCH | 4,581 / 9 | 4,581 / 5 |
+| all arms MISMATCH | 34 | 22 |
+| monotone violations | 0 | 0 |
+| core, musl (scratch probe) | 1,175,760 B, 9 blocks | 1,175,760 B, 9 blocks |
+
+The 22 left are the 3.14 drift rows (float repr, `%c`, the dict-key
+wording, now five programs) and two dispatcher rows where the harness's own
+`LYPNING_CPYTHON` shows up in a program that lists `os.environ`. Both were
+there before this round.
+
+**What the new programs are blocked by.** `lypning-l route` over the 1,999
+new programs it cannot serve: `subprocess` (377), `sys.path` (342; the
+project imports behind it are next), `pipeline`/`lypning`/`yaml`/`huggingface_hub`
+imports, then `ast` (127). Six design agents, each with an adversarial
+critic, estimated what each candidate would free. Most estimates were single
+digits, because the second blocker is nearly always an import no Rust rung can
+have.
+
+**What landed:**
+- `cap-ast` (`literal_eval` only): lypning-l MATCH moved by 33 across the
+  round.
+- `cap-binascii`: `bytes.fromhex` + UTF-8 `decode(errors='replace')`.
+- Five wrong answers in shared code, which the harvest exposed:
+  `except ((A, B), C)`, an unkept exception attribute, the nested-quote
+  f-string, and in-place operators that rebound instead of mutating (`b = a;
+  a |= {...}` left `b` stale).
+
+**Refused, with the reason:** `ast.parse` as a syntax check. parse.rs
+accepts programs CPython's `ast.parse` rejects (one-line suites without a
+separator, a number glued to a name), so "parses here" is not "parses there".
+
+**The byte lesson.** Probing the musl layout on a scratch branch showed that
+the core's read-only headroom is bounded by the RW segment's file offset, not
+the page boundary. RELRO pins that offset, and at ddacc76 it left **44 B**.
+This round's shared fixes cost 752 B there. It was paid for by shortening
+fourteen refusal details. Their explanations stay in the code comments.
+Headroom after the round: 188 B read-only, 122 B text.
+
 ## 2026-09-15 · iteration 83 — the ledger's seven un-replayed witnesses, swept by hand
 
 Host: Linux x86_64, 4 CPUs, `x86_64-unknown-linux-musl` build, reference
