@@ -153,8 +153,12 @@ fn execute_inner(src: &str, report_refusal: bool, kind: &mut String, detail: &mu
     // effect: `route.rs` decides every static glob and hashlib question for the
     // ROUTER, and this asks it again for a run that was never routed
     // (`<bin> -c PROG`). The chain no longer arrives here that way (#48), but a
-    // typed `-c` and `lypning conformance`'s per-engine arm still do, and
-    // `glob-order` has no runtime backstop to catch them.
+    // typed `-c` and `lypning conformance`'s per-engine arm still do, and the
+    // static `glob-order` shapes (a lazy `iglob` where its order shows, a
+    // listing function used as a value) have no runtime backstop to catch
+    // them. On lypning-l the same walk also tells `glob.rs` which calls'
+    // order can show, for the one runtime `glob-order` there is: a visible
+    // order over a directory the run has changed.
     //
     // UNGATED, and that is invariant 10 rather than tidiness. This used to be
     // `#[cfg(any(feature = "cap-glob", feature = "cap-hashlib"))]`, on the
@@ -163,8 +167,8 @@ fn execute_inner(src: &str, report_refusal: bool, kind: &mut String, detail: &mu
     // execution reaches the import, while this fires before anything runs. So a
     // program that dies before its import was ANSWERED by the core and REFUSED
     // by its own superset, which is the one thing a spectrum may not do
-    // (`open("/nonexistent"); import glob; print(glob.glob("*"))` — core exit 1
-    // with CPython's traceback, `lypning-l` exit 90). `route.rs` is not gated
+    // (`open("/nonexistent"); import glob; print(glob.iglob("*"))` — core exit
+    // 1 with CPython's traceback, `lypning-l` exit 90). `route.rs` is not gated
     // per variant and `spectrum_stop` is only set where NO rung can serve the
     // call, so the core reports the same accurate kind and the check costs it
     // nothing: the function returns immediately unless the source says "glob"

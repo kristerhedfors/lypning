@@ -166,12 +166,14 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// is the SECOND module served only in part, and it needs no [`MODULE_ATTRS`]
 /// row to say so: the walk below carries [`GLOB_SERVED`] unconditionally, so
 /// the core blocks `module-attr: glob.translate` out of its own walk exactly
-/// where lypning-l would. The one thing about `glob` a router would like to
-/// have seen coming — `glob-order`, a result whose ORDER the program can
-/// observe — is not a runtime kind at all: [`walk_expr`] decides it
-/// STATICALLY, before the program starts, and the kind is in
-/// [`ONLY_CPYTHON_KINDS`] because no reimplementation can reproduce
-/// `os.scandir` order, so no sibling could answer it either.
+/// where lypning-l would. Glob ORDER is served: `glob.rs` lists in CPython's
+/// own yield order over `readdir`. What is left of `glob-order` is a lazy
+/// `iglob` where its order shows, or a listing function used as a value —
+/// both decided STATICALLY by [`walk_expr`] in every variant — and a listing
+/// whose order shows over a directory the run has changed, which lypning-l
+/// refuses at runtime. The kind is in [`ONLY_CPYTHON_KINDS`] and deliberately
+/// NOT in this row: no sibling answers any of the three, so listing it would
+/// have the core predict lypning-l for programs lypning-l refuses.
 ///
 /// `cap-textwrap` serves the `textwrap` MODULE — five functions, and only the
 /// names [`MODULE_ATTRS`] lists (`TextWrapper` is not one) — and answers no
@@ -839,8 +841,8 @@ pub fn chain_after(after: &str, kind: &str, verdicts: &[Verdict]) -> Vec<&'stati
 /// Reporting only the blocker sent every such program to `lypning-l` for a
 /// refusal (`docs/HILLCLIMB.md`, the `cap-glob` review). So the blocker slot is
 /// left exactly as the walk filled it and the VERDICTS are overwritten: what
-/// the stop names is a refusal no rung of the spectrum answers — `os.scandir`
-/// order, a keyword only CPython serves, an attribute nothing here has, a
+/// the stop names is a refusal no rung of the spectrum answers — a lazy
+/// `iglob`'s order, a keyword only CPython serves, an attribute nothing here has, a
 /// pattern nothing here compiles — and a verdict vector that says so routes to
 /// CPython through [`engine_from_verdicts`] and shortens the chain through
 /// [`chain_after`] with no special case in either.
@@ -1112,11 +1114,10 @@ pub const ONLY_CPYTHON_KINDS: &[&str] = &[
     "dunder-missing",
     "encoding",
     "exception-chaining",
-    // A `glob.glob()` result in a position that would show the ORDER of two or
-    // more matched paths. The same fact as `set-order` about a different system
-    // call: CPython's answer comes from `os.scandir`, so a second
-    // reimplementation is no likelier to reproduce it than the first was.
-    // `glob.rs`, and the static blocker in `walk_expr` below.
+    // A lazy `glob.iglob()` where its order shows, a listing function used as
+    // a value, or (lypning-l, at runtime) a visible order over a directory the
+    // run has changed. No larger rung lists any differently. `glob.rs`, and
+    // the static blocker in `walk_expr` below.
     "glob-order",
     "identity",
     "iterator-type-name",
@@ -2581,12 +2582,13 @@ fn re_pattern_block(
 
 // ---- the glob order rule ---------------------------------------------------
 //
-// `glob.glob()` returns a list whose ORDER is the filesystem's, so the whole
-// question the capability has to answer is: can this program see the order?
-// It is decided HERE, in the walk, before anything runs — never at runtime,
-// because a runtime refusal has already spent the spawn the router chose, and
-// past an effect the barrier cannot take back it is exit 1 with the output
-// discarded and the chain never retries it. `glob.rs` says the rest.
+// `glob.glob()` returns a list in the filesystem's order, and lypning-l
+// computes that order the way CPython does (`glob.rs`), so an eager call is
+// served in every position. Two shapes are still decided HERE, before
+// anything runs: `glob.iglob()` where its order shows — CPython's generator
+// reads each directory only after the loop body before it has run, and a
+// body that writes changes CPython's answer — and `glob`/`iglob` used as a
+// VALUE, whose calls the walk cannot see. Both are `glob-order`.
 //
 // **None of it is behind `cfg(feature = "cap-glob")`, and that is deliberate.**
 // It is pure walker logic — a position test over the AST with no glob
@@ -2595,14 +2597,19 @@ fn re_pattern_block(
 // `engines.route()` asks; while this rule was gated, the core saw only
 // `module: import glob`, read `cap-glob` off `lypning-l`'s row and predicted
 // `lypning-l` for programs `lypning-l` refuses with `glob-order` — one wasted
-// spawn each. That is the same defect a small no-json variant had when it
-// routed `import json` past its larger sibling, and the fix is the same one:
-// every binary computes the whole spectrum's verdict, not just its own.
+// spawn each. The converse holds as well: the eager `glob.glob` stop was
+// REMOVED from this walk rather than gated, because the stop slot overrides
+// every verdict in [`finish_route`], and a core that kept it would route every
+// such program to CPython whatever lypning-l can answer.
 
 /// The order-blind wrappers: builtins whose answer is the same for every
-/// permutation of the list they are handed. A `glob.glob(...)` call that is a
-/// DIRECT argument of one of these cannot show its order, so it is served;
-/// everywhere else the call is a `glob-order` blocker.
+/// permutation of the list they are handed. A `glob.iglob(...)` call that is
+/// a DIRECT argument of one of these (and whose flag below is `true`) is
+/// served; everywhere else it is a `glob-order` blocker. A `glob.glob(...)`
+/// call is served anywhere, and the blessing still matters for it on
+/// lypning-l: a blessed call's listing is answered over a directory this run
+/// has changed, and an unblessed one's refuses (`glob.rs`,
+/// [`static_stop_check`]).
 ///
 /// It is exactly the list the refusal below names, and `tests/test_glob_grid.py`
 /// has a row for each: a name here that this engine does not serve would bless a
@@ -2645,13 +2652,10 @@ const ORDER_BLIND: &[(&str, bool)] = &[
     ("sum", true),
 ];
 
-/// The detail of the static blocker, spelled once so `--plan` ranks one row for
-/// it however it was reached — including the `iglob` half, which is a narrower
-/// rule and not a second kind.
-const GLOB_ORDER: &str = "glob() order is filesystem-defined and not \
-     reproducible; served only inside sorted(), bool(), len(), min(), max(), \
-     any(), all(), sum() or the right of `in` — and iglob() answers a \
-     generator, which len() and bool() do not read as a list";
+/// The detail of the static blocker, spelled once so `--plan` ranks one row
+/// for it however it was reached.
+const GLOB_ORDER: &str = "iglob() outside sorted/min/max/any/all/sum/`in`, or \
+     glob/iglob as a value: CPython lists lazily or out of the walk's sight";
 
 /// The `base64` attributes lypning-l serves, and therefore the only ones ANY
 /// rung of the spectrum answers. It IS the [`MODULE_ATTRS`] row rather than a
@@ -3672,19 +3676,23 @@ pub fn except_clause(dotted: Option<(&str, &str)>, k: &str) -> (bool, bool) {
 /// ([`Requirements::spectrum_stop`]), so the chain no longer hands a rung a
 /// program that rung statically refuses. What is left is the entry the chain
 /// never touched: `<bin> -c PROG` typed by hand, and the one
-/// `lypning conformance` grades every engine through. `glob` has NO runtime
-/// backstop — the order rule is decided in the walk and nowhere else — so
-/// without this, `lypning-l -c 'import glob; print(glob.glob("*"))'` does not
-/// refuse, it ANSWERS, in whatever order the filesystem gave, at exit 0.
-/// Measured 2026-09-06 by deleting this call and rebuilding: the refusal became
-/// `['qqq.py', 'bbb.py', 'aaa.py', 'mmm.py', 'zzz.py']` and exit 0.
+/// `lypning conformance` grades every engine through. The static `glob-order`
+/// shapes (a lazy `iglob` where its order shows, a listing function used as a
+/// value) have NO runtime backstop — without this, `lypning-l -c` would
+/// answer `for p in glob.iglob("*"): …` eagerly, at exit 0.
+///
+/// On lypning-l the same walk is also what tells `glob.rs` which calls'
+/// order can show ([`Requirements::glob_blessed`], `glob::set_order_shown`):
+/// the one runtime `glob-order`, a visible order over a directory the run has
+/// changed, is decided per call from it, and a program the walk never cleared
+/// keeps the fail-safe "shown".
 ///
 /// It runs BEFORE the first statement, so the refusal is exit 90 with an empty
 /// stdout and an untouched disk, and no statement of the program has run. Only
 /// for a source that mentions `glob`, so
 /// every other program pays one substring search: `re`'s stops are not why this
-/// exists (the matcher refuses them at runtime, which is a backstop `glob` has
-/// none of), and widening the guard to catch them would put a second AST walk
+/// exists (the matcher refuses them at runtime, which is a backstop the static
+/// `glob` shapes have none of), and widening the guard to catch them would put a second AST walk
 /// in front of every in-process run to buy an exit code on a path the chain can
 /// no longer reach. A program that mentions `glob` and stops on `re` first is
 /// refused here with the `re` line, which is the same line one statement
@@ -4159,9 +4167,9 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                 return;
             }
             // A name bound by `from glob import glob` that is NOT the callee of
-            // a blessed call: the walk skips the callee of one it served, so
-            // reaching here means the function is being passed, stored or
-            // called somewhere the order shows. `escape` and `has_magic` carry
+            // a call: the walk skips the callee of every glob call, so
+            // reaching here means the function is being passed or stored as a
+            // value, where no call node says what it will list. `escape` and `has_magic` carry
             // no order and are bound by the same arm, so the test is on the
             // FUNCTION and not merely on the binding.
             if req
@@ -4409,18 +4417,17 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             };
             #[cfg(feature = "cap-binascii")]
             binascii_call_block(req, func, args, kwargs, star, dstar);
-            // Is THIS a glob call, and did its parent bless it? A blessed call
-            // is served and its callee is not walked; an unblessed one is the
-            // blocker, whatever it was going to be handed to. `escape` and
-            // `has_magic` are served in EVERY position — they are string
-            // algebra over the pattern and never list a directory — so they
-            // stop the callee walk without asking the order question.
+            // Is THIS a glob call? Its callee is not walked. `glob.glob` is
+            // served in EVERY position: it is eager, and `glob.rs` lists in
+            // CPython's own yield order. `iglob` is lazy in CPython — each
+            // directory is read only after the loop body before it has run —
+            // so it is served only where its parent blessed it, and is the
+            // blocker anywhere else. `escape` and `has_magic` are string
+            // algebra and never list a directory.
             let served_glob = match glob_func(func, req) {
                 None => false,
                 Some(f) => {
-                    if matches!(f, "glob" | "iglob")
-                        && !req.glob_blessed.contains(&(e as *const Expr))
-                    {
+                    if f == "iglob" && !req.glob_blessed.contains(&(e as *const Expr)) {
                         req.block_glob_order();
                     }
                     true

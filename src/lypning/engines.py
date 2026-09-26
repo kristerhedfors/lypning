@@ -927,7 +927,7 @@ ONLY_CPYTHON_REFUSALS = frozenset({
     "set-method",         # ...including hash(-1) == -2, reserved as an error sentinel
     "dict-view",          # keys/items are set-like, values compare by identity
     "exception-chaining",  # __context__/__cause__ do not exist one tier down
-    "glob-order",         # a glob() result whose order shows: os.scandir order, as unrepeatable as a set's
+    "glob-order",         # iglob outside an order-blind wrapper, glob as a value, or a shown order over a changed dir
     "repr-unicode",       # repr() escapes a character set nothing else reproduces
     "percent-format",     # the '0' flag, grouping, and their interaction with '-'
     "del",                # the ValueError text of a failed list.remove/index
