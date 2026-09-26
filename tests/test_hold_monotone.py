@@ -280,6 +280,28 @@ def test_a_capability_that_never_runs_holds_nothing(program: str) -> None:
         % (program, core.returncode, core.stderr[-200:], larger.returncode, larger.stderr[-200:]))
 
 
+#: Programs the core answers through a path lypning-l's decorator and
+#: keyword-only support REPLACES (the `def` statement, the binder): the core's
+#: answer, byte for byte, in both — un-held, since nothing here needs a
+#: capability. The first row is the annotation order on a pre-3.14 reference
+#: build (defaults, then annotations, then the return annotation).
+CORE_OWN = [
+    "def f(a: print('ann') = print('def'), b: print('b') = print('bd')) -> print('ret'): pass",
+    "try:\n    def g(a: undefined = 1/0): pass\nexcept Exception as e:\n    print(type(e).__name__)",
+]
+
+
+@needs_both
+@pytest.mark.parametrize("program", CORE_OWN, ids=range(len(CORE_OWN)))
+def test_a_path_lypning_l_replaced_answers_as_the_core(program: str) -> None:
+    assert engines.route(program, binary=CORE).engine == engines.LYPNING
+    core = _run(CORE, program)
+    assert core.returncode != engines.UNSUPPORTED_EXIT, core.stderr[-300:]
+    larger = _run(LARGER, program)
+    assert (larger.returncode, larger.stdout, larger.stderr) == \
+        (core.returncode, core.stdout, core.stderr), (program, core, larger)
+
+
 REJECTED_PROGRAMS = [h + b for h in REJECTED_HEADS for b in REJECTED]
 
 

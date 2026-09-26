@@ -595,17 +595,6 @@ impl Interp {
             }
             Stmt::Def { name, params, body } => {
                 self.nested_global_guard()?;
-                // Before 3.14 annotations run when the `def` does, and their
-                // VALUES are discarded -- what survives is whatever they raised
-                // or printed on the way. Before the defaults, as CPython orders
-                // it. From 3.14 (PEP 649) they are evaluated lazily, only when
-                // `__annotations__` is read, which nothing here can do: a side
-                // effect or a NameError in one is simply never seen.
-                if crate::err::REF_PY_MINOR < 14 {
-                    for a in &params.anns {
-                        self.eval(a)?;
-                    }
-                }
                 let mut defaults = Vec::with_capacity(params.defaults.len());
                 for d in &params.defaults {
                     defaults.push(match d {
@@ -622,6 +611,21 @@ impl Interp {
                     env: self.chain.clone(),
                     assigned: Rc::new(assigned_names(body, params)),
                 }));
+                // Before 3.14 annotations run when the `def` does, and their
+                // VALUES are discarded -- what survives is whatever they raised
+                // or printed on the way. AFTER the defaults, as CPython's
+                // compiler emits them (probed on 3.9 and 3.11:
+                // `def f(a: print('ann') = print('def'))` prints `def` first);
+                // they ran first here, so `def f(a: undefined = 1/0)` raised
+                // NameError where CPython raises ZeroDivisionError. From 3.14
+                // (PEP 649) they are evaluated lazily, only when
+                // `__annotations__` is read, which nothing here can do: a side
+                // effect or a NameError in one is simply never seen.
+                if crate::err::REF_PY_MINOR < 14 {
+                    for a in &params.anns {
+                        self.eval(a)?;
+                    }
+                }
                 self.bind(name, f);
             }
             Stmt::Global(names) => {
