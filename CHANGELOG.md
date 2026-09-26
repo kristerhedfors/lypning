@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-26** — lypning-l answers `glob.glob()` unsorted, in CPython's own order (PR pending)
+**2026-09-26** — lypning-l answers `glob.glob()` unsorted, in CPython's own order ([#133](https://github.com/kristerhedfors/lypning/pull/133))
 
 - An eager `glob.glob(P[, recursive=])` is served in any position: a bare
   `for` loop, `print`, `[0]`, `glob(a) + glob(b)`. `glob.rs` already yields in
