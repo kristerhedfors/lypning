@@ -465,6 +465,18 @@ fn iglob(it: &mut Interp, out: &mut Vec<String>, pattern: &str, rec: bool, diron
         let mut names = Vec::new();
         if has_magic(basename) {
             if rec && basename == "**" {
+                // `**` under a dirname that is not a directory — missing, a
+                // file, a broken link, or the `''` a magic dirname such as
+                // `**/**` yields first. 3.11+ yield nothing for it, which is
+                // what `glob2` answers; 3.9 and 3.10 yield `''` regardless
+                // (`glob('nope/**')` is `['nope/']`, and 3.9 keeps a second
+                // `''` in `**/**`). Measured on 3.9-3.14, 2026-09-26.
+                if !isdir(&d) && !(crate::err::REF_PY_KNOWN && crate::err::REF_PY_MINOR >= 11) {
+                    return Err(refuse(&format!(
+                        "glob('{d}/**', recursive=True) over a path that is not a directory: \
+                         CPython 3.9/3.10 answer '{d}/', 3.11+ answer []"
+                    )));
+                }
                 glob2(it, &mut names, &d, dironly, 0)?;
             } else {
                 glob1(&mut names, &d, basename, dironly)?;

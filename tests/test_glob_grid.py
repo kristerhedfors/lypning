@@ -521,6 +521,25 @@ RUNTIME_BACKSTOP = [
     "print(len(glob.glob('**', recursive=True)))",
 ]
 
+#: `**` under a dirname that is NOT a directory — missing, a file, a broken
+#: link, or the `''` a magic dirname such as `**/**` yields first. The one place
+#: CPython's unsorted answer differs by minor (measured 2026-09-26 on 3.9.6,
+#: 3.10.20, 3.11.15, 3.12.13, 3.13.13 and 3.14.5): 3.9 and 3.10 yield `''` for
+#: the dirname regardless, so `glob('nope/**')` is `['nope/']`, where 3.11+
+#: answer `[]`; and 3.9 alone keeps a leading `''` in `**/**`. The engine
+#: answers the 3.11+ shape, so a build whose reference is older refuses it.
+STARSTAR_NOT_A_DIR = [G + x for x in [
+    "print(glob.glob('nope/**', recursive=True))",
+    "print(glob.glob('no_ext/**', recursive=True))",
+    "print(glob.glob('broken/**', recursive=True))",
+    "print(glob.glob('nope/**/**', recursive=True))",
+    "print(sorted(glob.glob('nope/**', recursive=True)))",
+    "print(len(glob.glob('no_ext/**', recursive=True)))",
+    "print(sorted(glob.glob('**/**', recursive=True)))",
+    "print(len(glob.glob('**/**', recursive=True)))",
+    "print(len(glob.glob('**/**/**', recursive=True)))",
+]]
+
 #: The commit barrier, merged into the listing. Each row WRITES and then LISTS,
 #: which is the shape the corpus actually types (`glob-pattern`).
 STAGED = [G + x for x in [
@@ -752,6 +771,55 @@ def test_what_stays_a_runtime_refusal_still_refuses(call: str) -> None:
         "this must still refuse — the static half deliberately cannot see it\n"
         "  program: %r\n  stdout: %r" % (program, got.stdout[:200]))
     assert "unsupported: " in got.stderr, got.stderr[:200]
+
+
+def _minor_of(exe: str) -> str | None:
+    try:
+        out = subprocess.run([exe, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+                             capture_output=True, text=True, timeout=30)
+    except OSError:
+        return None
+    return out.stdout.strip() or None
+
+
+def _interpreters() -> dict[str, str]:
+    """Every CPython minor this host has on PATH (and the system 3.9), by minor."""
+    import shutil
+    found: dict[str, str] = {}
+    for exe in [sys.executable, "/usr/bin/python3"] + [
+            "python3.%d" % m for m in range(9, 15)]:
+        path = exe if os.path.isabs(exe) else shutil.which(exe)
+        if path and os.path.exists(path):
+            minor = _minor_of(path)
+            if minor and minor not in found:
+                found[minor] = path
+    return found
+
+
+@needs_l
+@pytest.mark.parametrize("program", STARSTAR_NOT_A_DIR, ids=range(len(STARSTAR_NOT_A_DIR)))
+def test_a_starstar_over_a_non_directory_answers_only_for_its_own_minor(program: str) -> None:
+    """Answered on a 3.11+ reference, byte-equal to that reference; refused
+    (`glob`, exit 90, empty stdout) on an older one, whose CPython answers
+    differently. Every interpreter this host has is asked too, so the row also
+    pins the split it exists for: 3.11+ agree with each other."""
+    ref = engines.reference_minor(BINARY)
+    got = _run([str(BINARY)], program)
+    pythons = _interpreters()
+    answers = {m: _run([exe], program) for m, exe in pythons.items()}
+    newer = {m: (a.stdout, a.returncode) for m, a in answers.items()
+             if int(m.split(".")[1]) >= 11}
+    assert len(set(newer.values())) <= 1, (program, newer)
+    if ref is None or int(ref.split(".")[1]) < 11:
+        assert _refusal_problem(got) is None, (program, got.stderr)
+        assert ": glob: " in got.stderr, got.stderr
+        return
+    if got.returncode == engines.UNSUPPORTED_EXIT:
+        assert _refusal_problem(got) is None, (program, got.stderr)
+        pytest.skip("lypning-l refuses this row: %s" % got.stderr.strip()[:160])
+    want = answers.get(ref) or _run([sys.executable], program)
+    assert (got.stdout, got.returncode) == (want.stdout, want.returncode), (
+        program, got.stdout, want.stdout)
 
 
 @needs_l
