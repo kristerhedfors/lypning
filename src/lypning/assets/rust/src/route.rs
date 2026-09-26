@@ -1365,8 +1365,18 @@ struct Requirements {
     glob_names: Vec<(String, String)>,
     /// The call nodes the parent blessed as order-blind, by identity. The walk
     /// borrows one live AST for its whole run, so no node is freed and no
-    /// address is reused; nothing is dereferenced through these.
+    /// address is reused; nothing is dereferenced through these. On lypning-l
+    /// [`static_stop_check`] hands them to `glob::set_order_shown`: the run
+    /// evaluates this same AST, so a blessed address is the node `eval`
+    /// dispatches, and every other glob call's order counts as shown.
     glob_blessed: Vec<*const Expr>,
+    /// Every name the walk met in a VALUE position. After the walk, one of
+    /// them naming the `glob` module or a listing function — under any alias,
+    /// including one bound BELOW the reference (`def f(): return G` above
+    /// `import glob as G`) — is a module escape, and every listing's order
+    /// counts as shown.
+    #[cfg(feature = "cap-glob")]
+    glob_values: Vec<std::rc::Rc<str>>,
     /// The `random.Random` / `sys.version_info` nodes whose PARENT is one of
     /// the shapes [`CAP_ATTRS`] serves them in, by identity like
     /// `glob_blessed`. Filled by [`bless_cap_shapes`] before the child is
@@ -1540,6 +1550,23 @@ impl Requirements {
 
     fn block_glob_order(&mut self) {
         self.stop("glob-order", GLOB_ORDER.to_string());
+    }
+
+    /// Did a name bound to the `glob` module, or to one of its two listing
+    /// functions, escape as a VALUE anywhere in the program? Then no call
+    /// node tells the run what it will be handed, and every listing's order
+    /// counts as shown. See [`Self::glob_values`].
+    #[cfg(feature = "cap-glob")]
+    fn glob_escaped(&self) -> bool {
+        self.glob_values.iter().any(|n| {
+            let n = n.as_ref();
+            n == "glob"
+                || self.aliases.iter().any(|(a, p)| a == n && p == "glob")
+                || self
+                    .glob_names
+                    .iter()
+                    .any(|(b, f)| b == n && matches!(f.as_str(), "glob" | "iglob"))
+        })
     }
 
     /// Replace a `module: import X` blocker with a `module-attr: X.name` one.
@@ -3680,6 +3707,11 @@ pub fn except_clause(dotted: Option<(&str, &str)>, k: &str) -> (bool, bool) {
 /// substring guard above means a program that never mentions either name pays
 /// nothing.
 pub fn static_stop_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
+    // The fail-safe default, on EVERY run and before the guard below: a host
+    // that runs many programs in one process must not inherit the previous
+    // program's "not shown". Only a complete walk clears it.
+    #[cfg(feature = "cap-glob")]
+    crate::glob::set_order_shown(true, Vec::new());
     let mentioned = src.contains("glob") || src.contains("hashlib");
     // Behind the features, so the frozen core's guard is the bytes it was.
     #[cfg(feature = "cap-textwrap")]
@@ -3696,6 +3728,11 @@ pub fn static_stop_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
         ..Requirements::default()
     };
     walk_program(body, &mut req);
+    #[cfg(feature = "cap-glob")]
+    crate::glob::set_order_shown(
+        req.glob_escaped(),
+        req.glob_blessed.iter().map(|p| *p as usize).collect(),
+    );
     match req.spectrum_stop {
         Some((k, d)) => Err(crate::err::unsupported(&k, &d)),
         None => Ok(()),
@@ -4108,6 +4145,8 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
     let shaped_attr = bless_cap_shapes(e, req);
     match e {
         Expr::Name(n) => {
+            #[cfg(feature = "cap-glob")]
+            req.glob_values.push(n.clone());
             // The `time` module, or a served `time` function, anywhere but the
             // callee of a call (which the Call arm never walks down to): a
             // value this engine would have to print as `<module 'time'

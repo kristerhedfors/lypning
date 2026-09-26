@@ -1438,7 +1438,13 @@ impl Interp {
                 }
                 match method {
                     Some((recv, m)) => crate::methods::call_method(self, &recv, m, &mut a, kw)?,
-                    None => self.call(&f, &mut a, kw)?,
+                    None => {
+                        // `glob.rs` asks whether THIS call node is one the
+                        // walk blessed as order-blind.
+                        #[cfg(feature = "cap-glob")]
+                        crate::glob::at_call(e);
+                        self.call(&f, &mut a, kw)?
+                    }
                 }
             }
         })

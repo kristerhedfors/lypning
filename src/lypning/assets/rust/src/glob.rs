@@ -139,6 +139,7 @@ use crate::eval::Interp;
 use crate::io as mio;
 use crate::modules::normpath;
 use crate::value::{list, truthy, Value};
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 /// The names this module serves — `route::GLOB_SERVED` itself, not a copy of
@@ -149,6 +150,68 @@ use crate::route::GLOB_SERVED as SERVED;
 
 pub fn refuse(what: &str) -> LypningError {
     unsupported("glob", what)
+}
+
+thread_local! {
+    /// `true` until a complete walk proves no name bound to the module or to a
+    /// listing function escaped as a value — see [`set_order_shown`].
+    static ESCAPED: Cell<bool> = const { Cell::new(true) };
+    /// The call nodes the walk blessed as order-blind, by address.
+    static BLESSED: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+    /// The call node `eval` is about to dispatch — see [`at_call`].
+    static CALL: Cell<usize> = const { Cell::new(0) };
+    /// Whether the listing in progress belongs to a call whose order shows.
+    static ORDER_SHOWN: Cell<bool> = const { Cell::new(true) };
+}
+
+/// Set by `route::static_stop_check` on entry to EVERY run to the fail-safe
+/// `(true, [])` — a host that runs many programs in one process must not
+/// inherit the last one's answer — and then to what its complete walk found:
+/// whether the module escaped as a value, and which `glob`/`iglob` call nodes
+/// an order-blind wrapper blessed. The walk and the run share one AST, so a
+/// node is the same address in both; a node the run reaches through a copy
+/// (a lambda body, a generator) is simply not found, which is "shown".
+pub fn set_order_shown(escaped: bool, blessed: Vec<usize>) {
+    ESCAPED.with(|c| c.set(escaped));
+    BLESSED.with(|b| *b.borrow_mut() = blessed);
+}
+
+/// Called by `eval` immediately before it dispatches a plain call, with the
+/// call's own node: nothing is evaluated between the two, so [`call`] reads
+/// the node of the call that reached it. A call that arrives any other way
+/// (a builtin handed the function) reads whatever node was dispatched last,
+/// which the walk never blessed — so it counts as shown.
+pub fn at_call(e: &crate::ast::Expr) {
+    CALL.with(|c| c.set(e as *const crate::ast::Expr as usize));
+}
+
+/// Is `t` the directory `dir` or somewhere below it? Both are real paths.
+fn at_or_below(t: &str, dir: &str) -> bool {
+    t.strip_prefix(dir)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/') || dir.ends_with('/'))
+}
+
+/// The refusal a listing raises when its order is visible and could differ
+/// from CPython's: this run changed something at or below the directory
+/// without CPython's `readdir` having seen it happen the same way.
+///
+/// A staged write is merged by APPENDING its name, where CPython sees the file
+/// wherever the filesystem put it; a staged delete or rename leaves a hole
+/// CPython's directory has and this one does not; and on overlayfs any write
+/// below a lower-layer directory copies up every directory above it, which
+/// moves those entries within THEIR parents' listings. An early commit
+/// (`io::commit` past the output threshold) writes the batch in an order
+/// that is not the program's, so a directory it touched counts too.
+fn order_touched(dir: &str) -> bool {
+    if !ORDER_SHOWN.with(Cell::get) {
+        return false;
+    }
+    let mut paths = mio::flushed_paths();
+    if mio::staging_active() {
+        paths.extend(mio::staged_write_paths());
+        paths.extend(mio::staged_delete_paths());
+    }
+    paths.iter().any(|p| at_or_below(&real_dir(split(p).0), dir))
 }
 
 /// `glob.<name>` as a value. A served name is a bound module method; every
@@ -223,6 +286,10 @@ pub fn call(it: &mut Interp, name: &str, args: &mut Args, kw: &[(Rc<str>, Value)
                     other => return Err(refuse(&format!("glob.{name}({other}=…)"))),
                 }
             }
+            let node = CALL.with(|c| c.replace(0));
+            let shown =
+                ESCAPED.with(Cell::get) || !BLESSED.with(|b| b.borrow().contains(&node));
+            ORDER_SHOWN.with(|c| c.set(shown));
             let mut out = Vec::new();
             iglob(it, &mut out, &pat, recursive, false)?;
             // `iglob` yields an empty string first when the pattern is empty or
@@ -408,10 +475,22 @@ fn listdir(dirname: &str, dironly: bool) -> R<Vec<String>> {
             }
         }
     }
-    if !mio::staging_active() {
+    let quiet = !mio::staging_active();
+    if quiet && mio::flushed_paths().is_empty() {
         return Ok(out);
     }
     let dir = real_dir(dirname);
+    if order_touched(&dir) {
+        return Err(unsupported(
+            "glob-order",
+            "glob() order the program can see, over a directory this run has written, \
+             renamed or removed something at or below (CPython lists each entry where \
+             the filesystem put it)",
+        ));
+    }
+    if quiet {
+        return Ok(out);
+    }
     let gone = mio::staged_delete_paths();
     if !gone.is_empty() {
         out.retain(|n| !staged_here(&gone, &dir, n));

@@ -563,7 +563,50 @@ STAGED = [G + x for x in [
     "import os\nos.remove('a.py')\nprint(len(glob.glob('*.py')))",
 ]]
 
-GRID = MATCHING + HIDDEN + STRING_ALGEBRA + ORDER_BLIND + STAGED
+#: The staging area against an ORDER the program can see. A staged write is
+#: merged by APPENDING its name, where CPython sees the file wherever the
+#: filesystem put it — and on overlayfs a write anywhere below a lower-layer
+#: directory copies up every directory above it, which moves them within their
+#: parents' listings. So a listing whose order shows refuses `glob-order` when
+#: this run has written, appended to, renamed or removed anything at or below
+#: the listed directory. Each row must refuse at 90 with an empty stdout and
+#: leave the tree exactly as it found it.
+STAGED_ORDER_SHOWN = [G + x for x in [
+    "open('d/new.py','w').close()\nprint(glob.glob('d/*'))",
+    "import os\nos.remove('d/a.py')\nprint(glob.glob('d/*'))",
+    "import os\nopen('d/n.py','w').close()\nos.rename('d/n.py','d/zz.py')\n"
+    "print(glob.glob('d/*'))",
+    "open('d/a.py','a').write('x')\nprint(glob.glob('d/*'))",
+    "open('d/a.py','w').write('x')\nprint(glob.glob('d/*'))",
+    # a nested level of a `**` walk, and — the overlay copy-up — a write BELOW
+    # the listed directory rather than in it
+    "open('d/e/n.py','w').close()\nprint(glob.glob('d/**', recursive=True))",
+    "open('d/e/n','w').close()\nprint(glob.glob('d/*'))",
+    "open('d/e/n','w').close()\nprint(glob.glob('*'))",
+    "open('n.py','w').close()\nfor p in glob.glob('*.py'): print(p)",
+    # `key=` reads the input order for ties, so it is not blessed
+    "open('d/n','w').close()\nprint(sorted(glob.glob('d/*'), key=len))",
+    # a module escape: the walk cannot see which call this is, so every
+    # listing's order counts as shown
+    "m = glob\nopen('d/n','w').close()\nprint(sorted(m.glob('d/*')))",
+    "def f(): return G\nimport glob as G\nopen('d/n','w').close()\n"
+    "print(sorted(f().glob('d/*')))",
+]]
+
+#: …and the same writes where the order does NOT show, or the listing is of
+#: a directory nothing was written at or below: answered, and graded.
+STAGED_ORDER_BLIND = [G + x for x in [
+    "open('d/new.py','w').close()\nprint(sorted(glob.glob('d/*')))",
+    "open('d/new.py','w').close()\nprint(len(glob.glob('d/*')))",
+    "open('d/e/n.py','w').close()\nprint(sorted(glob.glob('d/*')))",
+    "open('empty/new','w').close()\nprint(glob.glob('d/*'))",
+    "open('d/e/n','w').close()\nprint(glob.glob('d/e/f/*'), glob.glob('.hd/*'))",
+    # writes AFTER the listing: the loop's own call listed before any of them
+    "for p in glob.glob('d/*.py'): open(p,'a').write('#')\n"
+    "print(sorted(glob.glob('d/*.py')))",
+]]
+
+GRID = MATCHING + HIDDEN + STRING_ALGEBRA + ORDER_BLIND + STAGED + STAGED_ORDER_BLIND
 
 
 def _spectrum(binary: Path) -> dict | None:
@@ -820,6 +863,47 @@ def test_a_starstar_over_a_non_directory_answers_only_for_its_own_minor(program:
     want = answers.get(ref) or _run([sys.executable], program)
     assert (got.stdout, got.returncode) == (want.stdout, want.returncode), (
         program, got.stdout, want.stdout)
+
+
+def _tree_listing(root: str) -> list[str]:
+    out = []
+    for base, dirs, files in os.walk(root):
+        for n in dirs + files:
+            p = os.path.join(base, n)
+            out.append((os.path.relpath(p, root), os.path.getsize(p) if os.path.isfile(p) else -1))
+    return sorted(out)
+
+
+@needs_l
+@pytest.mark.parametrize("program", STAGED_ORDER_SHOWN, ids=range(len(STAGED_ORDER_SHOWN)))
+def test_a_visible_order_over_a_directory_this_run_changed_refuses(program: str) -> None:
+    with tempfile.TemporaryDirectory() as d:
+        _tree(d)
+        before = _tree_listing(d)
+        got = subprocess.run([str(BINARY), "-c", program], capture_output=True,
+                             text=True, cwd=d, timeout=60)
+        after = _tree_listing(d)
+    assert _refusal_problem(got) is None, (program, got.stdout[:200], got.stderr)
+    assert ": glob-order: " in got.stderr, got.stderr
+    assert after == before, (program, set(after) ^ set(before))
+
+
+@needs_l
+def test_a_listing_after_an_early_commit_refuses_rather_than_answering() -> None:
+    """Past the output threshold `io::commit` flushes the staging area, and a
+    later listing would no longer see the run's write as staged — while the
+    commit created it in its own order, not at the program's `open()`. The
+    refusal lands after the flush, so it is exit 1 and not 90; what matters is
+    that no order is printed."""
+    program = G + ("open('d/n','w').close()\nprint('x' * (9 << 20))\n"
+                   "print(glob.glob('d/*'))")
+    with tempfile.TemporaryDirectory() as d:
+        _tree(d)
+        got = subprocess.run([str(BINARY), "-c", program], capture_output=True,
+                             text=True, cwd=d, timeout=120)
+    assert got.returncode in (1, engines.UNSUPPORTED_EXIT), got.returncode
+    assert "unsupported: glob-order: " in got.stderr, got.stderr[-300:]
+    assert "['d/" not in got.stdout
 
 
 @needs_l
