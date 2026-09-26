@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-26** — The coverage table on the live landing page (PR pending)
+**2026-09-26** — The coverage table on the live landing page ([#132](https://github.com/kristerhedfors/lypning/pull/132))
 
 - lypning.dev is GitHub Pages in legacy mode: it renders `README.md` from
   `main`, not the `site/` build `pages.yml` deploys. So the Coverage section
