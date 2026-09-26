@@ -592,8 +592,8 @@ BEFORE_IMPORT = [
      "NameError: name 'prnt' is not defined. Did you mean: 'print'?"),
     ("import os\ndef f():\n    import time\nprnt(1)",
      "NameError: name 'prnt' is not defined. Did you mean: 'print'?"),
-    ("def g(alpha): pass\ng(alpah=1)\nimport time",
-     "TypeError: g() got an unexpected keyword argument 'alpah'. Did you mean 'alpha'?"),
+    ("'abc'.uper()\nimport time",
+     "AttributeError: 'str' object has no attribute 'uper'. Did you mean: 'upper'?"),
 ]
 
 

@@ -156,16 +156,10 @@ CASES = [
     ("bytes-in-out-of-range", "try:\n    300 in b'abc'\nexcept ValueError as e:\n    print(e)"),
     ("bytes-in-negative", "try:\n    -1 in b'abc'\nexcept ValueError as e:\n    print(e)"),
     ("bytes-in-ok", "print(1 in b'abc', 97 in b'abc', True in b'abc')"),
-    # A KEYWORD SILENTLY REFILLED A PARAMETER THE POSITIONALS HAD FILLED. The
-    # binder looked the name up and inserted over the top, so `f(1, a=2)` ran
-    # with a=2 where CPython raises, and `f(1, 2, a=9)` ran with a=9 AND b=2 —
-    # a function executing on data the caller never passed together, at exit 0.
-    ("dup-arg-single", "def f(a):\n    return a\ntry:\n    print(f(1, a=2))\nexcept TypeError as e:\n    print(e)"),
-    ("dup-arg-two", "def f(a, b):\n    return (a, b)\ntry:\n    print(f(1, 2, a=9))\nexcept TypeError as e:\n    print(e)"),
-    ("dup-arg-default", "def f(a, b=5):\n    return (a, b)\ntry:\n    print(f(1, 2, b=9))\nexcept TypeError as e:\n    print(e)"),
-    ("dup-arg-star", "def f(a, *b):\n    return (a, b)\ntry:\n    print(f(1, 2, a=9))\nexcept TypeError as e:\n    print(e)"),
-    # ...and every legal way of filling the same parameters still works, because
-    # the check is on the USED bit and not on the name appearing twice.
+    # A keyword that refills a parameter the positionals filled refuses (the
+    # dup-arg rows in REFUSES); every legal way of filling the same parameters
+    # still works, because the check is on the USED bit and not on the name
+    # appearing twice.
     ("bind-ok-defaults", "def f(a, b=2):\n    return (a, b)\nprint(f(1), f(1, 3), f(a=1), f(1, b=9), f(b=9, a=1))"),
     ("bind-ok-varargs", "def f(a, *b, **k):\n    return (a, b, k)\nprint(f(1, 2, 3, x=4))"),
     ("bind-ok-unpacked", "def f(a):\n    return a\nprint(f(*[5]), f(**{'a': 6}))"),
@@ -824,7 +818,17 @@ REFUSES = [
     # `KeyError` stores `repr(key)` so that `str(e)` can be `"'k'"`; the key
     # itself is therefore not recoverable and only `args` refuses. `str` and
     # `repr` of the same value still answer — see `keyerror-str-quotes` above.
-    ("keyerror-args", 'print(KeyError("k").args)'),
+    ("keyerror-args", 'print(KeyError("k").args)'),    # A KEYWORD SILENTLY REFILLED A PARAMETER THE POSITIONALS HAD FILLED. The
+    # binder looked the name up and inserted over the top, so `f(1, a=2)` ran
+    # with a=2 where CPython raises, and `f(1, 2, a=9)` ran with a=9 AND b=2 —
+    # a function executing on data the caller never passed together, at exit 0.
+    # The binder caught it, and then worded it `f() got multiple values`, where
+    # CPython names the function by its qualified name from 3.10. Every binding
+    # error refuses now (`err::bind_refused`), so these moved here from CASES.
+    ("dup-arg-single", "def f(a):\n    return a\ntry:\n    print(f(1, a=2))\nexcept TypeError as e:\n    print(e)"),
+    ("dup-arg-two", "def f(a, b):\n    return (a, b)\ntry:\n    print(f(1, 2, a=9))\nexcept TypeError as e:\n    print(e)"),
+    ("dup-arg-default", "def f(a, b=5):\n    return (a, b)\ntry:\n    print(f(1, 2, b=9))\nexcept TypeError as e:\n    print(e)"),
+    ("dup-arg-star", "def f(a, *b):\n    return (a, b)\ntry:\n    print(f(1, 2, a=9))\nexcept TypeError as e:\n    print(e)"),
 ]
 
 

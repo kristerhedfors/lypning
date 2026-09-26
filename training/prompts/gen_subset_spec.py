@@ -297,7 +297,7 @@ RECIPES: Dict[str, Tuple[str, str, str]] = {
                 "those functions on well-formed input; `bytes.fromhex(s)` and `b.hex()`"),
     "struct": (NAMES, "a `struct` call outside `pack unpack unpack_from calcsize`, a code outside `x c b B ? h H i I l L q Q s d`, or input that would raise `struct.error`",
                "an explicit byte order (`'<'`, `'>'`) and in-range values"),
-    "call": (VALUES, "a keyword given twice through `**`, `**` over something that is not a dict, or a wrong-arity or unknown-keyword call in a program that uses a decorator, a keyword-only parameter or a module only the larger build serves",
+    "call": (VALUES, "a keyword given twice through `**`, `**` over something that is not a dict, `*` over a non-iterable, or any call whose arguments do not bind (wrong arity, an unknown or repeated keyword, a positional-only name by keyword)",
             "pass each keyword once, `**` only a dict, and call functions with the arguments they take"),
     "except": (SYNTAX, "an `except` clause other than a name or a flat parenthesised tuple of names (`except ((A, B), C)`, `except A, B`)",
               "`except (A, B, C):`"),

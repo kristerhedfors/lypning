@@ -66,7 +66,7 @@ One line per refusal kind: what fires it, then the way to stay inside.
 - `aug-assign` — `d |= x` where `d` is a dict and `x` is not one. Stay inside: `d.update(x)`.
 - `bigint` — an integer shape this build cannot carry exactly (most arithmetic past 64 bits is served). Stay inside: keep integers within 64 bits where the task allows.
 - `bytes-method` — a bytes method outside `decode hex lower upper find replace join`. Stay inside: decode to `str` and use the str methods.
-- `call` — a keyword given twice through `**`, `**` over something that is not a dict, or a wrong-arity or unknown-keyword call in a program that uses a decorator, a keyword-only parameter or a module only the larger build serves. Stay inside: pass each keyword once, `**` only a dict, and call functions with the arguments they take.
+- `call` — a keyword given twice through `**`, `**` over something that is not a dict, `*` over a non-iterable, or any call whose arguments do not bind (wrong arity, an unknown or repeated keyword, a positional-only name by keyword). Stay inside: pass each keyword once, `**` only a dict, and call functions with the arguments they take.
 - `class-union` — a `|` union of classes (`int | None`). Stay inside: no runtime type unions.
 - `dict-method` — a dict method outside `get keys values items setdefault pop popitem update copy clear`. Stay inside: use those.
 - `dunder-attr` — reading a data-model dunder such as `.__dict__` or `.__class__`. Stay inside: do not introspect objects.

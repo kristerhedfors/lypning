@@ -58,7 +58,6 @@ TAILS = [
     "undefined_name\n",
     "x = 1\nx.foo\n",
     "d = {}\nd.nosuch()\n",
-    "def f(a):\n    return a\nf(b=1)\n",
     "print('ok')\n",
 ]
 
@@ -101,7 +100,7 @@ ARMED = [
     "def f():\n    import time\nprint('ok')\nundefined",
     "import random\nif False:\n    random.shuffle([])\nprint('ok')\nundefined",
     "while False:\n    import textwrap\nx = 1\nx.foo",
-    "if False:\n    import statistics\ndef f(a):\n    return a\nf(b=1)",
+    "if False:\n    import statistics\ndef f(a):\n    return a\nf(1).nosuch",
     "if False:\n    import textwrap\nprint('a' * 9000000)",
     "barry_as_FLUFL = 1\nprint(barry_as_FLUFL)",
     "def barry_as_FLUFL(): return 2\nprint(barry_as_FLUFL())",
@@ -296,14 +295,9 @@ def test_a_capability_that_never_runs_holds_nothing(program: str) -> None:
 CORE_OWN = [
     "def f(a: print('ann') = print('def'), b: print('b') = print('bd')) -> print('ret'): pass",
     "try:\n    def g(a: undefined = 1/0): pass\nexcept Exception as e:\n    print(type(e).__name__)",
-    # Un-held, a binding error keeps the core's words — lypning-l refuses it
-    # only in a held run — and so do a function as a set element and `*`
-    # over a non-iterable. Each is a known core difference from CPython
-    # (the qualified name, identity hashing), which is the core's to fix.
-    "def o():\n    def f(a): return a\n    return f\ntry:\n    o()(1, 2)\nexcept TypeError as e:\n    print(e)",
-    "def f(a, /): return a\ntry:\n    f(a=1)\nexcept TypeError as e:\n    print(e)",
+    # A function as a set element: a known core difference from CPython
+    # (identity hashing), which is the core's to fix; lypning-l keeps it.
     "def f(): pass\ntry:\n    print(f in {f})\nexcept TypeError as e:\n    print(e)",
-    "def f(*a): pass\ntry:\n    f(*1)\nexcept TypeError as e:\n    print(e)",
     "x = 3 @ 4",
 ]
 
@@ -317,6 +311,30 @@ def test_a_path_lypning_l_replaced_answers_as_the_core(program: str) -> None:
     larger = _run(LARGER, program)
     assert (larger.returncode, larger.stdout, larger.stderr) == \
         (core.returncode, core.stdout, core.stderr), (program, core, larger)
+
+
+#: A binding error — held or not, caught or not — and `*` over a non-iterable:
+#: CPython's message names the function by a qualified name each minor spells
+#: its own way, so BOTH variants refuse it, as `call`, with the same detail.
+#: These were the core's own words, un-held, and a known difference from
+#: CPython (`o.<locals>.f()`); now neither variant builds a message at all.
+BOTH_REFUSE = [
+    "def f(a):\n    return a\nf(b=1)\n",
+    "# itertools is not needed here\ndef f(a):\n    return a\nf(b=1)\n",
+    "def o():\n    def f(a): return a\n    return f\ntry:\n    o()(1, 2)\nexcept TypeError as e:\n    print(e)",
+    "def f(a, /): return a\ntry:\n    f(a=1)\nexcept TypeError as e:\n    print(e)",
+    "def f(*a): pass\ntry:\n    f(*1)\nexcept TypeError as e:\n    print(e)",
+]
+
+
+@needs_both
+@pytest.mark.parametrize("program", BOTH_REFUSE, ids=range(len(BOTH_REFUSE)))
+def test_a_binding_error_refuses_the_same_way_in_both(program: str) -> None:
+    core, larger = _run(CORE, program), _run(LARGER, program)
+    for engine, got in ((engines.LYPNING, core), (engines.LYPNING_L, larger)):
+        assert (got.returncode, got.stdout) == (engines.UNSUPPORTED_EXIT, b""), (engine, got)
+        assert got.stderr.decode().startswith("%s: unsupported: call: " % engine), got.stderr
+    assert core.stderr.split(b": ", 1)[1] == larger.stderr.split(b": ", 1)[1]
 
 
 REJECTED_PROGRAMS = [h + b for h in REJECTED_HEADS for b in REJECTED]

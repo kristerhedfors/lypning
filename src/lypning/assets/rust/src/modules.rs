@@ -825,7 +825,7 @@ pub fn call_module_method(
             let text = match args.first() {
                 Some(Value::Bytes(b)) => crate::iter::decode_utf8(b)?,
                 Some(v) => fmt::to_str(v)?,
-                None => return Err(type_err("loads() missing 1 required positional argument")),
+                None => return Err(bind_refused()),
             };
             json::parse(&text)?
         }
@@ -833,7 +833,7 @@ pub fn call_module_method(
             let f = args
                 .first()
                 .cloned()
-                .ok_or_else(|| type_err("load() missing 1 required positional argument"))?;
+                .ok_or_else(bind_refused)?;
             let text = crate::methods::call_method(it, &f, "read", &mut Args::new(), Vec::new())?;
             json::parse(&fmt::to_str(&text)?)?
         }
@@ -844,7 +844,7 @@ pub fn call_module_method(
         ("json", "dumps") => Value::Str(
             json::dumps(
                 args.first()
-                    .ok_or_else(|| type_err("dumps() missing 1 required positional argument"))?,
+                    .ok_or_else(bind_refused)?,
                 &kw,
             )?
             .into(),
@@ -852,7 +852,7 @@ pub fn call_module_method(
         ("json", "dump") => {
             let text = json::dumps(
                 args.first()
-                    .ok_or_else(|| type_err("dump() missing arguments"))?,
+                    .ok_or_else(bind_refused)?,
                 &kw,
             )?;
             let f = args

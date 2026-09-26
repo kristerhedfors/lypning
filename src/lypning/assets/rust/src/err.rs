@@ -219,6 +219,22 @@ pub fn unsupported(kind: &str, detail: &str) -> LypningError {
     })
 }
 
+/// A call whose arguments do not bind — too many or too few positionals, an
+/// unexpected keyword, a value given twice, a positional-only name passed by
+/// keyword, a missing argument to a served library function. It REFUSES, in
+/// every variant: CPython's `TypeError` names the function by its qualified
+/// name from 3.10 (`o.<locals>.f()`, `<genexpr>.<lambda>()`), counts every
+/// missing argument at once (`missing 3 required positional arguments: 'a',
+/// 'b', and 'c'`), names the parameter (`loads() missing 1 required positional
+/// argument: 's'`), says `positional-only arguments passed as keyword
+/// arguments`, and adds `Did you mean` on 3.14. No wording this engine could
+/// build is right on every minor, so none is built; the refusal is exact.
+#[cold]
+#[inline(never)]
+pub fn bind_refused() -> LypningError {
+    unsupported("call", "a binding error, which CPython words by version")
+}
+
 pub type R<T> = Result<T, LypningError>;
 
 pub fn type_err(msg: impl Into<String>) -> LypningError {
