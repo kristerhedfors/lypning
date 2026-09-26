@@ -3756,7 +3756,7 @@ pub fn static_stop_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
 /// The capabilities whose programs every Rust rung refused before this branch
 /// served them — each went to CPython, and got CPython's `Did you mean`
 /// suggestion, which no variant computes (`err::forgot_import`).
-#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
 const HINT_HELD_CAPS: &[&str] = &[
     "cap-ast",
     "cap-binascii",
@@ -3778,7 +3778,7 @@ const HINT_HELD_CAPS: &[&str] = &[
 /// core blocks as `module: from __future__ import …`. Empty means the core's
 /// walk blocks on no capability, so as far as capabilities go the router picks
 /// the core — and what the core answers, this variant must answer the same.
-#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
 fn core_lacks(req: &Requirements, future_head: bool) -> Vec<&'static str> {
     // The core's caps are empty, so a module some CAPS row lists is one the
     // core's walk blocks; a module no row lists is the core's own, or nobody's.
@@ -3799,6 +3799,10 @@ fn core_lacks(req: &Requirements, future_head: bool) -> Vec<&'static str> {
     if req.fromhex {
         out.push("cap-binascii");
     }
+    // A decorator or a keyword-only parameter: the core's PARSER refuses it,
+    // before the first statement, and `cap-future` answers both kinds.
+    #[cfg(feature = "cap-future")]
+    let future_head = future_head || crate::parse::funcsig_used();
     if future_head {
         out.push("cap-future");
     }
@@ -3808,12 +3812,12 @@ fn core_lacks(req: &Requirements, future_head: bool) -> Vec<&'static str> {
 /// Does the core's walk admit this program, as far as capabilities go? See
 /// [`core_lacks`]; `pub` for the test that holds the two variants' answers to
 /// each other.
-#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
 pub fn core_admits(body: &[Stmt], src: &str) -> bool {
     core_lacks(&walk_for_hold(body, src), has_future_head(src)).is_empty()
 }
 
-#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
 fn walk_for_hold(body: &[Stmt], src: &str) -> Requirements {
     let mut req = Requirements {
         glob_wrappers: trusted_wrappers(src),
@@ -3826,7 +3830,7 @@ fn walk_for_hold(body: &[Stmt], src: &str) -> Requirements {
 /// Did the parse remove a served `from __future__` head? It did exactly when a
 /// NAME token spells `__future__` in a program that parsed: `future.rs`
 /// refuses every other such name. A string or a comment is not a name.
-#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
 fn has_future_head(src: &str) -> bool {
     #[cfg(feature = "cap-future")]
     if src.contains("__future__") {
@@ -3853,7 +3857,7 @@ fn has_future_head(src: &str) -> bool {
 /// (`io::hold`), which is where the core, running the same program, refuses:
 /// an import that never runs (`if False: import time`) holds nothing, and the
 /// program is answered as the core answers it.
-#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
 pub fn hint_held(body: &[Stmt], src: &str) -> bool {
     core_lacks(&walk_for_hold(body, src), has_future_head(src))
         .iter()
@@ -3862,15 +3866,20 @@ pub fn hint_held(body: &[Stmt], src: &str) -> bool {
 
 /// Before the first statement, for a run [`hint_held`] says the core routes
 /// past itself: the run is ARMED (`io::arm`), and HELD where the capability
-/// runs (`io::hold`) — a served `__future__` head at once, since the core
-/// refuses it at its first statement. Until then it answers exactly as the
+/// runs (`io::hold`) — a served `__future__` head, a decorator or a
+/// keyword-only parameter at once, since the core refuses each before its
+/// first statement. Until then it answers exactly as the
 /// core answers (invariant 10). A routed run and a direct one are the same
 /// run: nothing in the environment says which it is.
-#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
 pub fn arm_hold(body: &[Stmt], src: &str) {
     if hint_held(body, src) {
         crate::io::arm();
-        if has_future_head(src) {
+        #[cfg(feature = "cap-future")]
+        let head = has_future_head(src) || crate::parse::funcsig_used();
+        #[cfg(not(feature = "cap-future"))]
+        let head = has_future_head(src);
+        if head {
             crate::io::hold();
         }
     }
@@ -3890,7 +3899,7 @@ pub fn core_refuses_attr(module: &str, name: &str) -> bool {
 /// Does running `module` mean running a capability the core lacks, one whose
 /// programs [`HINT_HELD_CAPS`] says went to CPython before — the point at
 /// which the core, running the same program, refuses (`io::hold`)?
-#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
 pub fn core_refuses_import(module: &str) -> bool {
     CAPS.iter().any(|(c, mods, _)| {
         HINT_HELD_CAPS.contains(c) && !SPECTRUM[0].caps.contains(c) && mods.contains(&module)

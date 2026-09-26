@@ -86,7 +86,60 @@ pub const MAX_CHAIN_OPS: u32 = 1000;
 /// accepted here that CPython's compiler rejects is not lax: it RUNS, and
 /// answers a program CPython never starts (`def f(a, a)`, `0777`, `break` at
 /// module level, `*a = [1]`, a tab/space mix CPython calls a `TabError`).
+#[cfg(not(feature = "cap-future"))]
+pub use self::parse_body as parse;
+
+/// The first of `decorator` and `kwonly` the parse in progress SERVED — the
+/// two refusal kinds the core's parser stops on and lypning-l answers under
+/// `cap-future`, and empty until one is served. Set by the parser itself,
+/// wherever the grammar reaches (an f-string field, a default, a decorator's
+/// own lambda), because a walk over the tree would have to be taught every
+/// place one can hide; read by `route::core_lacks` and `route::arm_hold`,
+/// which hold such a run from its first statement exactly as they hold a
+/// served `__future__` head: the core refuses the program before it starts.
+#[cfg(feature = "cap-future")]
+thread_local! {
+    static FUNCSIG: std::cell::Cell<&'static str> = const { std::cell::Cell::new("") };
+}
+
+/// Did the last [`parse`] on this thread serve a decorator or a keyword-only
+/// parameter? See [`FUNCSIG`].
+#[cfg(feature = "cap-future")]
+pub fn funcsig_used() -> bool {
+    !FUNCSIG.with(|f| f.get()).is_empty()
+}
+
+/// The parser served `kind` (`decorator` or `kwonly`); the first one sticks.
+#[cfg(feature = "cap-future")]
+fn note_funcsig(kind: &'static str) {
+    FUNCSIG.with(|f| {
+        if f.get().is_empty() {
+            f.set(kind)
+        }
+    });
+}
+
+/// [`parse_body`], and one rule on top: once the parse has served a decorator
+/// or a keyword-only parameter, a compile-time `SyntaxError` found later is a
+/// REFUSAL of that kind. The core's parser stops at the first `@` or
+/// keyword-only name, so it never reaches the error and exits 90; lypning-l
+/// does the same rather than print a `SyntaxError` the core never did — and
+/// the texts differ by version anyway (3.9 says `invalid syntax` for
+/// `def f(*, a, /)`, 3.12 renamed the default-order message).
+#[cfg(feature = "cap-future")]
 pub fn parse(src: &str) -> R<Vec<Stmt>> {
+    FUNCSIG.with(|f| f.set(""));
+    let r = parse_body(src);
+    let k = FUNCSIG.with(|f| f.get());
+    match r {
+        Err(e) if !k.is_empty() && matches!(e.kind(), crate::err::ErrKind::Syntax { .. }) => {
+            Err(unsupported(k, "a compile-time error after a decorator or keyword-only parameter"))
+        }
+        r => r,
+    }
+}
+
+pub fn parse_body(src: &str) -> R<Vec<Stmt>> {
     let mut p = Parser {
         t: tokenize(src)?,
         i: 0,

@@ -141,10 +141,10 @@ thread_local! {
     static DELETED: RefCell<crate::hash::Set<String>> =
         RefCell::new(crate::hash::Set::with_hasher(crate::hash::BuildFnv));
     /// See [`hold`].
-    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
     static HELD: RefCell<bool> = const { RefCell::new(false) };
     /// See [`arm`].
-    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
     static ARMED: RefCell<bool> = const { RefCell::new(false) };
     /// Every path an EARLY [`commit`] wrote or removed — see [`flushed_paths`].
     #[cfg(feature = "cap-glob")]
@@ -169,8 +169,9 @@ pub fn flushed_paths() -> Vec<String> {
 /// Called when a capability the CORE lacks actually RUNS — the import of a
 /// module only a [`crate::route::HINT_HELD_CAPS`] capability serves
 /// (`modules::import`), `random.sample`/`shuffle`/`Random` or
-/// `sys.version_info` being evaluated, or a served `__future__` head, which
-/// runs before the first statement. That is exactly the point at which the
+/// `sys.version_info` being evaluated, or a served `__future__` head, a
+/// decorator or a keyword-only parameter, each of which the core's parser
+/// refuses before the first statement. That is exactly the point at which the
 /// core, running the same program, would have refused: before it, the two
 /// binaries have done the same thing and must keep doing it (invariant 10);
 /// after it, the program is one only this variant answers. Every such program
@@ -188,17 +189,17 @@ pub fn flushed_paths() -> Vec<String> {
 /// dispatcher routed it here or it was run directly. What the walk decides is
 /// [`arm`] (`route::arm_hold`); only a served `__future__` head is held from
 /// the first statement.
-#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
 pub fn hold() {
     HELD.with(|h| *h.borrow_mut() = true);
 }
 
-#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
 pub fn held() -> bool {
     HELD.with(|h| *h.borrow())
 }
 
-#[cfg(not(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time")))]
+#[cfg(not(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future")))]
 pub fn held() -> bool {
     false
 }
@@ -211,12 +212,12 @@ pub fn held() -> bool {
 /// capability, if it does run later, still finds a run it can take back. A
 /// program that never reaches it commits at its end, byte for byte what the
 /// core printed.
-#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
 pub fn arm() {
     ARMED.with(|a| *a.borrow_mut() = true);
 }
 
-#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
 fn armed() -> bool {
     ARMED.with(|a| *a.borrow())
 }
@@ -229,18 +230,18 @@ fn armed() -> bool {
 /// capability never runs is one the core answers, and a refusal would be
 /// `lypning-l` doing worse than the core on it (invariant 10). The price is an
 /// uncaught error after 64 MiB that ends without CPython's `Did you mean`.
-#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
 pub const ARMED_LIMIT: usize = 8 * COMMIT_THRESHOLD;
 
 /// Does an armed run keep buffering past [`COMMIT_THRESHOLD`] at `len` bytes?
-#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
 fn defer_commit(len: usize) -> bool {
     armed() && !held() && len <= ARMED_LIMIT
 }
 
 
 /// The refusal a held run raises where it would otherwise commit.
-#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
 fn keep_reversible(what: &str) -> R<()> {
     if held() {
         return Err(unsupported(
@@ -347,9 +348,9 @@ fn maybe_commit() -> R<()> {
             ));
         }
         if !is_committed() && staged_len() > COMMIT_THRESHOLD {
-            #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+            #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
             keep_reversible("more than 8 MiB of staged file writes")?;
-            #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+            #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
             if defer_commit(staged_len()) {
                 return Ok(());
             }
@@ -359,9 +360,9 @@ fn maybe_commit() -> R<()> {
         return Ok(());
     }
     if !is_committed() && buffered_len() > COMMIT_THRESHOLD {
-        #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+        #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
         keep_reversible("more than 8 MiB of output")?;
-        #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+        #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
         if defer_commit(buffered_len()) {
             return Ok(());
         }
@@ -889,7 +890,7 @@ pub fn remove_dir(path: &str) -> R<()> {
         return Err(unsupported("rmdir", "os.rmdir() over a staged entry"));
     }
     let real = std::fs::canonicalize(path).ok();
-    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
     if held() && !real.as_ref().is_some_and(|r| MADE.with(|m| m.borrow().contains(r))) {
         keep_reversible("os.rmdir of a directory this run did not make")?;
     }
@@ -1248,9 +1249,9 @@ pub fn reset() {
     MADE.with(|m| m.borrow_mut().clear());
     COMMITTED.with(|c| *c.borrow_mut() = false);
     COMMIT_WHY.with(|w| *w.borrow_mut() = "");
-    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
     HELD.with(|h| *h.borrow_mut() = false);
-    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
     ARMED.with(|a| *a.borrow_mut() = false);
     STDIN.with(|s| *s.borrow_mut() = None);
     STDIN_POS.with(|p| *p.borrow_mut() = 0);

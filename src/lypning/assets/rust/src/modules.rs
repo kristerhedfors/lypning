@@ -93,7 +93,7 @@ pub fn import(path: &str) -> R<Value> {
             // See `io::hold`: the core refuses this import, so from here the
             // program is one only a capability answers, and the run must stay
             // reversible.
-            #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+            #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
             if crate::route::core_refuses_import(m) {
                 crate::io::hold();
             }
