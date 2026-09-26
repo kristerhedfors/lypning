@@ -709,3 +709,59 @@ def test_the_trainer_overlaps_by_default_records_it_and_keeps_it_out_of_every_id
     arm_check = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(arm_check)
     assert not {"scoring", "serial_scoring"} & set(arm_check.ARM_FIELDS)
+
+
+class Mask:
+    def __init__(self, lengths):
+        self.lengths = lengths
+
+    def sum(self, dim):
+        assert dim == 1
+        return SimpleNamespace(tolist=lambda: list(self.lengths))
+
+
+class LengthTokenizer(Tokenizer):
+    """Prompts as long as their task says (`t<len>`), left-padded to the longest."""
+    def __call__(self, texts, **kwargs):
+        assert isinstance(texts, list) and kwargs["padding"] is True and self.padding_side == "left"
+        self.batches = getattr(self, "batches", []) + [len(texts)]
+        lengths = [int(t.split("t")[-1]) for t in texts]
+        return Batch(input_ids=SimpleNamespace(shape=(len(texts), max(lengths))), attention_mask=Mask(lengths))
+
+
+def test_prefill_parts_are_the_fewest_contiguous_spans_under_the_budget():
+    ev = load_evaluation()
+    assert ev.prefill_parts([10, 10, 10, 10], 2, 80) == [[0, 1, 2, 3]], "a chunk that fits is one span"
+    assert ev.prefill_parts([10, 40, 10, 10], 2, 160) == [[0, 1], [2, 3]]
+    assert ev.prefill_parts([10, 10, 10, 434], 16, 48384) == [[0, 1, 2, 3]]
+    assert ev.prefill_parts([100, 100, 100], 4, 300) == [[0], [1], [2]], "an oversize case stands alone"
+    assert ev.PREFILL_TOKENS == 189 * 256
+
+
+def test_an_oversize_chunk_splits_the_same_way_in_both_arms_and_others_keep_their_seed(tmp_path, monkeypatch):
+    """Chunk 1 holds one long prompt: it is drawn as two parts, each padded to
+    its own longest and seeded by its own cases, identically in both arms. The
+    chunk under the budget keeps the seed it had before the budget existed."""
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(GenerationConfig=SimpleNamespace))
+    ev, torch = load_evaluation(), FakeTorch()
+    verifier = SimpleNamespace(score=lambda c, p: Score(1, "correct-native", 3, 3))
+    cases = [dict(case_id=str(i), family="f", task="t%d" % n, population="coverage")
+             for i, n in enumerate([5, 5, 5, 40])]
+    arms = []
+    for arm in ("base", "candidate", "unbudgeted"):
+        model, tok = Model(torch, [1, 99]), LengthTokenizer()
+        budget = None if arm == "unbudgeted" else 100
+        _, records = ev.evaluate(model, tok, cases, verifier, decoding(10), tmp_path / arm / "e.jsonl",
+                                 0, torch, seed=7, draws=2, return_records=True, sequences_per_call=4,
+                                 prefill_tokens=budget)
+        arms.append((tok.batches, [(r["case_id"], r["draw"], r["seed"]) for r in records]))
+        splits = tmp_path / arm / ev.PREFILL_SPLITS_FILE
+        assert splits.exists() == (budget is not None)
+    assert arms[0] == arms[1], "both arms split the same chunk the same way"
+    assert arms[0][0] == [2, 2, 1, 1] and arms[2][0] == [2, 2], "chunk 1 is tokenized whole, then per part"
+    seeds = lambda rows: {c: s for c, _, s in rows}  # noqa: E731
+    assert seeds(arms[0][1])["0"] == seeds(arms[2][1])["0"], "an unsplit chunk keeps its seed"
+    assert seeds(arms[0][1])["2"] != seeds(arms[0][1])["3"], "each part has its own seed"
+    assert [(c, d) for c, d, _ in arms[0][1]] == [(c, d) for c, d, _ in arms[2][1]], "(case, draw) order holds"
+    assert json.loads((tmp_path / "base" / ev.PREFILL_SPLITS_FILE).read_text()) == \
+        {"step": 0, "splits": [{"chunk_cases": 2, "padded": 40, "parts": [1, 1]}]}

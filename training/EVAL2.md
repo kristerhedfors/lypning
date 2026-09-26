@@ -305,6 +305,26 @@ confirmatory run. The verifier policy of that run is `l-correctness-v3`: a
 candidate whose two clean oracle runs disagree scores `unstable`, reward 0,
 instead of aborting the stage (`ORCHESTRATION.md` ledger, `training.POLICY`).
 
+### Amendment, 2026-09-26 — a chunk over the prefill budget is drawn in parts
+
+The seed-1111 finish (HF job 6ab6a20c6b030d633f691a95, 2026-09-25) completed
+both test arms, then ran out of CUDA memory in base-eval2's chunk 26 of 51: one
+434-token prompt padded that chunk's 256 sequences to 111,104 prefill tokens.
+The largest prefill that had ever run was 48,384 (pilot base-dev, 189 padded x
+256). Measured 2026-09-26 by `.github/scripts/eval2_shape.py`, aggregates only:
+eval-2 chunk padding p50 129, p90 164, max 434; three of 51 chunks exceed 189.
+
+From this date `train_verified --eval-prefill-tokens` (default
+`verified_evaluation.PREFILL_TOKENS`, 48,384) bounds one `generate` call. A
+chunk over it is drawn as the fewest contiguous parts that fit
+(`prefill_parts`), each seeded by `chunk_seed` of the cases it holds. The chunks
+themselves, `eval_sequences` and every chunk under the budget are unchanged,
+seed for seed. The split is a function of prompt lengths alone, so both arms
+split the same chunks the same way and pairing holds; `training_report`
+refuses two arms with different budgets. Each split is recorded, counts only,
+in the stage's `prefill-splits.jsonl`. No eval-2 chunk had been drawn before
+this rule, so no result changes; the arms of the rerun are the first.
+
 ### Equivalent-policy evaluation reuse (2026-09-22)
 
 The base is still generated in the current job's container and kernel. A newly

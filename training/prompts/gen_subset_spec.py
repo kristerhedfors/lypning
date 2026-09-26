@@ -327,6 +327,8 @@ RECIPES: Dict[str, Tuple[str, str, str]] = {
             "call `time.time()` or `time.perf_counter()` directly"),
     "type-attr": (VALUES, "an attribute of a type object such as `int.mro`",
                  "do not introspect types"),
+    "struct": (NAMES, "a `struct` call outside `pack unpack unpack_from calcsize`, a code outside `x c b B ? h H i I l L q Q s d`, or input that would raise `struct.error`",
+               "an explicit byte order (`'<'`, `'>'`) and in-range values"),
 }
 
 MODULE_NOTES: Dict[str, str] = {

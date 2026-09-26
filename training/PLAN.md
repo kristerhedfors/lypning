@@ -645,6 +645,17 @@ merges:
 `gh workflow run round02.yml --ref main -f stage=finish -f submit=SUBMIT -f seed=1111 -f finish_of=6ab52a686b030d633f68e503 -f sft_step=1050`.
 Not dispatched here.
 
+**First dispatch, 2026-09-25: failed in base-eval2.** HF job
+6ab6a20c6b030d633f691a95 (Actions 36161157776) passed every identity check and
+completed base-test (1,260 draws, 1 engine mismatch) and sft-test (1,260 draws,
+0). It then ran out of CUDA memory in the prefill of eval-2 chunk 26 of 51, whose
+one 434-token prompt padded 256 sequences to 111,104 tokens. The fix bounds a
+`generate` call's prefill and draws an oversize chunk in parts (`EVAL2.md` §4,
+amendment of 2026-09-26). The redispatch runs the whole finish again, both test
+arms included, so one job holds all four arms: the failed job reached chunk 26
+in about 228 minutes of wall clock, which puts a full rerun near 520 minutes,
+inside the 648-minute budget.
+
 ## Kill criteria (unchanged, `LADDER.md` §6)
 
 If Step 2 is flat **and** Step 3's supply is tiny, the model lever is capped
