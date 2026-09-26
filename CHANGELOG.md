@@ -34,6 +34,20 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   `struct.error`, `Struct`, `pack_into` and `iter_unpack` are routed into
   lypning-l and refused there: a late spawn, not a wrong answer.
 
+**2026-09-26** — Draw an oversize evaluation chunk in parts, so eval-2 fits the h200 ([#130](https://github.com/kristerhedfors/lypning/pull/130))
+
+- The seed-1111 finish (HF job 6ab6a20c6b030d633f691a95) completed both test
+  arms and then ran out of CUDA memory in base-eval2 chunk 26 of 51. One
+  434-token prompt had padded 256 sequences to 111,104 prefill tokens.
+- `--eval-prefill-tokens` (default 48,384, the largest prefill already run)
+  bounds a `generate` call. An oversize chunk is drawn as contiguous parts,
+  each seeded by its own cases. Chunks under the budget keep their seeds.
+- Both arms split identically. `training_report` refuses mismatched budgets,
+  and each split is logged, counts only, in `prefill-splits.jsonl`.
+- The finish job sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`.
+- `.github/scripts/eval2_shape.py` and `eval2-shape.yml` print chunk prompt
+  lengths, aggregates only. Recorded in `training/EVAL2.md` §4, 2026-09-26.
+
 **2026-09-26** — lypning-l answers `glob.glob()` unsorted, in CPython's own order ([#133](https://github.com/kristerhedfors/lypning/pull/133))
 
 - An eager `glob.glob(P[, recursive=])` is served in any position: a bare

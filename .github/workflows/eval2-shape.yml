@@ -1,0 +1,33 @@
+name: eval-2 chunk shape (aggregates only)
+
+# Free and read-only: the prompt-length shape of a finish's evaluation chunks,
+# from the private artifact repo. Lengths and counts; no case text.
+on:
+  push:
+    branches: ["round02/**"]
+    paths: [".github/scripts/eval2_shape.py", ".github/workflows/eval2-shape.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HF_HUB_DISABLE_PROGRESS_BARS: "1"
+      HF_HUB_VERBOSITY: error
+      QWEN_REV: 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q "huggingface-hub==1.31.0" "transformers==5.17.0" jinja2
+      - name: Chunk shape
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python .github/scripts/eval2_shape.py
