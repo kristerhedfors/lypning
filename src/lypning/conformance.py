@@ -122,8 +122,10 @@ _STDOUT_CLIP = 8192
 # --- what cannot be compared -------------------------------------------------
 
 # Programs that interrogate the INTERPRETER rather than compute something. By
-# construction these can never match: an engine IS a different executable and is
-# required not to claim a CPython version (docs/SUBSET.md). Reporting them as
+# construction these can never match: an engine IS a different executable, and
+# where lypning-l does answer `sys.version` it answers the reference's own text
+# only while the fallback CPython is that very file (docs/SUBSET.md §6a), so
+# the grid tests/test_sys_version_grid.py, not this battery, grades it. Reporting them as
 # MISMATCH would permanently accuse an engine of a bug for behaving correctly,
 # and — the expensive part — train the reader to expect a non-zero MISMATCH
 # count, which is how a real divergence gets waved through.

@@ -160,6 +160,10 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
             None => return Err(unsupported("module-attr", "sys.platform on this host")),
         },
         ("sys", "maxsize") => ival(i64::MAX),
+        // Baked from the reference, served only where the fallback CPython is
+        // that very file (`randobj::sys_version`). The core refuses it below.
+        #[cfg(feature = "cap-random")]
+        ("sys", "version") => return crate::randobj::sys_version(),
         ("sys", "exit") => Value::Bound(Rc::new(m.clone()), "exit"),
         ("sys", "path") => {
             return Err(unsupported(

@@ -124,6 +124,26 @@ within a minor version: the version/doctor check currently compares only 3.x.
 A bare Cargo build without a usable probe warns and uses legacy defaults;
 that fallback is not evidence of agreement with a particular interpreter.
 
+**`sys.version` is a build's text, not a version's.** The date and compiler
+differ on every CPython build, including a bottle rebuilt at the same micro, so
+no table keyed on the minor can serve it. lypning-l (`cap-random`) serves it
+only from a bake: a separate probe (`sys_probe.py`), run by `build.rs` on the
+interpreter that answered `reference_probe.py` and only when that interpreter
+is the named reference (`err::REF_PY_EXACT`), records the text and the
+`(realpath, length, mtime)` of the interpreter and of its shared libpython. At
+run time lypning-l resolves the CPython a refusal would reach — a
+`$LYPNING_CPYTHON` path, or the first non-shim `python3` on `PATH` — and
+answers only when both fingerprints match. Anything else refuses as
+`module-attr` (a bare-name or `~` pin, a `#!` script, a copy, an upgrade,
+another minor, a build with no bake), and that CPython prints its own
+version. The core never answers it; the router sends it to lypning-l only
+from a build whose probe ran (`route::cap_attr`).
+
+**A call whose arguments do not bind refuses, in every variant.** CPython's
+binding `TypeError` names the function by its qualified name from 3.10, counts
+every missing argument at once, and adds `Did you mean` on 3.14, so no wording
+is right on every minor: `err::bind_refused` (`call`).
+
 The rule that decides whether a site gets a branch is narrower than "this is
 version-dependent": it is **the ANSWER differs across 3.9 … 3.13**, each
 boundary measured on all five with `uv run --python X` and written down at the

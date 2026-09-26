@@ -572,15 +572,19 @@ fn future_route_stop(src: &str, body: &[Stmt], req: &mut Requirements) {
 /// be refused one statement in.
 pub const CAP_ATTRS: &[(&str, &str, &[&str], &[&str])] = &[
     ("cap-random", "random", &["sample", "shuffle"], &["Random"]),
-    ("cap-random", "sys", &[], &["version_info"]),
+    ("cap-random", "sys", &["version"], &["version_info"]),
 ];
 
 /// Does `v` serve `module.name` out of [`CAP_ATTRS`] — `shaped` when the walk
 /// blessed the shape it was spelled in? `sys.version_info` is answered only by
-/// a build whose reference version was MEASURED ([`crate::err::REF_PY_KNOWN`]).
+/// a build whose reference version was MEASURED ([`crate::err::REF_PY_KNOWN`]),
+/// and `sys.version` only by one whose probe RAN on that reference
+/// ([`crate::err::REF_PY_EXACT`]), since lypning-l refuses it on any other —
+/// a clause that folds away on such a build, which is every one `lypning
+/// build` makes with a reachable CPython.
 #[inline(never)]
 fn cap_attr(v: &Variant, module: &str, name: &str, shaped: bool) -> bool {
-    (module != "sys" || crate::err::REF_PY_KNOWN)
+    (module != "sys" || (crate::err::REF_PY_KNOWN && (crate::err::REF_PY_EXACT || name != "version")))
         && CAP_ATTRS.iter().any(|(c, m, any, shape)| {
             *m == module && v.caps.contains(c) && (any.contains(&name) || (shaped && shape.contains(&name)))
         })

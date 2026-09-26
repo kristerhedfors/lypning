@@ -160,6 +160,12 @@ pub const REF_PY_MINOR: u32 = parse_minor(env!("LYPNING_REF_PY"));
 /// and a program that PRINTS the version: `sys.version_info` is served only
 /// when this is true.
 pub const REF_PY_KNOWN: bool = env!("LYPNING_REF_PY_KNOWN").as_bytes()[0] == b'1';
+/// The probe RAN, on an interpreter whose minor is the named reference: the
+/// condition under which `build.rs` uses its measured flags, and the only one
+/// under which lypning-l's `sys.version` is baked (`randobj::sys_version`).
+/// A build that named its minor without measuring it is `REF_PY_KNOWN` and
+/// not this, and the router does not send it `sys.version` (`route::cap_attr`).
+pub const REF_PY_EXACT: bool = env!("LYPNING_REF_PY_EXACT").as_bytes()[0] == b'1';
 
 /// Build-dependent facts measured against the selected CPython, not guessed
 /// from its minor version. See reference_probe.py and build.rs.

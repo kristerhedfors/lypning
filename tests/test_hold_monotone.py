@@ -47,6 +47,8 @@ MENTIONS = [
     "import random\nshuffle = Random = 0\n",
     "import sys\nversion_info = 3\n",
     "import sys\nprint('version_info')\n",
+    "import sys\nversion = 3\nprint(version)\n",
+    "import sys\nprint('sys.version')\n",
     "# time statistics textwrap binascii\n",
     "# ast.parse, ast.literal_eval, last, fast\n",
     "last = [1]\nprint(last[-1], 'ast')\n",

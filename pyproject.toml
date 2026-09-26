@@ -124,6 +124,7 @@ lypning = [
   "assets/node/build.rs",
   "assets/rust/build.rs",
   "assets/rust/reference_probe.py",
+  "assets/rust/sys_probe.py",
   # The Go module has zero dependencies, hence no go.sum to ship; the
   # `quickstart/` main package is source too.
   "assets/go/*.go",

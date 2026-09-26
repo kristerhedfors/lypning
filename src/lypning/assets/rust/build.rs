@@ -20,6 +20,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-changed=reference_probe.py");
+    println!("cargo:rerun-if-changed=sys_probe.py");
     // The variant this build IS, from the one `variant-*` feature cargo turned
     // on. Emitted as an env var so `err::ENGINE` can be a compile-time constant
     // in library code, where `CARGO_BIN_NAME` does not reach. `rustc-env` is
@@ -88,8 +89,18 @@ fn main() {
     // Minor versions are insufficient: patch/vendor builds can change these
     // answers without changing 3.x. Compile the selected oracle's actual
     // behavior into constants; no probing or Python dependency at runtime.
+    // EXACT: the probe ran, and the interpreter it measured is the named
+    // reference — the condition under which its flags are used below, and the
+    // one under which `sys.version` may be baked at all.
+    let exact = matches!(&probed, Some((version, _, _)) if *version == ref_py);
+    println!("cargo:rustc-env=LYPNING_REF_PY_EXACT={}", exact as u8);
+    let baked = match &probed {
+        Some((_, _, exe)) if exact && on("CAP_RANDOM") => bake_sys_version(exe),
+        _ => None,
+    };
+    write_sys_version(baked);
     let flags = match probed {
-        Some((version, flags)) if version == ref_py => flags,
+        Some((version, flags, _)) if version == ref_py => flags,
         _ => {
             println!("cargo:warning=reference behavior unmeasured; using legacy minor-version defaults");
             let minor = parse_minor(&ref_py).unwrap_or(13);
@@ -130,7 +141,7 @@ fn parse_minor(s: &str) -> Option<u32> {
 /// The pin, then `python3`, then the fallback — the guess is the last resort,
 /// which is the order `engines.find_cpython()` has on the Python side once its
 /// own refusal to honour a pin that is not there has been caught.
-fn probe_python() -> Option<(String, [u8; 4])> {
+fn probe_python() -> Option<(String, [u8; 4], String)> {
     let pin = std::env::var("LYPNING_CPYTHON").ok().filter(|s| !s.trim().is_empty());
     let names: Vec<String> = pin
         .into_iter()
@@ -148,10 +159,76 @@ fn probe_python() -> Option<(String, [u8; 4])> {
                     && lines[1..].iter().all(|v| *v == "0" || *v == "1") {
                     return Some((lines[0].to_string(), [
                         (lines[1] == "1") as u8, (lines[2] == "1") as u8,
-                        (lines[3] == "1") as u8, (lines[4] == "1") as u8]));
+                        (lines[3] == "1") as u8, (lines[4] == "1") as u8], name));
                 }
             }
         }
     }
     None
+}
+
+/// What `sys.version` is baked from: the text, and the `(realpath, len,
+/// mtime)` fingerprint of the interpreter and of its shared libpython.
+struct SysVersion {
+    text: String,
+    exe: (String, u64, u128),
+    lib: Option<(String, u64, u128)>,
+}
+
+/// `(realpath, len, mtime in ns)`, the runtime check's own triple
+/// (`sysver::fallback_is_reference`), and a rerun trigger on the file.
+fn stat(path: &str) -> Option<(String, u64, u128)> {
+    let md = std::fs::metadata(path).ok()?;
+    let mtime = md.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
+    println!("cargo:rerun-if-changed={path}");
+    Some((path.to_string(), md.len(), mtime))
+}
+
+/// Run `sys_probe.py` on the interpreter `name` that answered the reference
+/// probe. `None` — nothing baked, so lypning-l refuses `sys.version` — on any
+/// failure: an unreadable answer, a relative or missing executable, a shared
+/// libpython the probe could not find (`-`).
+fn bake_sys_version(name: &str) -> Option<SysVersion> {
+    let out = std::process::Command::new(name)
+        .args(["-c", include_str!("sys_probe.py")])
+        .output()
+        .ok()
+        .filter(|o| o.status.success());
+    let Some(out) = out else {
+        println!("cargo:warning=sys.version probe failed: lypning-l will refuse sys.version");
+        return None;
+    };
+    let text = String::from_utf8(out.stdout).ok()?;
+    let lines: Vec<&str> = text.lines().collect();
+    let &[hex, exe, lib] = &lines[..] else { return None };
+    let bytes = (0..hex.len())
+        .step_by(2)
+        .map(|i| hex.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok()))
+        .collect::<Option<Vec<u8>>>()?;
+    let text = String::from_utf8(bytes).ok()?;
+    if !exe.starts_with('/') || lib == "-" || (!lib.is_empty() && !lib.starts_with('/')) {
+        return None;
+    }
+    let exe = stat(exe)?;
+    let lib = if lib.is_empty() { None } else { Some(stat(lib)?) };
+    Some(SysVersion { text, exe, lib })
+}
+
+/// `$OUT_DIR/sysver.rs`, which `sysver.rs` includes under `cap-random` only,
+/// so no other build carries the text or the paths. Always written, so the
+/// include never dangles.
+fn write_sys_version(v: Option<SysVersion>) {
+    let body = match v {
+        None => "pub const BAKED: Option<Baked> = None;\n".to_string(),
+        Some(v) => format!(
+            "pub const BAKED: Option<Baked> = Some(Baked {{ text: {:?}, exe: ({:?}, {}, {}), lib: {} }});\n",
+            v.text, v.exe.0, v.exe.1, v.exe.2,
+            match v.lib {
+                None => "None".to_string(),
+                Some((p, l, m)) => format!("Some(({p:?}, {l}, {m}))"),
+            }
+        ),
+    };
+    let dir = std::env::var("OUT_DIR").expect("OUT_DIR is set for a build script");
+    std::fs::write(std::path::Path::new(&dir).join("sysver.rs"), body).expect("write sysver.rs");
 }

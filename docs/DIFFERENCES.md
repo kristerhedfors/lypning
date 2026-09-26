@@ -114,7 +114,7 @@ that refusal stays possible (`io.rs:hold`). The capabilities are `itertools`,
 `difflib`, `time`, `statistics`, `textwrap`, `binascii` and `struct` (held when
 imported),
 a served `from __future__` head (held from the first statement), and
-`cap-random`'s `random.Random`/`sample`/`shuffle` and `sys.version_info` (held
+`cap-random`'s `random.Random`/`sample`/`shuffle`, `sys.version_info` and `sys.version` (held
 when evaluated) — the points at which the core, running the same program,
 refuses. Those programs went to CPython before the capability existed. The
 spectrum router's own verdict, computed inside `lypning-l` before the first
@@ -214,7 +214,7 @@ either binary):
 | `cap-hashlib` | the `hashlib` module — four constructors | `hashlib.rs` |
 | `cap-itertools` | the `itertools` module — `product`, `combinations` | `itertools.rs` |
 | `cap-pathlib` | the `pathlib` module — `Path` | `pathlib.rs` |
-| `cap-random` | no module: `random.Random(int)`, `random.sample`, `random.shuffle`, and `sys.version_info` as `[0]`, `[:2]`, `.major`/`.minor` or against a tuple of at most two items | `randobj.rs` |
+| `cap-random` | no module: `random.Random(int)`, `random.sample`, `random.shuffle`, `sys.version_info` as `[0]`, `[:2]`, `.major`/`.minor` or against a tuple of at most two items, and `sys.version` while the fallback CPython is the file the build probed | `randobj.rs` |
 | `cap-re` | the `re` module and its matcher | `re.rs` |
 | `cap-statistics` | the `statistics` module — four functions of it | `statistics.rs` |
 | `cap-textwrap` | the `textwrap` module — five functions of it | `textwrap.rs` |
