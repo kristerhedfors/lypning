@@ -84,6 +84,10 @@ HELD = [
     # first statement.
     "def d(f):\n    return f\n@d\ndef g(): pass\nundefined_name",
     "print(1)\ndef d(f):\n    return f\nif False:\n    @d\n    def g(): pass\nx = 1\nx.foo",
+    # A keyword-only parameter, wherever the parameter list sits.
+    "def f(*, a):\n    return a\nprint(f(a=1))\nundefined_name",
+    "print(f\"{(lambda *, a: a)(a=1)}\")\nundefined_name",
+    "def f(x=(lambda *a, k=1: k)()):\n    return x\nprint(f())\nx = 1\nx.foo",
 ]
 
 

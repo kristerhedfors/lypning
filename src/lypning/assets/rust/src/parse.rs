@@ -767,6 +767,11 @@ impl Parser {
             if p.star.is_some() && self.is_op("*") {
                 return Err(LypningError::syntax(self.line(), "* argument may appear only once"));
             }
+            // A second `*` after a bare one: `def f(*, *, a)`, `def f(*, a, *b)`.
+            #[cfg(feature = "cap-future")]
+            if p.kwonly.is_some() && self.is_op("*") {
+                return Err(unsupported("kwonly", "a second * in a parameter list"));
+            }
             if self.eat_op("/") {
                 // CPython's three, word for word; each was accepted and the
                 // marker ignored.
@@ -778,6 +783,11 @@ impl Parser {
                 }
                 if p.star.is_some() {
                     return Err(self.reject("/ must be ahead of *"));
+                }
+                // `def f(*, a, /)`: 3.9 says `invalid syntax`, 3.10+ name it.
+                #[cfg(feature = "cap-future")]
+                if p.kwonly.is_some() {
+                    return Err(unsupported("kwonly", "/ after keyword-only parameters"));
                 }
                 // Positional-only marker. The names before it may not be given
                 // by keyword, which is `posonly`; before that field existed the
@@ -792,6 +802,20 @@ impl Parser {
                 continue;
             }
             if self.eat_op("*") {
+                // A BARE `*`: the names after it are keyword-only. It must be
+                // followed by `,` and a NAME — `def f(*)`, `lambda *: 0`,
+                // `def f(*, **k)`, `def f(*, /)` are CPython's SyntaxErrors,
+                // worded differently by 3.9 and 3.14, so each refuses.
+                #[cfg(feature = "cap-future")]
+                if self.is_op(",") || self.is_op(terminator) {
+                    note_funcsig("kwonly");
+                    if !self.eat_op(",") || !matches!(self.peek(), Tok::Name(_)) {
+                        return Err(unsupported("kwonly", "named arguments must follow bare *"));
+                    }
+                    p.kwonly = Some(p.names.len());
+                    continue;
+                }
+                #[cfg(not(feature = "cap-future"))]
                 if self.is_op(",") || self.is_op(terminator) {
                     return Err(unsupported("kwonly", "keyword-only parameters"));
                 }
@@ -821,6 +845,12 @@ impl Parser {
                 // Neither is a refusal, so neither could be answered one spawn
                 // later. Refusing here makes the two spellings of the same
                 // feature behave the same way.
+                #[cfg(feature = "cap-future")]
+                if p.star.is_some() && p.kwonly.is_none() {
+                    note_funcsig("kwonly");
+                    p.kwonly = Some(p.names.len());
+                }
+                #[cfg(not(feature = "cap-future"))]
                 if p.star.is_some() {
                     return Err(unsupported("kwonly", "keyword-only parameters"));
                 }
@@ -847,6 +877,10 @@ impl Parser {
         if (0..n).any(|i| p.names[..i].contains(&p.names[i])) {
             return Err(self.reject("duplicate argument in function definition"));
         }
+        // Keyword-only defaults may come in any order (`def f(*, a=1, b)`).
+        #[cfg(feature = "cap-future")]
+        let end = p.star.or(p.kwonly).or(p.dstar).unwrap_or(n);
+        #[cfg(not(feature = "cap-future"))]
         let end = p.star.or(p.dstar).unwrap_or(n);
         if (1..end).any(|j| p.defaults[j].is_none() && p.defaults[j - 1].is_some()) {
             return Err(self.reject("parameter without a default follows parameter with a default"));

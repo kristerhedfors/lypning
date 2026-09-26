@@ -153,7 +153,7 @@ mod tests {
             .find(|(c, _, _)| *c == "cap-future")
             .expect("route::CAPS has no cap-future row");
         assert_eq!(cap.1, &["__future__"]);
-        assert_eq!(cap.2, &["decorator"]);
+        assert_eq!(cap.2, &["decorator", "kwonly"]);
     }
 
     fn run(src: &str) -> R<Vec<Stmt>> {

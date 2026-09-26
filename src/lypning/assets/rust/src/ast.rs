@@ -187,6 +187,13 @@ pub struct Params {
     /// which a keyword argument may not name. Zero when there is no `/`, which
     /// is what `Default` gives and what every parameter list without one means.
     pub posonly: usize,
+    /// Index of the first KEYWORD-ONLY name — the names after `*args` or a
+    /// bare `*`, which only a keyword fills — or `None`. The layout is
+    /// `[positional…, *args?, keyword-only…, **kw?]`, so the positional count
+    /// is this minus the `*args` slot. lypning-l only: the core's parser
+    /// refuses `kwonly`.
+    #[cfg(feature = "cap-future")]
+    pub kwonly: Option<usize>,
     /// Every annotation on this `def`, parameters then the return, in source
     /// order — EVALUATED when the `def` runs and the results thrown away.
     ///

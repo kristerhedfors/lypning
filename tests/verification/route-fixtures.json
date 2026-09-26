@@ -133,6 +133,14 @@
   "note": "LATE: the core stops at the `@` before it reads `class`, and lypning-l refuses the decorated class at parse."
  },
  {
+  "program": "def g(a, *, b): return a + b\nprint(g(1, b=2))",
+  "route": "lypning-l\tkwonly: keyword-only parameters"
+ },
+ {
+  "program": "import subprocess\ndef f(*, a): return a",
+  "route": "cpython\tkwonly: keyword-only parameters"
+ },
+ {
   "program": "match 1:\n    case 1: pass",
   "route": "cpython\tsyntax: line 1: invalid syntax: unexpected a literal"
  },

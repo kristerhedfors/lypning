@@ -1678,6 +1678,10 @@ impl Interp {
         let npos = p.names.len()
             - p.star.map_or(0, |_| 1)
             - p.dstar.map_or(0, |_| 1);
+        // With keyword-only names the positional ones are those before the
+        // `*args` slot (or the bare `*`), not every name but the two stars.
+        #[cfg(feature = "cap-future")]
+        let npos = p.kwonly.map_or(npos, |k| k - p.star.map_or(0, |_| 1));
         {
             let mut s = scope.borrow_mut();
             let mut used = Used::new(p.names.len());
@@ -1714,11 +1718,21 @@ impl Interp {
                 // raises TypeError. Skipping them lands the name on `**kw` if
                 // there is one — which is CPython's rule, `f(1, x=2)` giving
                 // `{'x': 2}` — and on the unexpected-keyword error if not.
-                match p.names[p.posonly..npos]
+                let hit = p.names[p.posonly..npos]
                     .iter()
                     .position(|n| *n == k)
-                    .map(|i| i + p.posonly)
-                {
+                    .map(|i| i + p.posonly);
+                // …and then the keyword-only names, which sit between the
+                // `*args` slot and `**kw`: neither star's own name is ever
+                // filled by a keyword (`def h(*args, **kw)` called
+                // `h(args=1)` is `((), {'args': 1})`).
+                #[cfg(feature = "cap-future")]
+                let hit = hit.or_else(|| {
+                    let k0 = p.kwonly?;
+                    let e = p.dstar.unwrap_or(p.names.len());
+                    p.names[k0..e].iter().position(|n| *n == k).map(|i| i + k0)
+                });
+                match hit {
                     Some(i) => {
                         // A KEYWORD CANNOT REFILL A PARAMETER THE POSITIONAL
                         // ARGUMENTS ALREADY FILLED. Without this check the
@@ -1767,6 +1781,24 @@ impl Interp {
                                 "{}() missing 1 required positional argument: '{}'",
                                 f.name, p.names[i]
                             ))))
+                        }
+                    }
+                }
+            }
+            #[cfg(feature = "cap-future")]
+            if let Some(k0) = p.kwonly {
+                for i in k0..p.dstar.unwrap_or(p.names.len()) {
+                    if !used.get(i) {
+                        match &f.defaults[i] {
+                            Some(d) => {
+                                s.insert(p.names[i].clone(), d.clone());
+                            }
+                            None => {
+                                return Err(bind_fail(type_err(format!(
+                                    "{}() missing 1 required keyword-only argument: '{}'",
+                                    f.name, p.names[i]
+                                ))))
+                            }
                         }
                     }
                 }

@@ -233,7 +233,7 @@ pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-collections", &["collections"], &[]),
     ("cap-csv", &["csv"], &[]),
     ("cap-difflib", &["difflib"], &[]),
-    ("cap-future", &["__future__"], &["decorator"]),
+    ("cap-future", &["__future__"], &["decorator", "kwonly"]),
     ("cap-glob", &["glob"], &[]),
     ("cap-hashlib", &["hashlib"], &[]),
     ("cap-itertools", &["itertools"], &[]),
@@ -985,7 +985,7 @@ mod spectrum_tests {
         // every import is served there, and still decided by the import when
         // one is not (`@functools.lru_cache`). `class` stays above: a
         // decorated class is refused at parse in both rows.
-        for kind in ["decorator"] {
+        for kind in ["decorator", "kwonly"] {
             let vs = verdicts(kind, "x", &[]);
             assert_eq!(engine_from_verdicts(&vs), Engine::Rust(1), "{kind}");
             let vs = verdicts(kind, "x", &["functools".to_string()]);
