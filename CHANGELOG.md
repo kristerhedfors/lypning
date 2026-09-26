@@ -14,6 +14,14 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-26** — The coverage table on the live landing page ([#132](https://github.com/kristerhedfors/lypning/pull/132))
+
+- lypning.dev is GitHub Pages in legacy mode: it renders `README.md` from
+  `main`, not the `site/` build `pages.yml` deploys. So the Coverage section
+  #129 added to `site/index.md` never reached the live page. README §1 now
+  opens with the same dated table: conformance 2026-09-26, commit f6b0728,
+  14,816 loaded, 10,173 graded, 0 wrong answers on every engine.
+
 **2026-09-25** — A coverage round from the latest sessions' programs: `cap-ast`, `bytes.fromhex`, and five wrong answers the harvest exposed ([#129](https://github.com/kristerhedfors/lypning/pull/129))
 
 - The corpus is harvested from the sessions since 2026-09-07: 5,752 new
