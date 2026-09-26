@@ -146,6 +146,20 @@ thread_local! {
     /// See [`arm`].
     #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
     static ARMED: RefCell<bool> = const { RefCell::new(false) };
+    /// Every path an EARLY [`commit`] wrote or removed — see [`flushed_paths`].
+    #[cfg(feature = "cap-glob")]
+    static FLUSHED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Every path a [`commit`] has written or removed during this run, in the
+/// staging key's spelling. A commit drains the staging area, so after an early
+/// one `glob.rs` would see a directory the run changed as untouched — while
+/// the commit wrote its batch deletes-first and then in first-staged order,
+/// after every real `os.mkdir`, which is not the order CPython's `open()`
+/// created each file in. A listing whose order shows refuses over these too.
+#[cfg(feature = "cap-glob")]
+pub fn flushed_paths() -> Vec<String> {
+    FLUSHED.with(|f| f.borrow().clone())
 }
 
 /// This run may not commit early: past [`COMMIT_THRESHOLD`] it REFUSES
@@ -366,6 +380,8 @@ pub fn commit() -> R<()> {
     MADE.with(|m| m.borrow_mut().clear());
     DELETED.with(|d| -> R<()> {
         for path in d.borrow_mut().drain() {
+            #[cfg(feature = "cap-glob")]
+            FLUSHED.with(|f| f.borrow_mut().push(path.clone()));
             match std::fs::remove_file(&path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -378,6 +394,8 @@ pub fn commit() -> R<()> {
         let mut p = p.borrow_mut();
         let order = std::mem::take(&mut p.order);
         for path in order {
+            #[cfg(feature = "cap-glob")]
+            FLUSHED.with(|f| f.borrow_mut().push(path.clone()));
             if let Some((bytes, append)) = p.files.remove(&path) {
                 let r = if append {
                     std::fs::OpenOptions::new()
@@ -1238,6 +1256,8 @@ pub fn reset() {
     STDIN_POS.with(|p| *p.borrow_mut() = 0);
     #[cfg(feature = "cap-csv")]
     WRITE_GEN.with(|g| g.borrow_mut().clear());
+    #[cfg(feature = "cap-glob")]
+    FLUSHED.with(|f| f.borrow_mut().clear());
 }
 
 #[cfg(test)]
