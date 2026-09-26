@@ -202,7 +202,7 @@ either binary):
 |---|---|---|
 | `cap-ast` | the `ast` module — `literal_eval` over a `str`, and no other name (`ast.parse` refuses) | `pyast.rs` |
 | `cap-base64` | the `base64` module, four functions of it | `base64.rs` |
-| `cap-bigint` | no module: integers past 64 bits, exact | `bigint.rs` |
+| `cap-bigint` | no module: integers past 64 bits, exact — and so `random.getrandbits(64)`, whose draw may be one | `bigint.rs` |
 | `cap-binascii` | the `binascii` module, six functions of it | `binascii.rs` |
 | `cap-collections` | the `collections` module — `Counter`, `defaultdict` | `collections.rs` |
 | `cap-csv` | the `csv` module — the two readers | `csv.rs` |
