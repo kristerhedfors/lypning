@@ -21,6 +21,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import traceback
 from collections import Counter
@@ -68,6 +69,61 @@ def refusal_vector(rows, allowed):
         by_kind.update(kinds)
     return {"correct_fallback_draws": len(fallback), "without_refusal": missing,
             "draws_by_kind": dict(sorted(by_kind.items(), key=lambda kv: (-kv[1], kv[0])))}
+
+
+#: Imported only to list attributes; never these, which act on import.
+NO_IMPORT = frozenset({"antigravity", "this", "idlelib", "turtle", "turtledemo", "tkinter"})
+
+
+def stdlib_target(kind, detail):
+    """A refusal's target when it is a CPython stdlib name, else None.
+
+    `module` details read `import X[.y]` and `module-attr` details `mod.attr`
+    or `mod.attr()` (`src/lypning/assets/rust/src/modules.rs`). A name is
+    printed only when it is a stdlib module, or an attribute CPython's own
+    stdlib module has: a name a draw invented never reaches the log.
+    """
+    import importlib
+    if kind == "module":
+        m = re.fullmatch(r"import ([A-Za-z_][A-Za-z0-9_]*)(?:\.[A-Za-z0-9_.]+)?", detail)
+        return m.group(1) if m and m.group(1) in sys.stdlib_module_names else None
+    if kind == "module-attr":
+        m = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)(?:\(\))?", detail)
+        if not m or m.group(1) not in sys.stdlib_module_names or m.group(1) in NO_IMPORT:
+            return None
+        try:
+            module = importlib.import_module(m.group(1))
+        except Exception:                                   # noqa: BLE001
+            return None
+        return "%s.%s" % m.groups() if hasattr(module, m.group(2)) else None
+    return None
+
+
+def target_census(rows_by_arm, engines):
+    """Stdlib modules and attributes behind correct-fallback draws, per arm,
+    each probed against every engine: does it still refuse?"""
+    from pipeline.refusals import probe
+    counts = {}
+    for arm, rows in rows_by_arm.items():
+        for row in rows:
+            if row.get("status") != "correct-fallback":
+                continue
+            seen = set()
+            for _, message in row.get("refusals", []):
+                m = re.match(r"lypning-l: unsupported: (module|module-attr): (.+)$", message.strip())
+                target = stdlib_target(m.group(1), m.group(2)) if m else None
+                seen.add((m.group(1), target or "non-stdlib") if m else None)
+            for item in seen - {None}:
+                counts.setdefault(item, Counter())[arm] += 1
+    out = []
+    for (kind, target), by_arm in sorted(counts.items(), key=lambda kv: -sum(kv[1].values())):
+        entry = {"kind": kind, "target": target, "draws": dict(by_arm)}
+        if target != "non-stdlib":
+            program = ("import %s" % target if kind == "module"
+                       else "import %s\n_ = %s" % tuple([target.split(".")[0], target]))
+            entry["refused_by"] = {name: probe(program, path) is not None for name, path in engines.items()}
+        out.append(entry)
+    return out
 
 
 def slim(summary):
@@ -135,12 +191,18 @@ def main():
         engine_sha = hashlib.sha256(Path(engine).read_bytes()).hexdigest()
         # `refusals.probe` reads an engine that cannot start as one that took
         # the import, which would pass gate B vacuously: it must answer first.
-        import subprocess
         version = subprocess.run([engine, "--version"], capture_output=True, text=True, timeout=10)
         require(version.returncode == 0 and "(lypning-l)" in version.stdout)
 
+        head_engine = os.environ.get("HEAD_ENGINE", "")
+        require(os.path.isfile(head_engine))
+        head = subprocess.run([head_engine, "--version"], capture_output=True, text=True, timeout=10)
+        require(head.returncode == 0 and "(lypning-l)" in head.stdout)
+        engines = {"arm_a": engine, "main": head_engine}
         allowed = known_kinds()
-        result = {"engine_version": version.stdout.strip(), "job": job, "finish_of": pilot, "repository_revision": revision,
+        result = {"engine_version": version.stdout.strip(), "main_engine_version": head.stdout.strip(),
+                  "main_engine_sha256": hashlib.sha256(Path(head_engine).read_bytes()).hexdigest(),
+                  "job": job, "finish_of": pilot, "repository_revision": revision,
                   "space_revision": space_revision, "engine_sha256": engine_sha,
                   "selected_step": manifest.get("selected_step"), "splits": {}}
         for split, (base_dir, sft_dir, bundle_path) in ARMS.items():
@@ -180,6 +242,7 @@ def main():
                                  "pass": paired["native"]["ci95"][0] > 0.03},
                 "refusals": {"base": refusal_vector(rows[base_dir], allowed),
                              "sft": refusal_vector(rows[sft_dir], allowed)},
+                "stdlib_targets": target_census({"base": rows[base_dir], "sft": rows[sft_dir]}, engines),
             }
         print(json.dumps(public_view(result), indent=2, sort_keys=True, allow_nan=False))
         return 0

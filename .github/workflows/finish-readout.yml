@@ -37,7 +37,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -q "huggingface-hub==1.31.0"
+      # Main's engine, built before any secret is in the environment, so the
+      # remaining refusals can be read against what main now serves.
+      - name: Isolate engine state
+        run: echo "LYPNING_HOME=$RUNNER_TEMP/readout-home" >> "$GITHUB_ENV"
+      - run: pip install -q -e . && pip install -q "huggingface-hub==1.31.0"
+      - name: Build main's lypning-l against this 3.12
+        run: |
+          python -m lypning build --rust --target host
+          "$LYPNING_HOME/bin/lypning-l" --version
+          echo "HEAD_ENGINE=$LYPNING_HOME/bin/lypning-l" >> "$GITHUB_ENV"
       - name: Read the four arms and print only aggregates
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
