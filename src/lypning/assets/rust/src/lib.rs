@@ -46,6 +46,10 @@ pub mod bigint;
 /// variant entirely, not merely unreachable in it.
 #[cfg(feature = "cap-binascii")]
 pub mod binascii;
+/// `struct.pack` / `unpack` / `unpack_from` / `calcsize` — the other half of
+/// the `cap-binascii` capability. Absent from the smaller variant entirely.
+#[cfg(feature = "cap-binascii")]
+pub mod pystruct;
 /// `collections.Counter` / `defaultdict` — the `cap-collections` capability.
 /// Absent from the smaller variant entirely, not merely unreachable in it.
 #[cfg(feature = "cap-collections")]
@@ -107,6 +111,11 @@ pub mod randobj;
 /// here: it is [`repat`], which every variant carries.
 #[cfg(feature = "cap-re")]
 pub mod re;
+/// `unicodedata`, from the reference CPython's own tables (`build.rs` dumps
+/// them) — folded into the `cap-re` capability, whose `route::CAPS` row lists
+/// the module.
+#[cfg(feature = "cap-re")]
+pub mod ucd;
 /// The `re` pattern parser, in EVERY variant, because the binary that routes is
 /// the cheapest one and a blocker only `lypning-l` can compute is inert on the
 /// path the dispatcher uses (issue #48). Not the capability: nothing here runs

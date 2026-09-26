@@ -593,19 +593,22 @@ impl Interp {
                     }
                 });
             }
-            Stmt::Def { name, params, body } => {
+            Stmt::Def {
+                name,
+                params,
+                body,
+                #[cfg(feature = "cap-future")]
+                decos,
+            } => {
                 self.nested_global_guard()?;
-                // Before 3.14 annotations run when the `def` does, and their
-                // VALUES are discarded -- what survives is whatever they raised
-                // or printed on the way. Before the defaults, as CPython orders
-                // it. From 3.14 (PEP 649) they are evaluated lazily, only when
-                // `__annotations__` is read, which nothing here can do: a side
-                // effect or a NameError in one is simply never seen.
-                if crate::err::REF_PY_MINOR < 14 {
-                    for a in &params.anns {
-                        self.eval(a)?;
-                    }
-                }
+                // The decorator EXPRESSIONS run first, top to bottom — before
+                // the defaults, as CPython's compiler orders them — and are
+                // applied last, bottom to top; the name is bound once, to the
+                // final result, so a decorator that raises leaves the old
+                // binding (or none) and one that reads the name sees the old
+                // value.
+                #[cfg(feature = "cap-future")]
+                let decos = decos.iter().map(|d| self.eval(d)).collect::<R<Vec<Value>>>()?;
                 let mut defaults = Vec::with_capacity(params.defaults.len());
                 for d in &params.defaults {
                     defaults.push(match d {
@@ -622,6 +625,29 @@ impl Interp {
                     env: self.chain.clone(),
                     assigned: Rc::new(assigned_names(body, params)),
                 }));
+                // Before 3.14 annotations run when the `def` does, and their
+                // VALUES are discarded -- what survives is whatever they raised
+                // or printed on the way. AFTER the defaults, as CPython's
+                // compiler emits them (probed on 3.9 and 3.11:
+                // `def f(a: print('ann') = print('def'))` prints `def` first);
+                // they ran first here, so `def f(a: undefined = 1/0)` raised
+                // NameError where CPython raises ZeroDivisionError. From 3.14
+                // (PEP 649) they are evaluated lazily, only when
+                // `__annotations__` is read, which nothing here can do: a side
+                // effect or a NameError in one is simply never seen.
+                if crate::err::REF_PY_MINOR < 14 {
+                    for a in &params.anns {
+                        self.eval(a)?;
+                    }
+                }
+                #[cfg(feature = "cap-future")]
+                let f = {
+                    let mut f = f;
+                    for d in decos.iter().rev() {
+                        f = self.call(d, &mut Args::one(f), Vec::new())?;
+                    }
+                    f
+                };
                 self.bind(name, f);
             }
             Stmt::Global(names) => {
@@ -1375,7 +1401,8 @@ impl Interp {
                     #[cfg(not(feature = "cap-time"))]
                     let v = self.eval(x)?;
                     if star.contains(&i) {
-                        a.extend(self.iter_collect(v)?);
+                        let v = self.iter_collect(v).map_err(star_fail)?;
+                        a.extend(v);
                     } else {
                         a.push(v);
                     }
@@ -1648,6 +1675,10 @@ impl Interp {
         let npos = p.names.len()
             - p.star.map_or(0, |_| 1)
             - p.dstar.map_or(0, |_| 1);
+        // With keyword-only names the positional ones are those before the
+        // `*args` slot (or the bare `*`), not every name but the two stars.
+        #[cfg(feature = "cap-future")]
+        let npos = p.kwonly.map_or(npos, |k| k - p.star.map_or(0, |_| 1));
         {
             let mut s = scope.borrow_mut();
             let mut used = Used::new(p.names.len());
@@ -1665,7 +1696,7 @@ impl Interp {
                 } else if p.star.is_some() {
                     extra.push(a);
                 } else {
-                    return Err(arity_error(&f.name, npos, &f.defaults, nargs));
+                    return Err(bind_refused());
                 }
             }
             if let Some(si) = p.star {
@@ -1683,12 +1714,22 @@ impl Interp {
                 // `f(x=1, y=2)` answered `(1, 2)` at exit 0 where CPython
                 // raises TypeError. Skipping them lands the name on `**kw` if
                 // there is one — which is CPython's rule, `f(1, x=2)` giving
-                // `{'x': 2}` — and on the unexpected-keyword error if not.
-                match p.names[p.posonly..npos]
+                // `{'x': 2}` — and on the binding refusal if not.
+                let hit = p.names[p.posonly..npos]
                     .iter()
                     .position(|n| *n == k)
-                    .map(|i| i + p.posonly)
-                {
+                    .map(|i| i + p.posonly);
+                // …and then the keyword-only names, which sit between the
+                // `*args` slot and `**kw`: neither star's own name is ever
+                // filled by a keyword (`def h(*args, **kw)` called
+                // `h(args=1)` is `((), {'args': 1})`).
+                #[cfg(feature = "cap-future")]
+                let hit = hit.or_else(|| {
+                    let k0 = p.kwonly?;
+                    let e = p.dstar.unwrap_or(p.names.len());
+                    p.names[k0..e].iter().position(|n| *n == k).map(|i| i + k0)
+                });
+                match hit {
                     Some(i) => {
                         // A KEYWORD CANNOT REFILL A PARAMETER THE POSITIONAL
                         // ARGUMENTS ALREADY FILLED. Without this check the
@@ -1697,10 +1738,7 @@ impl Interp {
                         // ran with a=9 AND b=2 — the function executing on
                         // data the caller never passed together, at exit 0.
                         if used.get(i) {
-                            return Err(type_err(format!(
-                                "{}() got multiple values for argument '{k}'",
-                                f.name
-                            )));
+                            return Err(bind_refused());
                         }
                         s.insert(p.names[i].clone(), v);
                         used.set(i);
@@ -1711,10 +1749,7 @@ impl Interp {
                                 .get_or_insert_with(Dict::new)
                                 .insert(Value::Str(k), v)?;
                         } else {
-                            return Err(type_err(format!(
-                                "{}() got an unexpected keyword argument '{k}'",
-                                f.name
-                            )));
+                            return Err(bind_refused());
                         }
                     }
                 }
@@ -1733,10 +1768,22 @@ impl Interp {
                             s.insert(p.names[i].clone(), d.clone());
                         }
                         None => {
-                            return Err(type_err(format!(
-                                "{}() missing 1 required positional argument: '{}'",
-                                f.name, p.names[i]
-                            )))
+                            return Err(bind_refused());
+                        }
+                    }
+                }
+            }
+            #[cfg(feature = "cap-future")]
+            if let Some(k0) = p.kwonly {
+                for i in k0..p.dstar.unwrap_or(p.names.len()) {
+                    if !used.get(i) {
+                        match &f.defaults[i] {
+                            Some(d) => {
+                                s.insert(p.names[i].clone(), d.clone());
+                            }
+                            None => {
+                                return Err(bind_refused());
+                            }
                         }
                     }
                 }
@@ -1915,37 +1962,16 @@ impl Used {
     }
 }
 
-/// CPython's wording for "too many positional arguments", to the letter.
-///
-/// Three things vary and all three were wrong here. The count reported is the
-/// number GIVEN, not the index the binder stopped at — `f1(1, 2, 3)` says three,
-/// not two. A function with defaults says `from R to N`, never a bare `N`. And
-/// `argument` and `was` are singular only in the cases CPython makes them
-/// singular in, which are not the same case: `takes 1 positional argument`, but
-/// `takes from 0 to 1 positional arguments`.
-///
-/// This is a message, so it reaches stdout only through `except TypeError as e:
-/// print(e)`. That is why `conformance` never caught it, and why it is a
-/// divergence rather than a refusal. Found by reading the call path for
-/// allocations — which is where the last such find came from too.
-fn arity_error(name: &str, npos: usize, defaults: &[Option<Value>], given: usize) -> LypningError {
-    let required = defaults
-        .iter()
-        .take(npos)
-        .take_while(|d| d.is_none())
-        .count();
-    let takes = if required == npos {
-        format!(
-            "{npos} positional argument{}",
-            if npos == 1 { "" } else { "s" }
-        )
+/// `f(*1)`: CPython says `__main__.f() argument after * must be an iterable,
+/// not int`, naming the function by its qualified name as a binding error
+/// does; this engine would say `'int' object is not iterable`. So it refuses,
+/// in every variant, as [`bind_refused`] does.
+fn star_fail(e: LypningError) -> LypningError {
+    if err_kind(&e) == "TypeError" {
+        unsupported("call", "`*` over a non-iterable, whose message names the callee")
     } else {
-        format!("from {required} to {npos} positional arguments")
-    };
-    type_err(format!(
-        "{name}() takes {takes} but {given} {} given",
-        if given == 1 { "was" } else { "were" }
-    ))
+        e
+    }
 }
 
 pub struct IterState {

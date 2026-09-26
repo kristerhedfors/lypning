@@ -952,10 +952,10 @@ pub fn call_builtin(
         }
         "len" => {
             no_kw("len", &kw)?;
-            let v = arg1(name, &args)?;
+            let v = arg1(&args)?;
             ival(length(&v)? as i64)
         }
-        "repr" => Value::Str(fmt::repr_rc(&arg1(name, &args)?)?),
+        "repr" => Value::Str(fmt::repr_rc(&arg1(&args)?)?),
         "str" => match args.first() {
             None => Value::Str("".into()),
             Some(v) => {
@@ -1042,6 +1042,8 @@ pub fn call_builtin(
             match first {
                 None => ival(0),
                 Some(Value::Str(s)) => {
+                    #[cfg(feature = "cap-re")]
+                    crate::ucd::drift_guard(s)?;
                     let norm = ascii_digits(s);
                     let t = norm.trim();
                     let (t, neg) = match t.strip_prefix('-') {
@@ -1210,6 +1212,8 @@ pub fn call_builtin(
             }
             // `float('１２')` is 12.0: CPython reads every Unicode decimal digit
             // (and Unicode whitespace) as its ASCII counterpart first.
+            #[cfg(feature = "cap-re")]
+            Some(Value::Str(s)) if crate::ucd::drift_guard(s).is_err() => return Err(crate::ucd::drift_guard(s).unwrap_err()),
             Some(Value::Str(s)) => match parse_float(&ascii_digits(s)) {
                 Some(v) => Value::Float(v),
                 None => {
@@ -1665,7 +1669,7 @@ pub fn call_builtin(
             ops::sort_values(&mut items, &mut keys, rev)?;
             list(items)
         }
-        "abs" => match arg1(name, &args)? {
+        "abs" => match arg1(&args)? {
             #[cfg(feature = "cap-re")]
             Value::ReFlag(b) => ival(b as i64),
             // `abs(-2**63)` is 2**63, a bignum, and so is `abs()` of any wide
@@ -1755,7 +1759,7 @@ pub fn call_builtin(
             }
         }
         "divmod" => {
-            let (a, b) = (arg1(name, &args)?, args.get(1).cloned().unwrap_or(Value::None));
+            let (a, b) = (arg1(&args)?, args.get(1).cloned().unwrap_or(Value::None));
             // `float_divmod` has its own zero-divisor message, `float divmod()`,
             // and this went through `//` first, which says `float floor
             // division by zero`: a different message at the same exit 1, and
@@ -1794,7 +1798,7 @@ pub fn call_builtin(
         }
         "any" | "all" => {
             let want_all = name == "all";
-            let v = arg1(name, &args)?;
+            let v = arg1(&args)?;
             // Short-circuits, which is why the iterator is driven rather than
             // materialised: `any(1/x for x in [1,0])` must not divide by zero.
             let mut iter = match &v {
@@ -1948,7 +1952,7 @@ pub fn call_builtin(
             )
         }
         "reversed" => {
-            let v = arg1(name, &args)?;
+            let v = arg1(&args)?;
             // REVERSING AN ITERATOR IS NOT A THING, and this used to do it.
             // CPython needs `__reversed__`, or `__len__` and `__getitem__`
             // together, so a sequence reverses and a one-pass iterator raises.
@@ -2011,7 +2015,7 @@ pub fn call_builtin(
             // is the caller's own TypeError and is served exactly, while a real
             // callable is a feature this crate does not have and refuses.
             if args.len() == 2 {
-                let v = arg1(name, &args)?;
+                let v = arg1(&args)?;
                 if !matches!(v, Value::Func(_) | Value::Builtin(_) | Value::Bound(..)) {
                     return Err(type_err(if crate::err::REF_ITER_SHORT {
                         "iter(v, w): v must be callable"
@@ -2021,7 +2025,7 @@ pub fn call_builtin(
                 }
                 return Err(unsupported("builtin", "iter(callable, sentinel)"));
             }
-            let v = arg1(name, &args)?;
+            let v = arg1(&args)?;
             // Before the `IterObj` shortcut below: a hash object wears that
             // shape and is not iterable, so handing it back would answer where
             // CPython raises.
@@ -2054,7 +2058,7 @@ pub fn call_builtin(
             Value::IterObj(Rc::new(RefCell::new(inner)), "iterator")
         }
         "next" => {
-            let v = arg1(name, &args)?;
+            let v = arg1(&args)?;
             let mut i = match &v {
                 Value::IterObj(inner, _) => Iter::Shared(inner.clone()),
                 Value::Gen(g) => Iter::Gen(g.clone()),
@@ -2094,7 +2098,7 @@ pub fn call_builtin(
             }
         }
         "ord" => {
-            let v = arg1(name, &args)?;
+            let v = arg1(&args)?;
             match &v {
                 Value::Str(s) => {
                     let mut c = s.chars();
@@ -2113,14 +2117,18 @@ pub fn call_builtin(
             }
         }
         "chr" => {
-            let n = int_val(&arg1(name, &args)?)?;
+            let n = int_val(&arg1(&args)?)?;
             match u32::try_from(n).ok().and_then(char::from_u32) {
                 Some(c) => Value::Str(crate::value::char_str(c)),
+                #[cfg(feature = "cap-re")]
+                None if crate::ucd::surrogate_refused(n).is_some() => {
+                    return Err(crate::ucd::surrogate_refused(n).unwrap())
+                }
                 None => return Err(value_err("chr() arg not in range(0x110000)")),
             }
         }
         "hex" | "oct" | "bin" => {
-            let v = arg1(name, &args)?;
+            let v = arg1(&args)?;
             let (radix, pfx) = match name {
                 "hex" => (16, "0x"),
                 "oct" => (8, "0o"),
@@ -2148,7 +2156,7 @@ pub fn call_builtin(
             Value::Str(format!("{}{pfx}{body}", if n < 0 { "-" } else { "" }).into())
         }
         "format" => {
-            let v = arg1(name, &args)?;
+            let v = arg1(&args)?;
             let spec = match args.get(1) {
                 Some(s) => fmt::to_str(s)?,
                 None => String::new(),
@@ -2169,7 +2177,7 @@ pub fn call_builtin(
             if args.len() != 1 {
                 return Err(type_err("type() takes 1 or 3 arguments"));
             }
-            let v = arg1(name, &args)?;
+            let v = arg1(&args)?;
             // `class_name` is the whole answer and the whole bound: it is the
             // closed set of every class this engine can NAME, so a value whose
             // type is not one of them still refuses. What it buys over the nine
@@ -2209,7 +2217,7 @@ pub fn call_builtin(
             }
         }
         "isinstance" => {
-            let v = arg1(name, &args)?;
+            let v = arg1(&args)?;
             let cls = args
                 .get(1)
                 .cloned()
@@ -2689,10 +2697,12 @@ fn codec_without_subject(
     }))
 }
 
-fn arg1(name: &str, args: &[Value]) -> R<Value> {
+/// The first argument, or [`bind_refused`]: the arity tables answer a bare
+/// `len()` before this is reached, and no text built here would be CPython's.
+fn arg1(args: &[Value]) -> R<Value> {
     args.first()
         .cloned()
-        .ok_or_else(|| type_err(format!("{name}() missing 1 required positional argument")))
+        .ok_or_else(bind_refused)
 }
 
 fn keyed(it: &mut Interp, keyf: &Option<Value>, v: &Value) -> R<Value> {

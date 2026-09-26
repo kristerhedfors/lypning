@@ -75,8 +75,10 @@ BEFORE_IT_RUNS = [
     'prnt(1)\nimport time',
     'if False:\n    import time\nprnt(1)',
     'import os\ndef f():\n    import time\nprnt(1)',
-    'def g(alpha): pass\ng(alpah=1)\nimport time',
-    'if False:\n    import time\ndef g(alpha): pass\ng(alpah=1)',
+    # A binding error (`g(alpah=1)`) was a row here; it refuses in every
+    # variant now (`err::bind_refused`), so an attribute error stands in.
+    "'abc'.uper()\nimport time",
+    "if False:\n    import time\n'abc'.uper()",
 ]
 
 #: SyntaxErrors CPython's compiler raises, which the parser raises too, with a
@@ -168,10 +170,13 @@ def _run(argv: list[str], program: str) -> subprocess.CompletedProcess:
 
 
 def _refused(got: subprocess.CompletedProcess, kind: str) -> None:
+    """`kind` refuses, or `call` does: a binding error in a held run (a bad
+    keyword like `g(alpah=…)`) refuses as `call` before its name is hinted."""
     assert got.returncode == engines.UNSUPPORTED_EXIT, (got.returncode, got.stdout, got.stderr)
     assert got.stdout == "", got.stdout
     line = got.stderr.strip()
-    assert "\n" not in line and line.startswith("%s: unsupported: %s: " % (engines.LYPNING_L, kind)), line
+    heads = tuple("%s: unsupported: %s: " % (engines.LYPNING_L, k) for k in (kind, "call"))
+    assert "\n" not in line and line.startswith(heads), line
 
 
 @needs_l

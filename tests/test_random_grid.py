@@ -98,6 +98,14 @@ SERVED = [R + x for x in [
     "from random import sample, shuffle, seed\nseed(3)\nx = list('abcdef')\nshuffle(x)\nprint(x, sample(x, 2))",
     "random.seed(3)\nfor a in random.sample([10, 20, 30, 40], 3):\n    print(a)",
     "print(random.sample is random.sample, random.shuffle == random.shuffle)",
+    # `getrandbits(64)`: two words, low first, and a wide integer at or past
+    # 2**63 — the idiom `struct.unpack('<d', struct.pack('<Q', bits))` feeds on.
+    "random.seed(7); print(random.getrandbits(64), random.getrandbits(33), random.random())",
+    "random.seed(3); print([random.getrandbits(64) for _ in range(8)], random.random())",
+    "r=random.Random(7); print([r.getrandbits(64) for _ in range(4)], r.getrandbits(1))",
+    "random.seed(5); x = random.getrandbits(64); print(x < 2**64, x >= 0, hex(x), x % 1000, x // 2**32)",
+    "random.seed(11); print(sum(random.getrandbits(64) for _ in range(100)))",
+    "from random import getrandbits, seed\nseed(2)\nprint(getrandbits(64), getrandbits(64))",
 ]] + [S + x for x in [
     "print(sys.version_info[0], sys.version_info.major, sys.version_info >= (3, 8))",
     "print(sys.version_info[:2])",
@@ -138,6 +146,8 @@ AGREE_OR_REFUSE = [R + x for x in [
     "r = random.Random(1)\nprint(r[0])",
     "import json\nprint(json.dumps(random.Random(1)))",
     "print(random.Random(1) == 1, random.Random(1) != None)",
+    "random.seed(1); print(random.getrandbits(64) & 0xff, float(random.getrandbits(64)))",
+    "random.seed(1); print({random.getrandbits(64): 1})",
 ]] + [S + x for x in [
     "t = (3, 8)\nprint(sys.version_info >= t)",
     "t = (3, 8, 1)\nprint(sys.version_info >= t)",
@@ -196,6 +206,8 @@ REFUSED = [R + x for x in [
     "r = random.Random(3)\nr.seed()\nprint(r.random())",
     "r = random.Random(3)\nr.seed('a')\nprint(r.random())",
     "r = random.Random(3)\nprint(r.choice([]))",
+    "random.seed(1); print(random.getrandbits(65))",
+    "r = random.Random(1); print(r.getrandbits(128))",
 ]] + [S + x for x in [
     "print(sys.version_info)",
     "print(repr(sys.version_info))",
@@ -220,7 +232,9 @@ REFUSED = [R + x for x in [
     "print(sys.version_info + (1,))",
     "print(sys.version_info is sys.version_info)",
     "print(sys.version_info == sys.version_info)",
-    "print(sys.version)",
+    # `sys.version` itself is served now, from a fingerprinted bake:
+    # tests/test_sys_version_grid.py. `hexversion` carries the micro and is not.
+    "print(sys.hexversion)",
     "print('%d.%d.%d' % sys.version_info[:3])",
     "print(__import__('sys').version_info[:2])",
 ]]
@@ -257,7 +271,7 @@ ROUTE_TO_CPYTHON = [
     S + "print(sys.version_info >= (3, 8, 1))",
     S + "v = sys.version_info",
     S + "from sys import version_info",
-    S + "print(sys.version_info[0], sys.version)",
+    S + "print(sys.version_info[0], sys.hexversion)",
 ]
 
 

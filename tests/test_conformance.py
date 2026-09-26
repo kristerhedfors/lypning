@@ -825,3 +825,14 @@ def test_the_whole_environment_is_run_specific(program):
 ])
 def test_one_named_variable_is_still_graded(program):
     assert not conformance.is_run_specific(corpus.Entry(id="py-e", program=program))
+
+
+#: A network answer is the server's, at the moment it was asked.
+@pytest.mark.parametrize("program", [
+    "import urllib.request\nprint(urllib.request.urlopen('https://example.com').status)",
+    "from urllib.request import urlopen\nprint(len(urlopen('https://example.com').read()))",
+    "import http.client\nc = http.client.HTTPSConnection('example.com')",
+    "import socket\ns = socket.create_connection(('example.com', 80))",
+])
+def test_a_network_answer_is_run_specific(program):
+    assert conformance.is_run_specific(corpus.Entry(id="py-n", program=program))

@@ -139,7 +139,13 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// the names [`MODULE_ATTRS`] lists — and answers no runtime kind, for
 /// `cap-base64`'s reason: its one runtime refusal (`binascii`) is a computed
 /// argument whose call CPython raises on or words, and there is no rung above
-/// lypning-l to carry the kind to.
+/// lypning-l to carry the kind to. It also serves the `struct` MODULE —
+/// `pack`, `unpack`, `unpack_from` and `calcsize` — folded into this row
+/// rather than a row of its own, because the frozen core carries this table
+/// and a row costs it bytes a module name does not. `struct` has no
+/// [`MODULE_ATTRS`] row for the same reason, so its unserved names
+/// (`error`, `Struct`, `pack_into`, `iter_unpack`) are LATE: routed into
+/// lypning-l, refused there at run time, a spawn and never an answer.
 ///
 /// `cap-hashlib` serves the `hashlib` MODULE — four CONSTRUCTORS, and only the
 /// names [`MODULE_ATTRS`] lists, for the same reason `csv` needs a row: adding
@@ -193,9 +199,18 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// served head of future imports, so lypning-l's walk never sees one. The row
 /// is the MODULE column, not a kind, because what the CORE stops on is
 /// `module: from __future__ import …` and [`answers`] asks `served_module` of
-/// `module_of` that detail, which is `__future__`. Its refusal kinds (`future`,
-/// `annotation`) are shapes CPython owns — a `SyntaxError`, a `_Feature` value,
-/// annotations as strings — so the kind column stays empty.
+/// `module_of` that detail, which is `__future__`. Its own refusal kinds
+/// (`future`, `annotation`) are shapes CPython owns — a `SyntaxError`, a
+/// `_Feature` value, annotations as strings — and are not listed.
+///
+/// The kind column carries the two PARSE-time kinds the core's parser stops
+/// on and lypning-l's parser serves under the same contract — syntax the
+/// core refuses before the first statement, a run held from that statement
+/// (`route::arm_hold`, `parse::funcsig_used`): `decorator` (`@d` before a
+/// `def`) and `kwonly` (keyword-only parameters). Folded into this row rather
+/// than a row of their own because the frozen core carries this table and a
+/// row costs it bytes a kind array does not. `class`, `async` and `generator`
+/// are NOT here: a decorated class still refuses in lypning-l, at parse.
 ///
 /// `cap-random` is the first row with NEITHER column: it serves no module —
 /// `random` and `sys` are the core's own — and no runtime kind, because every
@@ -210,21 +225,28 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// CPython owns (a `ValueError` naming an AST node, a warning, an escape or a
 /// number `lex.rs` may misread), and there is no rung above lypning-l to carry
 /// it to.
+///
+/// `cap-re` also serves `unicodedata` (`ucd.rs`), folded into its row the way
+/// `struct` is into `cap-binascii`: a row of its own would cost the frozen
+/// core a tuple, a slice and a `SPECTRUM` name, where a second module name
+/// costs one pointer. It has no [`MODULE_ATTRS`] row; an unserved name is a
+/// `module-attr` block in lypning-l's own walk, and the run is held by name
+/// ([`core_refuses_import`], [`hint_held`]).
 pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-ast", &["ast"], &[]),
     ("cap-base64", &["base64"], &[]),
     ("cap-bigint", &[], &["bigint", "int-div-precision"]),
-    ("cap-binascii", &["binascii"], &["fromhex"]),
+    ("cap-binascii", &["binascii", "struct"], &["fromhex"]),
     ("cap-collections", &["collections"], &[]),
     ("cap-csv", &["csv"], &[]),
     ("cap-difflib", &["difflib"], &[]),
-    ("cap-future", &["__future__"], &[]),
+    ("cap-future", &["__future__"], &["decorator", "kwonly"]),
     ("cap-glob", &["glob"], &[]),
     ("cap-hashlib", &["hashlib"], &[]),
     ("cap-itertools", &["itertools"], &[]),
     ("cap-pathlib", &["pathlib"], &[]),
     ("cap-random", &[], &[]),
-    ("cap-re", &["re"], &[]),
+    ("cap-re", &["re", "unicodedata"], &[]),
     ("cap-statistics", &["statistics"], &[]),
     ("cap-textwrap", &["textwrap"], &[]),
     ("cap-time", &["time"], &[]),
@@ -557,15 +579,19 @@ fn future_route_stop(src: &str, body: &[Stmt], req: &mut Requirements) {
 /// be refused one statement in.
 pub const CAP_ATTRS: &[(&str, &str, &[&str], &[&str])] = &[
     ("cap-random", "random", &["sample", "shuffle"], &["Random"]),
-    ("cap-random", "sys", &[], &["version_info"]),
+    ("cap-random", "sys", &["version"], &["version_info"]),
 ];
 
 /// Does `v` serve `module.name` out of [`CAP_ATTRS`] — `shaped` when the walk
 /// blessed the shape it was spelled in? `sys.version_info` is answered only by
-/// a build whose reference version was MEASURED ([`crate::err::REF_PY_KNOWN`]).
+/// a build whose reference version was MEASURED ([`crate::err::REF_PY_KNOWN`]),
+/// and `sys.version` only by one whose probe RAN on that reference
+/// ([`crate::err::REF_PY_EXACT`]), since lypning-l refuses it on any other —
+/// a clause that folds away on such a build, which is every one `lypning
+/// build` makes with a reachable CPython.
 #[inline(never)]
 fn cap_attr(v: &Variant, module: &str, name: &str, shaped: bool) -> bool {
-    (module != "sys" || crate::err::REF_PY_KNOWN)
+    (module != "sys" || (crate::err::REF_PY_KNOWN && (crate::err::REF_PY_EXACT || name != "version")))
         && CAP_ATTRS.iter().any(|(c, m, any, shape)| {
             *m == module && v.caps.contains(c) && (any.contains(&name) || (shaped && shape.contains(&name)))
         })
@@ -965,6 +991,16 @@ mod spectrum_tests {
             let vs = verdicts(kind, "x", &[]);
             assert_eq!(engine_from_verdicts(&vs), Engine::Rust(1), "{kind}");
             assert_eq!(chain_after(SELF, kind, &vs), vec!["lypning-l", CPYTHON_NAME], "{kind}");
+        }
+        // The PARSE-time kinds `cap-future` answers: routed to row 1 when
+        // every import is served there, and still decided by the import when
+        // one is not (`@functools.lru_cache`). `class` stays above: a
+        // decorated class is refused at parse in both rows.
+        for kind in ["decorator", "kwonly"] {
+            let vs = verdicts(kind, "x", &[]);
+            assert_eq!(engine_from_verdicts(&vs), Engine::Rust(1), "{kind}");
+            let vs = verdicts(kind, "x", &["functools".to_string()]);
+            assert_eq!(engine_from_verdicts(&vs), Engine::CPython, "{kind}");
         }
     }
 
@@ -2007,7 +2043,19 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                 walk_expr(m, req);
             }
         }
-        Stmt::Def { name, body, params } => {
+        Stmt::Def {
+            name,
+            body,
+            params,
+            #[cfg(feature = "cap-future")]
+            decos,
+        } => {
+            // The decorators are evaluated OUT HERE too, and first — before
+            // the defaults and before the name is bound.
+            #[cfg(feature = "cap-future")]
+            for d in decos {
+                walk_expr(d, req);
+            }
             // The defaults are evaluated OUT HERE, at definition time, so they
             // are walked before the scope is entered.
             for d in params.defaults.iter().flatten() {
@@ -3750,7 +3798,7 @@ pub fn static_stop_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
 /// The capabilities whose programs every Rust rung refused before this branch
 /// served them — each went to CPython, and got CPython's `Did you mean`
 /// suggestion, which no variant computes (`err::forgot_import`).
-#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
 const HINT_HELD_CAPS: &[&str] = &[
     "cap-ast",
     "cap-binascii",
@@ -3772,7 +3820,7 @@ const HINT_HELD_CAPS: &[&str] = &[
 /// core blocks as `module: from __future__ import …`. Empty means the core's
 /// walk blocks on no capability, so as far as capabilities go the router picks
 /// the core — and what the core answers, this variant must answer the same.
-#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
 fn core_lacks(req: &Requirements, future_head: bool) -> Vec<&'static str> {
     // The core's caps are empty, so a module some CAPS row lists is one the
     // core's walk blocks; a module no row lists is the core's own, or nobody's.
@@ -3793,6 +3841,10 @@ fn core_lacks(req: &Requirements, future_head: bool) -> Vec<&'static str> {
     if req.fromhex {
         out.push("cap-binascii");
     }
+    // A decorator or a keyword-only parameter: the core's PARSER refuses it,
+    // before the first statement, and `cap-future` answers both kinds.
+    #[cfg(feature = "cap-future")]
+    let future_head = future_head || crate::parse::funcsig_used();
     if future_head {
         out.push("cap-future");
     }
@@ -3802,12 +3854,12 @@ fn core_lacks(req: &Requirements, future_head: bool) -> Vec<&'static str> {
 /// Does the core's walk admit this program, as far as capabilities go? See
 /// [`core_lacks`]; `pub` for the test that holds the two variants' answers to
 /// each other.
-#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
 pub fn core_admits(body: &[Stmt], src: &str) -> bool {
     core_lacks(&walk_for_hold(body, src), has_future_head(src)).is_empty()
 }
 
-#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
 fn walk_for_hold(body: &[Stmt], src: &str) -> Requirements {
     let mut req = Requirements {
         glob_wrappers: trusted_wrappers(src),
@@ -3820,7 +3872,7 @@ fn walk_for_hold(body: &[Stmt], src: &str) -> Requirements {
 /// Did the parse remove a served `from __future__` head? It did exactly when a
 /// NAME token spells `__future__` in a program that parsed: `future.rs`
 /// refuses every other such name. A string or a comment is not a name.
-#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
 fn has_future_head(src: &str) -> bool {
     #[cfg(feature = "cap-future")]
     if src.contains("__future__") {
@@ -3847,24 +3899,35 @@ fn has_future_head(src: &str) -> bool {
 /// (`io::hold`), which is where the core, running the same program, refuses:
 /// an import that never runs (`if False: import time`) holds nothing, and the
 /// program is answered as the core answers it.
-#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
 pub fn hint_held(body: &[Stmt], src: &str) -> bool {
-    core_lacks(&walk_for_hold(body, src), has_future_head(src))
+    let req = walk_for_hold(body, src);
+    // Armed by NAME, as [`core_refuses_import`] holds it.
+    #[cfg(feature = "cap-re")]
+    if req.imports.iter().any(|m| m == "unicodedata") {
+        return true;
+    }
+    core_lacks(&req, has_future_head(src))
         .iter()
         .any(|c| HINT_HELD_CAPS.contains(c))
 }
 
 /// Before the first statement, for a run [`hint_held`] says the core routes
 /// past itself: the run is ARMED (`io::arm`), and HELD where the capability
-/// runs (`io::hold`) — a served `__future__` head at once, since the core
-/// refuses it at its first statement. Until then it answers exactly as the
+/// runs (`io::hold`) — a served `__future__` head, a decorator or a
+/// keyword-only parameter at once, since the core refuses each before its
+/// first statement. Until then it answers exactly as the
 /// core answers (invariant 10). A routed run and a direct one are the same
 /// run: nothing in the environment says which it is.
-#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
 pub fn arm_hold(body: &[Stmt], src: &str) {
     if hint_held(body, src) {
         crate::io::arm();
-        if has_future_head(src) {
+        #[cfg(feature = "cap-future")]
+        let head = has_future_head(src) || crate::parse::funcsig_used();
+        #[cfg(not(feature = "cap-future"))]
+        let head = has_future_head(src);
+        if head {
             crate::io::hold();
         }
     }
@@ -3884,8 +3947,15 @@ pub fn core_refuses_attr(module: &str, name: &str) -> bool {
 /// Does running `module` mean running a capability the core lacks, one whose
 /// programs [`HINT_HELD_CAPS`] says went to CPython before — the point at
 /// which the core, running the same program, refuses (`io::hold`)?
-#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
 pub fn core_refuses_import(module: &str) -> bool {
+    // `unicodedata` rides `cap-re`, which is not in [`HINT_HELD_CAPS`] (an
+    // `re` program the core routed on was answered by lypning-l before), so
+    // it is held by NAME: its programs went to CPython before this served it.
+    #[cfg(feature = "cap-re")]
+    if module == "unicodedata" {
+        return true;
+    }
     CAPS.iter().any(|(c, mods, _)| {
         HINT_HELD_CAPS.contains(c) && !SPECTRUM[0].caps.contains(c) && mods.contains(&module)
     })

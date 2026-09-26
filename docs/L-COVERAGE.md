@@ -12,6 +12,8 @@ The core's capability set is unchanged.
 | Regex | ASCII named captures; name-based group/index/start/end/span access; `groupdict(default)`; nested and repeated captures | Unicode group names, named backreferences/templates, `groupindex`, `expand`, last-group metadata and previously unsupported regex constructs |
 | Numeric conversion | Wide signed/unsigned `int.to_bytes`; exact `float.as_integer_ratio` for every finite binary64 value, including subnormals | The existing 4,096-byte conversion ceiling; general mixed wide-integer/float arithmetic is not added |
 | `ast` (`cap-ast`) | `import ast`; `ast.literal_eval` over a `str`: str/bytes literals and adjacent concatenation, int, float, one sign before a number, `True`/`False`/`None`, tuples, lists, dicts, sets, `set()` (printing a set of more than one element still declines as `set-order`, as it does everywhere) | `ast.parse` in any form (the engine's parser accepts programs CPython's rejects), `walk`, `dump`, `unparse` and the node classes, routed to CPython; any input where `lex.rs` and CPython's tokenizer could disagree refuses |
+| Binary records (`struct`, added to `cap-binascii`) | `struct.pack`/`unpack`/`unpack_from`/`calcsize` over `x c b B ? h H i I l L q Q s d`, standard orders everywhere and native layout on 64-bit little-endian Unix; `unpack_from` with a positional or `offset=` offset; `random.getrandbits(64)`, the draw the float-reinterpret idiom feeds `'<Q'` | Every `struct.error` and `TypeError` path, NaN packs, `f`/`e`/`n`/`N`/`P`/`p`, native `l`/`L`, whitespace or non-ASCII in a format, `bytes` formats, `bytearray`/`memoryview` buffers, a negative offset, `Struct`, `error`, `pack_into` and `iter_unpack` (refused at run time) |
+| Decorators and keyword-only parameters (added to `cap-future`) | `@<expr>` lines before a `def`, at any depth (PEP 614 expressions: names, attributes, calls, subscripts, lambdas), evaluated before the defaults and bound once; `def f(a, *, b, c=1)`, `def f(*args, k, **kw)` and the same in `lambda`; every such run is held from its first statement | A decorated `class`, `async def` or generator; `@staticmethod`/`@classmethod`/`@property`; every binding `TypeError` and `*` over a non-iterable (`call`, in every variant), a function as a set element or dict key (`iterator-identity`), and every compile-time error after the first `@` or keyword-only name |
 | Hex and lossy text (added to `cap-binascii`) | `bytes.fromhex(str)` off the type or an instance; `bytes.decode` with UTF-8 and `errors='replace'` (the module's `hexlify`/`unhexlify` family was already served) | `bytes.fromhex` of a bytes argument (which CPython accepts only from 3.14), every other codec or error handler, and every argument shape CPython raises for |
 
 A bare string passed to `csv.reader` is an iterable of characters, not one
@@ -28,7 +30,9 @@ engine hashes, not just the repository commit.
 
 The checks live in `tests/test_csv_grid.py`, `tests/test_re_grid.py`,
 `tests/test_bigint_bytes_ratio.py`, `tests/test_ast_grid.py`,
-`tests/test_binascii_grid.py` and `tests/test_coverage_integration.py`; the
+`tests/test_binascii_grid.py`, `tests/test_struct_grid.py`,
+`tests/test_decorator_grid.py`, `tests/test_kwonly_grid.py` and
+`tests/test_coverage_integration.py`; the
 numeric design and limits are in [BIGINT-NUMERIC.md](BIGINT-NUMERIC.md).
 Use raw stdout/stderr bytes. A test permitting any clean refusal cannot prove
 that an intended new capability actually runs natively.

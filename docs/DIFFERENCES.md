@@ -111,9 +111,10 @@ lacks has **run** is *held*: every uncaught `NameError`, `AttributeError` and
 unexpected-keyword `TypeError` is `name-hint` too, and the run refuses rather
 than commit past 8 MiB of output or `os.rmdir` a directory it did not make, so
 that refusal stays possible (`io.rs:hold`). The capabilities are `itertools`,
-`difflib`, `time`, `statistics`, `textwrap` and `binascii` (held when imported),
+`difflib`, `time`, `statistics`, `textwrap`, `binascii`, `struct` and
+`unicodedata` (held when imported),
 a served `from __future__` head (held from the first statement), and
-`cap-random`'s `random.Random`/`sample`/`shuffle` and `sys.version_info` (held
+`cap-random`'s `random.Random`/`sample`/`shuffle`, `sys.version_info` and `sys.version` (held
 when evaluated) — the points at which the core, running the same program,
 refuses. Those programs went to CPython before the capability existed. The
 spectrum router's own verdict, computed inside `lypning-l` before the first
@@ -162,13 +163,13 @@ no capability feature — a larger engine would answer every `math` program
 exactly as the smaller one does (`math.rs`).
 
 Any other import — `functools`, `datetime`,
-`string`, `struct`, `argparse`, `subprocess`, a third-party package, a module of
+`string`, `argparse`, `subprocess`, a third-party package, a module of
 the user's own — is `unsupported: module: import <name>` on both engines, and
 `lypning-l` adds the modules in §5.
 
 ### 4.3 Modules served in part
 
-Eleven modules on `lypning-l` are served as a named list of attributes rather than
+Twelve modules on `lypning-l` are served as a named list of attributes rather than
 whole, so the walk in the *smaller* engine can decide statically whether the
 larger one would answer. Everything not listed is `unsupported: module-attr:
 <module>.<name>` — including under `from <module> import <name>`:
@@ -181,6 +182,7 @@ larger one would answer. Everything not listed is `unsupported: module-attr:
 | `csv` | `DictReader` `QUOTE_ALL` `QUOTE_MINIMAL` `QUOTE_NONE` `QUOTE_NONNUMERIC` `reader` | `route.rs:MODULE_ATTRS` — the writers are CPython's |
 | `glob` | `escape` `glob` `has_magic` `iglob` | `route.rs:GLOB_SERVED` |
 | `hashlib` | `md5` `sha1` `sha256` `sha512` | `hashlib.rs:SERVED` — `new`, the SHA-3 family and the KDFs are CPython's |
+| `struct` | `calcsize` `pack` `unpack` `unpack_from` | `pystruct.rs:SERVED` — over the codes `x c b B ? h H i I l L q Q s d`, native layout on a 64-bit little-endian Unix host only; every `struct.error` and `TypeError` it would raise, a NaN packed, `f` and `e`, and `error`, `Struct`, `pack_into` and `iter_unpack` refuse — at run time, since no `route.rs:MODULE_ATTRS` row lets the core's walk see them |
 | `statistics` | `mean` `median` `median_high` `median_low` | `statistics.rs:SERVED` — `mean` exact over ints, bools and floats; empty data, a float beside an int past 64 bits, a median over items `<` does not totally order (mixed kinds past the first pair, a nested NaN, a set, an int past 2**53 beside a float) and the spread functions are CPython's |
 | `itertools` | `combinations` `product` | `itertools.rs:SERVED` — `chain`, `islice`, `permutations` and the rest are CPython's |
 | `difflib` | nothing: the import alone | `route.rs:MODULE_ATTRS` — an EMPTY row, so every `difflib.<name>` is CPython's |
@@ -202,18 +204,18 @@ either binary):
 |---|---|---|
 | `cap-ast` | the `ast` module — `literal_eval` over a `str`, and no other name (`ast.parse` refuses) | `pyast.rs` |
 | `cap-base64` | the `base64` module, four functions of it | `base64.rs` |
-| `cap-bigint` | no module: integers past 64 bits, exact | `bigint.rs` |
-| `cap-binascii` | the `binascii` module, six functions of it | `binascii.rs` |
+| `cap-bigint` | no module: integers past 64 bits, exact — and so `random.getrandbits(64)`, whose draw may be one | `bigint.rs` |
+| `cap-binascii` | the `binascii` module, six functions of it, and the `struct` module, four | `binascii.rs`, `pystruct.rs` |
 | `cap-collections` | the `collections` module — `Counter`, `defaultdict` | `collections.rs` |
 | `cap-csv` | the `csv` module — the two readers | `csv.rs` |
 | `cap-difflib` | the `difflib` module — the import, and no name on it | `modules.rs:MODULES` |
-| `cap-future` | `__future__` — a head of no-op feature imports; `def` annotations never evaluated under `annotations`, or under any head on a 3.14+ reference (PEP 649) | `future.rs` |
+| `cap-future` | `__future__` — a head of no-op feature imports; `def` annotations never evaluated under `annotations`, or under any head on a 3.14+ reference (PEP 649); and decorators on a `def` and keyword-only parameters, two parse-time kinds the core refuses (§7) | `future.rs`, `parse.rs` |
 | `cap-glob` | the `glob` module | `glob.rs` |
 | `cap-hashlib` | the `hashlib` module — four constructors | `hashlib.rs` |
 | `cap-itertools` | the `itertools` module — `product`, `combinations` | `itertools.rs` |
 | `cap-pathlib` | the `pathlib` module — `Path` | `pathlib.rs` |
-| `cap-random` | no module: `random.Random(int)`, `random.sample`, `random.shuffle`, and `sys.version_info` as `[0]`, `[:2]`, `.major`/`.minor` or against a tuple of at most two items | `randobj.rs` |
-| `cap-re` | the `re` module and its matcher | `re.rs` |
+| `cap-random` | no module: `random.Random(int)`, `random.sample`, `random.shuffle`, `sys.version_info` as `[0]`, `[:2]`, `.major`/`.minor` or against a tuple of at most two items, and `sys.version` while the fallback CPython is the file the build probed | `randobj.rs` |
+| `cap-re` | the `re` module and its matcher, and `unicodedata` (`unidata_version`, `category`, `combining`, `decomposition`, `normalize`, `is_normalized`) from the reference CPython's own tables, dumped at build time | `re.rs`, `ucd.rs` |
 | `cap-statistics` | the `statistics` module — four functions of it | `statistics.rs` |
 | `cap-textwrap` | the `textwrap` module — five functions of it | `textwrap.rs` |
 | `cap-time` | the `time` module — the clocks, a bounded `sleep`, one UTC stamp | `time.rs` |
@@ -273,20 +275,38 @@ generator expressions, and f-strings with format specs (`parse.rs`). `del`
 takes a name, a subscript or a tuple of them; a slice or an attribute target
 is `unsupported: del`.
 
-Refused, on both engines, and detected before a statement runs:
+Refused, on both engines, and detected before a statement runs (the two rows
+marked *core* are served by lypning-l, below):
 
 | construct | refusal |
 |---|---|
 | `class` | `unsupported: class` |
-| `@decorator` | `unsupported: decorator` |
+| `@decorator` — *core*; on lypning-l, one before anything but a `def` | `unsupported: decorator` |
 | `yield`, and so every generator function | `unsupported: generator` |
 | `async def`, `await`, `async for` | `unsupported: async` |
 | `:=` | `unsupported: walrus` |
 | `nonlocal` | `unsupported: nonlocal` |
 | `except*` | `unsupported: except-star` |
-| keyword-only parameters, `def f(*, a)` | `unsupported: kwonly` |
+| keyword-only parameters, `def f(*, a)` — *core*; on lypning-l, a list CPython rejects | `unsupported: kwonly` |
 | `...` | `unsupported: ellipsis` |
 | `1j` | `unsupported: complex` |
+
+lypning-l serves decorators on a `def` and keyword-only parameters under
+`cap-future`, whose `route::CAPS` row answers both kinds, so the core routes
+such a program there when every import is served. The decorator expressions
+run top to bottom before the defaults, apply bottom to top, and bind the name
+once. Since the core refuses the program before its first statement, the run
+is held from that statement: an uncaught error refuses as `name-hint`, and a
+function used as a set element or dict key as `iterator-identity`. A binding
+`TypeError` — too many or missing arguments, an unexpected keyword, a value
+given twice, a positional-only name by keyword — and `*` over a non-iterable
+refuse as `call` in EVERY variant, held or not: CPython names the function by
+a qualified name from 3.10, counts every missing argument, and adds `Did you
+mean` on 3.14, so no one wording is right on every minor. After the first `@` or
+keyword-only name, a compile-time error refuses with that kind rather than
+printing a `SyntaxError` the core never reached. A decorated `class`, `async
+def` or generator still refuses, as do `@staticmethod`, `@classmethod` and
+`@property`, which lypning-l does not have.
 
 `match` is the one construct that is **not** a refusal: the grammar predates it,
 so every engine answers `SyntaxError` at exit 1. The chain is still right —

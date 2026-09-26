@@ -75,7 +75,10 @@ cap-pathlib = []
 # NAMES of the matcher-backed functions, which refuse at call time until the
 # matcher lands. 248 corpus programs (2026-09-04) were blocked on `import re`
 # and 174 of them never reach a regex call in the battery. `src/re.rs` is the
-# whole of it; the core gains none of it.
+# whole of it; the core gains none of it. It also carries `unicodedata`
+# (`src/ucd.rs`), from the reference CPython's own tables that build.rs dumps
+# (`ucd_dump.py`) — folded in rather than a feature of its own, which would
+# be a new `route::CAPS` row in the frozen core.
 cap-re = []
 
 # `csv.reader` and `csv.DictReader`, LAZY, over files, stdin and in-memory
@@ -113,7 +116,10 @@ cap-base64 = []
 # `crc32` and the uu/qp codecs are absent, so `route::MODULE_ATTRS` blocks
 # them in the CORE's walk; every `binascii.Error` an input would raise is a
 # refusal. 13 corpus programs (mined 2026-09-24) were blocked first on
-# `import binascii`. `src/binascii.rs` is the whole of it.
+# `import binascii`. `src/binascii.rs` is the whole of it — and, for binary
+# records, `struct.pack` / `unpack` / `unpack_from` / `calcsize` over the
+# codes `x c b B ? h H i I l L q Q s d`, every `struct.error` a refusal:
+# `src/pystruct.rs`.
 cap-binascii = ["cap-base64"]
 
 # `hashlib.md5` / `sha1` / `sha256` / `sha512`, with `.update()`,
@@ -184,7 +190,10 @@ cap-time = []
 # answers with a `SyntaxError` refuses statically, as does the `_Feature` name
 # and `__annotations__`. 76 corpus programs (census 2026-09-24, 9,064 loaded)
 # stopped first on this import. `src/future.rs` is the whole of it, plus one
-# `#[cfg]` line at the end of `parse::parse()`.
+# `#[cfg]` line at the end of `parse::parse()`. It also serves the two
+# PARSE-time kinds the core refuses under the same contract — held from the
+# first statement: decorators on a `def` and keyword-only parameters
+# (`parse.rs`, the binder in `eval.rs`), which its `route::CAPS` row lists.
 cap-future = []
 
 # `random.Random(int)` instances, `random.sample`, `random.shuffle`, and

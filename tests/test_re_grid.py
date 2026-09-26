@@ -1183,4 +1183,5 @@ def test_the_python_copy_of_the_capability_table_is_the_binarys_own() -> None:
     assert table["self"] == engines.LYPNING_L
     assert "cap-re" in table["self_caps"]
     assert {r["name"]: tuple(r["caps"]) for r in table["spectrum"]} == engines.VARIANT_CAPS
-    assert {r["cap"]: r["modules"] for r in table["caps"]}["cap-re"] == ["re"]
+    # `unicodedata` rides `cap-re` (ucd.rs): folded in, not a row of its own.
+    assert {r["cap"]: r["modules"] for r in table["caps"]}["cap-re"] == ["re", "unicodedata"]

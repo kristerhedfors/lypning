@@ -86,7 +86,60 @@ pub const MAX_CHAIN_OPS: u32 = 1000;
 /// accepted here that CPython's compiler rejects is not lax: it RUNS, and
 /// answers a program CPython never starts (`def f(a, a)`, `0777`, `break` at
 /// module level, `*a = [1]`, a tab/space mix CPython calls a `TabError`).
+#[cfg(not(feature = "cap-future"))]
+pub use self::parse_body as parse;
+
+#[cfg(feature = "cap-future")]
+thread_local! {
+    /// The first of `decorator` and `kwonly` the parse in progress SERVED — the
+    /// two refusal kinds the core's parser stops on and lypning-l answers under
+    /// `cap-future`, and empty until one is served. Set by the parser itself,
+    /// wherever the grammar reaches (an f-string field, a default, a decorator's
+    /// own lambda), because a walk over the tree would have to be taught every
+    /// place one can hide; read by `route::core_lacks` and `route::arm_hold`,
+    /// which hold such a run from its first statement exactly as they hold a
+    /// served `__future__` head: the core refuses the program before it starts.
+    static FUNCSIG: std::cell::Cell<&'static str> = const { std::cell::Cell::new("") };
+}
+
+/// Did the last [`parse`] on this thread serve a decorator or a keyword-only
+/// parameter? See [`FUNCSIG`].
+#[cfg(feature = "cap-future")]
+pub fn funcsig_used() -> bool {
+    !FUNCSIG.with(|f| f.get()).is_empty()
+}
+
+/// The parser served `kind` (`decorator` or `kwonly`); the first one sticks.
+#[cfg(feature = "cap-future")]
+fn note_funcsig(kind: &'static str) {
+    FUNCSIG.with(|f| {
+        if f.get().is_empty() {
+            f.set(kind)
+        }
+    });
+}
+
+/// [`parse_body`], and one rule on top: once the parse has served a decorator
+/// or a keyword-only parameter, a compile-time `SyntaxError` found later is a
+/// REFUSAL of that kind. The core's parser stops at the first `@` or
+/// keyword-only name, so it never reaches the error and exits 90; lypning-l
+/// does the same rather than print a `SyntaxError` the core never did — and
+/// the texts differ by version anyway (3.9 says `invalid syntax` for
+/// `def f(*, a, /)`, 3.12 renamed the default-order message).
+#[cfg(feature = "cap-future")]
 pub fn parse(src: &str) -> R<Vec<Stmt>> {
+    FUNCSIG.with(|f| f.set(""));
+    let r = parse_body(src);
+    let k = FUNCSIG.with(|f| f.get());
+    match r {
+        Err(e) if !k.is_empty() && matches!(e.kind(), crate::err::ErrKind::Syntax { .. }) => {
+            Err(unsupported(k, "a compile-time error after a decorator or keyword-only parameter"))
+        }
+        r => r,
+    }
+}
+
+pub fn parse_body(src: &str) -> R<Vec<Stmt>> {
     let mut p = Parser {
         t: tokenize(src)?,
         i: 0,
@@ -368,6 +421,11 @@ impl Parser {
     }
 
     fn compound(&mut self) -> R<Stmt> {
+        #[cfg(feature = "cap-future")]
+        if self.is_op("@") {
+            return self.decorated();
+        }
+        #[cfg(not(feature = "cap-future"))]
         if self.is_op("@") {
             return Err(unsupported("decorator", "decorated definition"));
         }
@@ -464,6 +522,8 @@ impl Parser {
                 name,
                 params: Rc::new(params),
                 body: Rc::new(body),
+                #[cfg(feature = "cap-future")]
+                decos: Vec::new(),
             });
         }
         if self.eat_kw("with") {
@@ -641,6 +701,37 @@ impl Parser {
         Ok(p)
     }
 
+    /// `@<expr> NEWLINE` lines, then a `def` — PEP 614's grammar, which is
+    /// 3.9's: any expression but a bare tuple or an unparenthesized walrus
+    /// (`expr` refuses the walrus as `walrus`, and stops before a `,`). Blank
+    /// and comment lines between them are the lexer's and never reach here.
+    /// Everything else a decorator can precede — `class`, `async def`, a
+    /// statement — and a decorator not ended by a NEWLINE (`@d def f()` on
+    /// one line, `@a, b`) refuse as `decorator`, before anything runs, never
+    /// as this parser's own `SyntaxError`.
+    #[cfg(feature = "cap-future")]
+    fn decorated(&mut self) -> R<Stmt> {
+        // At the first `@`, where the core stops: any SyntaxError after it is
+        // a refusal (`parse`).
+        note_funcsig("decorator");
+        let mut decos = Vec::new();
+        while self.eat_op("@") {
+            decos.push(self.expr()?);
+            if !self.eat_newline() {
+                return Err(unsupported("decorator", "a decorator not ended by a newline"));
+            }
+            while self.eat_newline() {}
+        }
+        if !self.is_kw("def") {
+            return Err(unsupported("decorator", "a decorator on anything but a def"));
+        }
+        let mut st = self.compound()?;
+        if let Stmt::Def { decos: d, .. } = &mut st {
+            *d = decos;
+        }
+        Ok(st)
+    }
+
     /// The parameter list of a `def` **and** of a `lambda`, which are the same
     /// grammar under two different terminators — `)` for one, `:` for the
     /// other.
@@ -676,6 +767,11 @@ impl Parser {
             if p.star.is_some() && self.is_op("*") {
                 return Err(LypningError::syntax(self.line(), "* argument may appear only once"));
             }
+            // A second `*` after a bare one: `def f(*, *, a)`, `def f(*, a, *b)`.
+            #[cfg(feature = "cap-future")]
+            if p.kwonly.is_some() && self.is_op("*") {
+                return Err(unsupported("kwonly", "a second * in a parameter list"));
+            }
             if self.eat_op("/") {
                 // CPython's three, word for word; each was accepted and the
                 // marker ignored.
@@ -687,6 +783,11 @@ impl Parser {
                 }
                 if p.star.is_some() {
                     return Err(self.reject("/ must be ahead of *"));
+                }
+                // `def f(*, a, /)`: 3.9 says `invalid syntax`, 3.10+ name it.
+                #[cfg(feature = "cap-future")]
+                if p.kwonly.is_some() {
+                    return Err(unsupported("kwonly", "/ after keyword-only parameters"));
                 }
                 // Positional-only marker. The names before it may not be given
                 // by keyword, which is `posonly`; before that field existed the
@@ -701,6 +802,20 @@ impl Parser {
                 continue;
             }
             if self.eat_op("*") {
+                // A BARE `*`: the names after it are keyword-only. It must be
+                // followed by `,` and a NAME — `def f(*)`, `lambda *: 0`,
+                // `def f(*, **k)`, `def f(*, /)` are CPython's SyntaxErrors,
+                // worded differently by 3.9 and 3.14, so each refuses.
+                #[cfg(feature = "cap-future")]
+                if self.is_op(",") || self.is_op(terminator) {
+                    note_funcsig("kwonly");
+                    if !self.eat_op(",") || !matches!(self.peek(), Tok::Name(_)) {
+                        return Err(unsupported("kwonly", "named arguments must follow bare *"));
+                    }
+                    p.kwonly = Some(p.names.len());
+                    continue;
+                }
+                #[cfg(not(feature = "cap-future"))]
                 if self.is_op(",") || self.is_op(terminator) {
                     return Err(unsupported("kwonly", "keyword-only parameters"));
                 }
@@ -730,6 +845,12 @@ impl Parser {
                 // Neither is a refusal, so neither could be answered one spawn
                 // later. Refusing here makes the two spellings of the same
                 // feature behave the same way.
+                #[cfg(feature = "cap-future")]
+                if p.star.is_some() && p.kwonly.is_none() {
+                    note_funcsig("kwonly");
+                    p.kwonly = Some(p.names.len());
+                }
+                #[cfg(not(feature = "cap-future"))]
                 if p.star.is_some() {
                     return Err(unsupported("kwonly", "keyword-only parameters"));
                 }
@@ -756,6 +877,10 @@ impl Parser {
         if (0..n).any(|i| p.names[..i].contains(&p.names[i])) {
             return Err(self.reject("duplicate argument in function definition"));
         }
+        // Keyword-only defaults may come in any order (`def f(*, a=1, b)`).
+        #[cfg(feature = "cap-future")]
+        let end = p.star.or(p.kwonly).or(p.dstar).unwrap_or(n);
+        #[cfg(not(feature = "cap-future"))]
         let end = p.star.or(p.dstar).unwrap_or(n);
         if (1..end).any(|j| p.defaults[j].is_none() && p.defaults[j - 1].is_some()) {
             return Err(self.reject("parameter without a default follows parameter with a default"));
@@ -2126,7 +2251,18 @@ fn g_stmt<'a>(st: &'a Stmt, s: &mut Seen<'a>) -> Result<(), String> {
             g_stmts(body, s)?;
             g_stmts(els, s)?;
         }
-        Stmt::Def { name, params, body } => {
+        Stmt::Def {
+            name,
+            params,
+            body,
+            #[cfg(feature = "cap-future")]
+            decos,
+        } => {
+            // The decorators are read in the ENCLOSING scope, before the name
+            // is bound: `@d def g(): …` then `global d` or `global g` is
+            // CPython's compile-time error either way.
+            #[cfg(feature = "cap-future")]
+            decos.iter().for_each(|d| g_expr(d, s));
             s.push((name, LOCAL));
             g_params(params, s);
             globals_in(body, &params.names)?;

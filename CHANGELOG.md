@@ -27,6 +27,70 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   -preflight, -launch and -evidence skills warn that a `round02/**` push
   rebuilds the verifier Space (Actions 36196784607, 2026-09-25).
 
+**2026-09-26** — Binding errors refuse everywhere; lypning-l serves `sys.version` and `unicodedata` ([#136](https://github.com/kristerhedfors/lypning/pull/136))
+
+- A call whose arguments do not bind — too many or missing arguments, an
+  unexpected or repeated keyword, a positional-only name by keyword — and
+  `*` over a non-iterable refuse as `call` in every variant, as do
+  `json.loads()`/`dumps()`/`load()`/`dump()` with no argument. CPython words
+  them by version (qualified names from 3.10, every missing argument
+  counted, `Did you mean` on 3.14); the binder's one wording was wrong on
+  every minor. The wording code is deleted.
+- lypning-l serves `sys.version` from a separate build-time probe, only
+  while the CPython it would fall through to is the probed file (realpath,
+  length, mtime, and the same for its libpython); anything else refuses.
+- lypning-l serves `unicodedata` — `unidata_version`, `category`,
+  `combining`, `decomposition`, `normalize`, `is_normalized` — from the
+  reference CPython's own tables, dumped at build time; folded into
+  `cap-re`. While it is imported, `chr()` of a surrogate and Unicode-property
+  questions about non-ASCII text refuse when the reference's Unicode is not
+  Rust's.
+- The core on musl stays 1,175,760 B, 9 blocks (CI runs of 2026-09-26 on
+  the 3.11 reference): binding refusals −752 B `.text` and −352 B
+  `.rodata`, `sys.version` +32 B `.rodata`, `unicodedata` +32 B `.rodata`,
+  leaving 762 B before the code segment's page and 444 B before the RELRO
+  page. lypning-l on musl grows 65,760 B for `unicodedata`, still 12 blocks.
+
+**2026-09-26** — lypning-l serves decorators and keyword-only parameters ([#135](https://github.com/kristerhedfors/lypning/pull/135))
+
+- Under `cap-future`: `@<expr>` lines before a `def` (evaluated top to bottom
+  before the defaults, applied bottom to top, the name bound once), and
+  `def f(a, *, b, c=1)`, `def f(*args, k, **kw)` and the same in `lambda`.
+- The core's parser refuses both at parse, so such a run is held from its
+  first statement: a binding `TypeError` or `*` over a non-iterable refuses
+  as `call`, a function as a set element or dict key as
+  `iterator-identity`, and any compile-time error after the first `@` or
+  keyword-only name as `decorator`/`kwonly`. A decorated `class`, `async
+  def` or generator still refuses.
+- The core evaluates a `def`'s annotations after its defaults, as CPython
+  3.9-3.13 do; they ran first.
+- Routing: `decorator` and `kwonly` join the `cap-future` row of
+  `route::CAPS`, the core's only other change (host `__text` +12 B on the
+  3.14-reference build and +8 B on the 3.11-reference build, macOS arm64,
+  2026-09-26; musl unmeasured). A decorated class and `@staticmethod` are
+  now routed into lypning-l and refused there: a late spawn, not a wrong
+  answer.
+
+**2026-09-26** — lypning-l serves `struct` and `random.getrandbits(64)` ([#134](https://github.com/kristerhedfors/lypning/pull/134))
+
+- `struct.pack` / `unpack` / `unpack_from` / `calcsize` and their `from struct
+  import` spellings, over the codes `x c b B ? h H i I l L q Q s d`, in
+  `pystruct.rs` under `cap-binascii`. Native layout only on a 64-bit
+  little-endian Unix host, aligned before each item (even at count 0) and
+  never padded at the end; a native `?` byte other than 0 or 1 refuses, since
+  3.11 and 3.14 read it differently.
+- Every `struct.error` and `TypeError` refuses rather than raises (the texts
+  changed in 3.12 and 3.14), as do a NaN packed, `f`/`e`, whitespace or a
+  non-ASCII character in a format, a `bytes` format, `bytearray` buffers and
+  every keyword but `unpack_from`'s `offset=`.
+- `random.getrandbits(64)`: two MT words, low first, a wide integer at or past
+  2**63 — on `cap-bigint`, so the core's code does not change.
+- Routing: `struct` is folded into the `cap-binascii` row of `route::CAPS`, the
+  core's only cost (host `__text` unchanged in both the 3.11- and the
+  3.14-reference build, macOS arm64, 2026-09-26). With no `MODULE_ATTRS` row,
+  `struct.error`, `Struct`, `pack_into` and `iter_unpack` are routed into
+  lypning-l and refused there: a late spawn, not a wrong answer.
+
 **2026-09-26** — Draw an oversize evaluation chunk in parts, so eval-2 fits the h200 ([#130](https://github.com/kristerhedfors/lypning/pull/130))
 
 - The seed-1111 finish (HF job 6ab6a20c6b030d633f691a95) completed both test

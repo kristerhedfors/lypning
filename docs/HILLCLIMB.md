@@ -26,6 +26,33 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-09-26 · iteration 86 — a wrong answer that paid for two modules
+
+Focus: coverage and cost together. The core's musl code segment had **10 B**
+of headroom at 5da7c55 (scratch probe run 36250690420, 3.11-reference build):
+the next shared change would have cost a block. Binding errors were the fix and
+the room. Both engines worded them differently from every CPython minor, for
+example `k() missing 1 ...` where CPython lists all three names. They now refuse
+in every variant, and deleting the wording code gave back 752 B of code and
+352 B of read-only data.
+
+| | 5da7c55 | after (2026-09-26) |
+|---|---|---|
+| core musl file / blocks | 1,175,760 B / 9 | 1,175,760 B / 9 |
+| core code headroom / read-only headroom | 10 B / 188 B | 762 B / 444 B |
+| lypning-l MATCH / MISMATCH | 7,446 / 0 (#135 run) | 7,460 / 0 |
+| all arms MISMATCH · UNSAFE · dispatchers | 0 · 0 · 10,173/10,173 | 0 · 0 · 10,173/10,173 |
+
+Conformance: `lypning conformance --mixture both`, 10,173 of 14,816 graded,
+macOS arm64 host build, graded against CPython 3.14.5. Headroom comes from
+scratch probes 36250690420, 36251334332 and 36252203608.
+
+Two modules spent 64 B of the read-only room and no code:
+- `sys.version`, baked at build time and served only when the fallback CPython
+  is fingerprinted as the exact build the bake came from.
+- `unicodedata`, built from the reference's own dumped tables, exact per minor
+  by construction.
+
 ## 2026-09-26 · iteration 85 — glob order is computed, not hidden
 
 Focus: coverage. Host: macOS arm64, host-target build (no rustup, so musl

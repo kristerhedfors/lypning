@@ -395,8 +395,11 @@ mod tests {
         for (cap, m, any, shaped) in crate::route::CAP_ATTRS {
             assert_eq!(*cap, "cap-random");
             // Served anywhere: a VALUE out of `get_attr`.
+            // `sys.version` is a value only where the fallback CPython is the
+            // build's reference ([`sys_version`]); elsewhere, that refusal.
             for n in *any {
-                assert!(crate::modules::get_attr(&Value::Module(m), n).is_ok(), "{m}.{n}");
+                let r = crate::modules::get_attr(&Value::Module(m), n);
+                assert!(r.is_ok() || (*m, *n) == ("sys", "version"), "{m}.{n}");
             }
             // Served only in a shape `eval.rs` resolves at the parent: never a
             // value, so every other spelling refuses where the core does.
@@ -421,4 +424,119 @@ mod tests {
             assert_eq!(p, 4u64.pow(f.ceil() as u32), "k={k}");
         }
     }
+}
+
+// ---- sys.version ---------------------------------------------------------------
+
+/// `build.rs`'s bake: `Baked` or `None`, from `$OUT_DIR/sysver.rs`.
+mod baked {
+    pub struct Baked {
+        pub text: &'static str,
+        pub exe: (&'static str, u64, u128),
+        pub lib: Option<(&'static str, u64, u128)>,
+    }
+    include!(concat!(env!("OUT_DIR"), "/sysver.rs"));
+}
+
+/// `sys.version`: the reference interpreter's own text, byte for byte — or a
+/// refusal. The text differs on every CPython BUILD, not just every minor (the
+/// date and compiler of a bottle rebuild at the same micro), so it is served
+/// only where the interpreter a refusal would reach is the very file the build
+/// probed: [`fallback_is_reference`]. Anything else refuses, and that CPython
+/// prints its own version one spawn later.
+pub fn sys_version() -> R<Value> {
+    match baked::BAKED {
+        // No `io::hold` here: the walk reads `modules::get_attr` too, and
+        // the run holds where it EVALUATES the name, which `CAP_ATTRS` lists
+        // (`route::core_refuses_attr`, in `ops.rs` and the `from` import).
+        Some(b) if crate::err::REF_PY_EXACT && fallback_is_reference(&b) => Ok(Value::Str(b.text.into())),
+        _ => Err(unsupported(
+            "module-attr",
+            "sys.version: the CPython this falls through to is not the one it was built against",
+        )),
+    }
+}
+
+/// `(len, mtime in ns)` of `p`, the triple `build.rs::stat` baked.
+fn fingerprint(p: &std::path::Path) -> Option<(u64, u128)> {
+    let md = std::fs::metadata(p).ok()?;
+    let m = md.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
+    Some((md.len(), m))
+}
+
+/// Is the CPython a refusal falls through to the file `build.rs` probed —
+/// same realpath, length and mtime, and the same for its shared libpython?
+///
+/// Resolved by the rule BOTH dispatchers agree on, and refused wherever they
+/// could disagree. `$LYPNING_CPYTHON`, when set, must be a path (with a `/`,
+/// no `~`): `main.rs` execs it through `execvp` and `engines.find_cpython`
+/// takes it as a path, which agree only then. Otherwise the first `python3`
+/// on `$PATH` that is not the capture shim: `main.rs` execs `python3` and the
+/// shim forwards to the next non-shim one, which is what `find_cpython`
+/// takes. The shim's marker is on its third line, inside every window that
+/// looks for it (the shim's 8 lines, `shim.is_shim`'s 12, `engines._is_shim`'s
+/// 2 KB). Any other `#!` script (a pyenv shim) could run anything, and
+/// refuses; so does no `python3` at all, where `find_cpython` would fall back
+/// to `python` or its own interpreter and `main.rs` to nothing.
+///
+/// Residual: a shared libpython swapped in place is caught by its own
+/// fingerprint only when the probe found it; a build where it could not is
+/// not baked at all (`sys_probe.py` prints `-`).
+fn fallback_is_reference(b: &baked::Baked) -> bool {
+    // Asked once per run: a loop over `sys.version` is not a loop of stats.
+    thread_local!(static SEEN: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) });
+    if let Some(v) = SEEN.with(|c| c.get()) {
+        return v;
+    }
+    let v = resolve_and_compare(b);
+    SEEN.with(|c| c.set(Some(v)));
+    v
+}
+
+fn resolve_and_compare(b: &baked::Baked) -> bool {
+    use std::io::Read;
+    use std::path::{Path, PathBuf};
+    fn head(p: &Path) -> Option<Vec<u8>> {
+        let mut buf = Vec::new();
+        std::fs::File::open(p).ok()?.take(2048).read_to_end(&mut buf).ok()?;
+        Some(buf)
+    }
+    let found: Option<PathBuf> = match std::env::var("LYPNING_CPYTHON") {
+        Ok(pin) if !pin.trim().is_empty() => {
+            let pin = pin.trim();
+            if pin.contains('/') && !pin.starts_with('~') {
+                Some(PathBuf::from(pin))
+            } else {
+                None
+            }
+        }
+        _ => {
+            let path = std::env::var("PATH").unwrap_or_default();
+            let mut hit = None;
+            for d in path.split(':').filter(|d| !d.is_empty()) {
+                let c = Path::new(d).join("python3");
+                if !c.is_file() {
+                    continue;
+                }
+                let is_shim = head(&c).map_or(false, |h| {
+                    h.starts_with(b"#!") && h.windows(19).any(|w| w == b"LYPNING_SHIM_MARKER")
+                });
+                if !is_shim {
+                    hit = Some(c);
+                    break;
+                }
+            }
+            hit
+        }
+    };
+    let Some(found) = found else { return false };
+    // A script is not the interpreter; only a native image is fingerprinted.
+    if head(&found).map_or(true, |h| h.starts_with(b"#!")) {
+        return false;
+    }
+    let Ok(real) = std::fs::canonicalize(&found) else { return false };
+    let same = |want: (&str, u64, u128), p: &Path| {
+        p == Path::new(want.0) && fingerprint(p) == Some((want.1, want.2))
+    };
+    same(b.exe, &real) && b.lib.map_or(true, |l| same(l, Path::new(l.0)))
 }

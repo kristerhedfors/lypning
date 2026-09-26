@@ -75,6 +75,10 @@ pub const MODULES: &[&str] = &[
     "binascii",
     #[cfg(feature = "cap-ast")]
     "ast",
+    #[cfg(feature = "cap-binascii")]
+    "struct",
+    #[cfg(feature = "cap-re")]
+    "unicodedata",
 ];
 // A `cap-*` is never built except as part of `variant-l`: `build.rs` refuses
 // any `CARGO_FEATURE_CAP_*` without `variant-l`, one rule that needs no list,
@@ -88,10 +92,19 @@ pub fn import(path: &str) -> R<Value> {
         // False at exit 0.
         Some(&"posixpath") => Ok(Value::Module("os.path")),
         Some(m) => {
+            // No reference tables (`build.rs` could not dump them): refused,
+            // never answered from a remembered Unicode version.
+            #[cfg(feature = "cap-re")]
+            if *m == "unicodedata" {
+                if !crate::ucd::available() {
+                    return Err(unsupported("module", "unicodedata: no reference UCD"));
+                }
+                crate::ucd::imported();
+            }
             // See `io::hold`: the core refuses this import, so from here the
             // program is one only a capability answers, and the run must stay
             // reversible.
-            #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+            #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
             if crate::route::core_refuses_import(m) {
                 crate::io::hold();
             }
@@ -158,6 +171,10 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
             None => return Err(unsupported("module-attr", "sys.platform on this host")),
         },
         ("sys", "maxsize") => ival(i64::MAX),
+        // Baked from the reference, served only where the fallback CPython is
+        // that very file (`randobj::sys_version`). The core refuses it below.
+        #[cfg(feature = "cap-random")]
+        ("sys", "version") => return crate::randobj::sys_version(),
         ("sys", "exit") => Value::Bound(Rc::new(m.clone()), "exit"),
         ("sys", "path") => {
             return Err(unsupported(
@@ -337,6 +354,20 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
         // block in the core's walk.
         #[cfg(feature = "cap-binascii")]
         ("binascii", _) => return crate::binascii::module_attr(name),
+        // `unidata_version`, `category`, `combining`, `decomposition`,
+        // `normalize`, `is_normalized`. Every other name — `name`, `lookup`,
+        // `numeric`, `__file__` — refuses as `module-attr`, which lypning-l's
+        // own walk reads here and blocks on, and a run refuses where it is
+        // evaluated, inside the run `import unicodedata` held.
+        #[cfg(feature = "cap-re")]
+        ("unicodedata", _) => return crate::ucd::module_attr(name),
+        // `pack`, `unpack`, `unpack_from` and `calcsize`. `error`, `Struct`,
+        // `pack_into` and `iter_unpack` refuse as `module-attr` HERE, at run
+        // time: `struct` has no `route::MODULE_ATTRS` row, so the core's walk
+        // cannot block them and a program naming one is a spawn, never an
+        // answer (`pystruct.rs`).
+        #[cfg(feature = "cap-binascii")]
+        ("struct", _) => return crate::pystruct::module_attr(name),
         // `ast.literal_eval`, and nothing else: `parse`, `walk`, `dump` and
         // the node classes refuse as `module-attr`, which `route::MODULE_ATTRS`
         // makes a STATIC block in the core's walk.
@@ -453,6 +484,8 @@ pub fn call_module_method(
         ("textwrap", _) => return crate::textwrap::call(it, name, args, &kw),
         #[cfg(feature = "cap-time")]
         ("time", _) => return crate::time::call(it, name, args, &kw),
+        #[cfg(feature = "cap-re")]
+        ("unicodedata", _) => return crate::ucd::call(name, args, &kw),
         #[cfg(feature = "cap-random")]
         ("random", "sample" | "shuffle") => {
             crate::io::hold();
@@ -465,6 +498,8 @@ pub fn call_module_method(
         }
         #[cfg(feature = "cap-binascii")]
         ("binascii", _) => return crate::binascii::call(it, name, args, &kw),
+        #[cfg(feature = "cap-binascii")]
+        ("struct", _) => return crate::pystruct::call(it, name, args, &kw),
         #[cfg(feature = "cap-ast")]
         ("ast", _) => return crate::pyast::call(it, name, args, &kw),
         ("random", _) => return crate::random::call(it, name, args, &kw),
@@ -814,7 +849,7 @@ pub fn call_module_method(
             let text = match args.first() {
                 Some(Value::Bytes(b)) => crate::iter::decode_utf8(b)?,
                 Some(v) => fmt::to_str(v)?,
-                None => return Err(type_err("loads() missing 1 required positional argument")),
+                None => return Err(bind_refused()),
             };
             json::parse(&text)?
         }
@@ -822,7 +857,7 @@ pub fn call_module_method(
             let f = args
                 .first()
                 .cloned()
-                .ok_or_else(|| type_err("load() missing 1 required positional argument"))?;
+                .ok_or_else(bind_refused)?;
             let text = crate::methods::call_method(it, &f, "read", &mut Args::new(), Vec::new())?;
             json::parse(&fmt::to_str(&text)?)?
         }
@@ -833,7 +868,7 @@ pub fn call_module_method(
         ("json", "dumps") => Value::Str(
             json::dumps(
                 args.first()
-                    .ok_or_else(|| type_err("dumps() missing 1 required positional argument"))?,
+                    .ok_or_else(bind_refused)?,
                 &kw,
             )?
             .into(),
@@ -841,7 +876,7 @@ pub fn call_module_method(
         ("json", "dump") => {
             let text = json::dumps(
                 args.first()
-                    .ok_or_else(|| type_err("dump() missing arguments"))?,
+                    .ok_or_else(bind_refused)?,
                 &kw,
             )?;
             let f = args

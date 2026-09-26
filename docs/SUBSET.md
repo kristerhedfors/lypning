@@ -124,6 +124,37 @@ within a minor version: the version/doctor check currently compares only 3.x.
 A bare Cargo build without a usable probe warns and uses legacy defaults;
 that fallback is not evidence of agreement with a particular interpreter.
 
+**`sys.version` is a build's text, not a version's.** The date and compiler
+differ on every CPython build, including a bottle rebuilt at the same micro, so
+no table keyed on the minor can serve it. lypning-l (`cap-random`) serves it
+only from a bake: a separate probe (`sys_probe.py`), run by `build.rs` on the
+interpreter that answered `reference_probe.py` and only when that interpreter
+is the named reference (`err::REF_PY_EXACT`), records the text and the
+`(realpath, length, mtime)` of the interpreter and of its shared libpython. At
+run time lypning-l resolves the CPython a refusal would reach — a
+`$LYPNING_CPYTHON` path, or the first non-shim `python3` on `PATH` — and
+answers only when both fingerprints match. Anything else refuses as
+`module-attr` (a bare-name or `~` pin, a `#!` script, a copy, an upgrade,
+another minor, a build with no bake), and that CPython prints its own
+version. The core never answers it; the router sends it to lypning-l only
+from a build whose probe ran (`route::cap_attr`).
+
+**`unicodedata` is the reference's own tables.** Every minor ships another
+Unicode, and 3.13 began answering `decomposition()` for Hangul syllables, so
+lypning-l (`cap-re`) carries no table of its own: `build.rs` runs
+`ucd_dump.py` on the probed reference, under the same `REF_PY_EXACT`
+condition, and `ucd.rs` answers `category`, `combining`, `decomposition`,
+`normalize` and `is_normalized` from that dump (UAX #15 for the forms). With
+no dump, `import unicodedata` refuses. While the module is imported, `str`'s
+own predicates and case mappings, argument-less `split`/`strip` and
+`int()`/`float()` of non-ASCII text refuse when the reference's Unicode is not
+Rust's, and so does `chr()` of a surrogate.
+
+**A call whose arguments do not bind refuses, in every variant.** CPython's
+binding `TypeError` names the function by its qualified name from 3.10, counts
+every missing argument at once, and adds `Did you mean` on 3.14, so no wording
+is right on every minor: `err::bind_refused` (`call`).
+
 The rule that decides whether a site gets a branch is narrower than "this is
 version-dependent": it is **the ANSWER differs across 3.9 … 3.13**, each
 boundary measured on all five with `uv run --python X` and written down at the
