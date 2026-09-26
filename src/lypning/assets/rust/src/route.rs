@@ -199,9 +199,18 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// served head of future imports, so lypning-l's walk never sees one. The row
 /// is the MODULE column, not a kind, because what the CORE stops on is
 /// `module: from __future__ import …` and [`answers`] asks `served_module` of
-/// `module_of` that detail, which is `__future__`. Its refusal kinds (`future`,
-/// `annotation`) are shapes CPython owns — a `SyntaxError`, a `_Feature` value,
-/// annotations as strings — so the kind column stays empty.
+/// `module_of` that detail, which is `__future__`. Its own refusal kinds
+/// (`future`, `annotation`) are shapes CPython owns — a `SyntaxError`, a
+/// `_Feature` value, annotations as strings — and are not listed.
+///
+/// The kind column carries the two PARSE-time kinds the core's parser stops
+/// on and lypning-l's parser serves under the same contract — syntax the
+/// core refuses before the first statement, a run held from that statement
+/// (`route::arm_hold`, `parse::funcsig_used`): `decorator` (`@d` before a
+/// `def`) and `kwonly` (keyword-only parameters). Folded into this row rather
+/// than a row of their own because the frozen core carries this table and a
+/// row costs it bytes a kind array does not. `class`, `async` and `generator`
+/// are NOT here: a decorated class still refuses in lypning-l, at parse.
 ///
 /// `cap-random` is the first row with NEITHER column: it serves no module —
 /// `random` and `sys` are the core's own — and no runtime kind, because every
@@ -224,7 +233,7 @@ pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-collections", &["collections"], &[]),
     ("cap-csv", &["csv"], &[]),
     ("cap-difflib", &["difflib"], &[]),
-    ("cap-future", &["__future__"], &[]),
+    ("cap-future", &["__future__"], &["decorator"]),
     ("cap-glob", &["glob"], &[]),
     ("cap-hashlib", &["hashlib"], &[]),
     ("cap-itertools", &["itertools"], &[]),
@@ -971,6 +980,16 @@ mod spectrum_tests {
             let vs = verdicts(kind, "x", &[]);
             assert_eq!(engine_from_verdicts(&vs), Engine::Rust(1), "{kind}");
             assert_eq!(chain_after(SELF, kind, &vs), vec!["lypning-l", CPYTHON_NAME], "{kind}");
+        }
+        // The PARSE-time kinds `cap-future` answers: routed to row 1 when
+        // every import is served there, and still decided by the import when
+        // one is not (`@functools.lru_cache`). `class` stays above: a
+        // decorated class is refused at parse in both rows.
+        for kind in ["decorator"] {
+            let vs = verdicts(kind, "x", &[]);
+            assert_eq!(engine_from_verdicts(&vs), Engine::Rust(1), "{kind}");
+            let vs = verdicts(kind, "x", &["functools".to_string()]);
+            assert_eq!(engine_from_verdicts(&vs), Engine::CPython, "{kind}");
         }
     }
 
@@ -2013,7 +2032,19 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                 walk_expr(m, req);
             }
         }
-        Stmt::Def { name, body, params } => {
+        Stmt::Def {
+            name,
+            body,
+            params,
+            #[cfg(feature = "cap-future")]
+            decos,
+        } => {
+            // The decorators are evaluated OUT HERE too, and first — before
+            // the defaults and before the name is bound.
+            #[cfg(feature = "cap-future")]
+            for d in decos {
+                walk_expr(d, req);
+            }
             // The defaults are evaluated OUT HERE, at definition time, so they
             // are walked before the scope is entered.
             for d in params.defaults.iter().flatten() {

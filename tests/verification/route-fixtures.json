@@ -115,7 +115,22 @@
  },
  {
   "program": "@staticmethod\ndef f(): pass",
-  "route": "cpython\tdecorator: decorated definition"
+  "route": "lypning-l\tdecorator: decorated definition",
+  "note": "The core's parser stops at the `@`, and cap-future serves `decorator`, so the core routes the program to lypning-l, which refuses `staticmethod` when it runs: LATE, a spawn and never an answer. The run is held from its first statement, so the refusal is clean."
+ },
+ {
+  "program": "def d(f): return f\n@d\ndef g(): return 1\nprint(g())",
+  "route": "lypning-l\tdecorator: decorated definition"
+ },
+ {
+  "program": "import functools\n@functools.lru_cache\ndef f(x): return x",
+  "route": "cpython\tdecorator: decorated definition",
+  "note": "The import is checked before the kind: lypning-l does not serve functools."
+ },
+ {
+  "program": "def d(c): return c\n@d\nclass C: pass",
+  "route": "lypning-l\tdecorator: decorated definition",
+  "note": "LATE: the core stops at the `@` before it reads `class`, and lypning-l refuses the decorated class at parse."
  },
  {
   "program": "match 1:\n    case 1: pass",

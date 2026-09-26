@@ -89,16 +89,16 @@ pub const MAX_CHAIN_OPS: u32 = 1000;
 #[cfg(not(feature = "cap-future"))]
 pub use self::parse_body as parse;
 
-/// The first of `decorator` and `kwonly` the parse in progress SERVED — the
-/// two refusal kinds the core's parser stops on and lypning-l answers under
-/// `cap-future`, and empty until one is served. Set by the parser itself,
-/// wherever the grammar reaches (an f-string field, a default, a decorator's
-/// own lambda), because a walk over the tree would have to be taught every
-/// place one can hide; read by `route::core_lacks` and `route::arm_hold`,
-/// which hold such a run from its first statement exactly as they hold a
-/// served `__future__` head: the core refuses the program before it starts.
 #[cfg(feature = "cap-future")]
 thread_local! {
+    /// The first of `decorator` and `kwonly` the parse in progress SERVED — the
+    /// two refusal kinds the core's parser stops on and lypning-l answers under
+    /// `cap-future`, and empty until one is served. Set by the parser itself,
+    /// wherever the grammar reaches (an f-string field, a default, a decorator's
+    /// own lambda), because a walk over the tree would have to be taught every
+    /// place one can hide; read by `route::core_lacks` and `route::arm_hold`,
+    /// which hold such a run from its first statement exactly as they hold a
+    /// served `__future__` head: the core refuses the program before it starts.
     static FUNCSIG: std::cell::Cell<&'static str> = const { std::cell::Cell::new("") };
 }
 
@@ -421,6 +421,11 @@ impl Parser {
     }
 
     fn compound(&mut self) -> R<Stmt> {
+        #[cfg(feature = "cap-future")]
+        if self.is_op("@") {
+            return self.decorated();
+        }
+        #[cfg(not(feature = "cap-future"))]
         if self.is_op("@") {
             return Err(unsupported("decorator", "decorated definition"));
         }
@@ -517,6 +522,8 @@ impl Parser {
                 name,
                 params: Rc::new(params),
                 body: Rc::new(body),
+                #[cfg(feature = "cap-future")]
+                decos: Vec::new(),
             });
         }
         if self.eat_kw("with") {
@@ -692,6 +699,37 @@ impl Parser {
         let p = self.param_list(")")?;
         self.expect_op(")")?;
         Ok(p)
+    }
+
+    /// `@<expr> NEWLINE` lines, then a `def` — PEP 614's grammar, which is
+    /// 3.9's: any expression but a bare tuple or an unparenthesized walrus
+    /// (`expr` refuses the walrus as `walrus`, and stops before a `,`). Blank
+    /// and comment lines between them are the lexer's and never reach here.
+    /// Everything else a decorator can precede — `class`, `async def`, a
+    /// statement — and a decorator not ended by a NEWLINE (`@d def f()` on
+    /// one line, `@a, b`) refuse as `decorator`, before anything runs, never
+    /// as this parser's own `SyntaxError`.
+    #[cfg(feature = "cap-future")]
+    fn decorated(&mut self) -> R<Stmt> {
+        // At the first `@`, where the core stops: any SyntaxError after it is
+        // a refusal (`parse`).
+        note_funcsig("decorator");
+        let mut decos = Vec::new();
+        while self.eat_op("@") {
+            decos.push(self.expr()?);
+            if !self.eat_newline() {
+                return Err(unsupported("decorator", "a decorator not ended by a newline"));
+            }
+            while self.eat_newline() {}
+        }
+        if !self.is_kw("def") {
+            return Err(unsupported("decorator", "a decorator on anything but a def"));
+        }
+        let mut st = self.compound()?;
+        if let Stmt::Def { decos: d, .. } = &mut st {
+            *d = decos;
+        }
+        Ok(st)
     }
 
     /// The parameter list of a `def` **and** of a `lambda`, which are the same
@@ -2179,7 +2217,18 @@ fn g_stmt<'a>(st: &'a Stmt, s: &mut Seen<'a>) -> Result<(), String> {
             g_stmts(body, s)?;
             g_stmts(els, s)?;
         }
-        Stmt::Def { name, params, body } => {
+        Stmt::Def {
+            name,
+            params,
+            body,
+            #[cfg(feature = "cap-future")]
+            decos,
+        } => {
+            // The decorators are read in the ENCLOSING scope, before the name
+            // is bound: `@d def g(): …` then `global d` or `global g` is
+            // CPython's compile-time error either way.
+            #[cfg(feature = "cap-future")]
+            decos.iter().for_each(|d| g_expr(d, s));
             s.push((name, LOCAL));
             g_params(params, s);
             globals_in(body, &params.names)?;

@@ -242,6 +242,14 @@ pub enum Stmt {
         name: std::rc::Rc<str>,
         params: std::rc::Rc<Params>,
         body: std::rc::Rc<Vec<Stmt>>,
+        /// `@d` lines above the `def`, top to bottom: evaluated in that order
+        /// BEFORE the defaults, applied bottom to top to the new function, and
+        /// the name bound once, to the last result. A FIELD rather than a
+        /// statement of its own so that every exhaustive `Stmt::Def` pattern
+        /// stops compiling under the feature and has to say what it does with
+        /// them. lypning-l only: the core's parser refuses `decorator`.
+        #[cfg(feature = "cap-future")]
+        decos: Vec<Expr>,
     },
     Try {
         body: Vec<Stmt>,

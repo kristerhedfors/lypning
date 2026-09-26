@@ -80,6 +80,10 @@ HELD = [
     "import ast\nprint(ast.literal_eval('[1]'))\nundefined_name",
     "import struct\nprint(struct.calcsize('<I'))\nundefined_name",
     "from struct import pack\nx = 1\nx.foo",
+    # A decorator: the core's parser refuses it, so the run is held from its
+    # first statement.
+    "def d(f):\n    return f\n@d\ndef g(): pass\nundefined_name",
+    "print(1)\ndef d(f):\n    return f\nif False:\n    @d\n    def g(): pass\nx = 1\nx.foo",
 ]
 
 
@@ -288,6 +292,15 @@ def test_a_capability_that_never_runs_holds_nothing(program: str) -> None:
 CORE_OWN = [
     "def f(a: print('ann') = print('def'), b: print('b') = print('bd')) -> print('ret'): pass",
     "try:\n    def g(a: undefined = 1/0): pass\nexcept Exception as e:\n    print(type(e).__name__)",
+    # Un-held, a binding error keeps the core's words — lypning-l refuses it
+    # only in a held run — and so do a function as a set element and `*`
+    # over a non-iterable. Each is a known core difference from CPython
+    # (the qualified name, identity hashing), which is the core's to fix.
+    "def o():\n    def f(a): return a\n    return f\ntry:\n    o()(1, 2)\nexcept TypeError as e:\n    print(e)",
+    "def f(a, /): return a\ntry:\n    f(a=1)\nexcept TypeError as e:\n    print(e)",
+    "def f(): pass\ntry:\n    print(f in {f})\nexcept TypeError as e:\n    print(e)",
+    "def f(*a): pass\ntry:\n    f(*1)\nexcept TypeError as e:\n    print(e)",
+    "x = 3 @ 4",
 ]
 
 
