@@ -6,7 +6,7 @@ The interpreter that will run your program executes a subset of Python 3 in-proc
 
 - Syntax: literals, operators with CPython precedence, chained comparison, slicing with a step, calls with `*args`/`**kwargs`, assignment and star unpacking, slice assignment, `global`, augmented assignment, `if`/`for`/`while`, `def` with defaults and closures, `lambda`, imports, `with open(...)`, `try`/`except`/`finally`, `raise`, `assert`, comprehensions, generator expressions, f-strings with format specs.
 - Builtins: `abs` `all` `any` `bin` `bool` `bytes` `chr` `dict` `divmod` `enumerate` `filter` `float` `format` `hex` `input` `int` `isinstance` `iter` `len` `list` `map` `max` `min` `next` `oct` `open` `ord` `print` `range` `repr` `reversed` `round` `set` `sorted` `str` `sum` `tuple` `type` `zip`.
-- Modules: `sys`, `os`, `os.path`, `io`, `json`, `math` (the functions named under `math` below, plus the constants), `posixpath`, `random` (seeded only: `seed(int)` first), `cap-collections`, `collections` (`Counter` and `defaultdict`), `cap-pathlib`, `pathlib` (`Path`), `cap-re`, `re` (a slice of the pattern language, named under `re` below), `cap-csv`, `csv` (`DictReader` `QUOTE_ALL` `QUOTE_MINIMAL` `QUOTE_NONE` `QUOTE_NONNUMERIC` `reader`), `cap-glob`, `glob` (`escape` `glob` `has_magic` `iglob`), `cap-base64`, `base64` (`b64decode` `b64encode` `urlsafe_b64decode` `urlsafe_b64encode`), `cap-hashlib`, `hashlib` (`md5` `sha1` `sha256` `sha512`), `cap-statistics`, `statistics` (`mean` `median` `median_high` `median_low`), `cap-itertools`, `itertools` (`combinations` `product`), `cap-difflib`, `difflib` (), `cap-textwrap`, `textwrap` (`dedent` `fill` `indent` `shorten` `wrap`), `cap-time`, `time` (`gmtime` `monotonic` `monotonic_ns` `perf_counter` `perf_counter_ns` `sleep` `strftime` `time` `time_ns`), `cap-binascii`, `binascii` (`a2b_base64` `a2b_hex` `b2a_base64` `b2a_hex` `hexlify` `unhexlify`), `cap-ast`, `ast` (`literal_eval`).
+- Modules: `sys`, `os`, `os.path`, `io`, `json`, `math` (the functions named under `math` below, plus the constants), `posixpath`, `random` (seeded only: `seed(int)` first), `cap-collections`, `collections` (`Counter` and `defaultdict`), `cap-pathlib`, `pathlib` (`Path`), `cap-re`, `re` (a slice of the pattern language, named under `re` below), `cap-csv`, `csv` (`DictReader` `QUOTE_ALL` `QUOTE_MINIMAL` `QUOTE_NONE` `QUOTE_NONNUMERIC` `reader`), `cap-glob`, `glob` (`escape` `glob` `has_magic` `iglob`), `cap-base64`, `base64` (`b64decode` `b64encode` `urlsafe_b64decode` `urlsafe_b64encode`), `cap-hashlib`, `hashlib` (`md5` `sha1` `sha256` `sha512`), `cap-statistics`, `statistics` (`mean` `median` `median_high` `median_low`), `cap-itertools`, `itertools` (`combinations` `product`), `cap-difflib`, `difflib` (), `cap-textwrap`, `textwrap` (`dedent` `fill` `indent` `shorten` `wrap`), `cap-time`, `time` (`gmtime` `monotonic` `monotonic_ns` `perf_counter` `perf_counter_ns` `sleep` `strftime` `time` `time_ns`), `cap-binascii`, `binascii` (`a2b_base64` `a2b_hex` `b2a_base64` `b2a_hex` `hexlify` `unhexlify`), `cap-ast`, `ast` (`literal_eval`), `struct`.
 - Values: `int` exact past 64 bits, `float` with CPython's repr, `str`, `bytes`, `list`, `tuple`, `dict` (insertion-ordered), `set` (never show its order), `None`, `bool`; CPython's exception classes and messages; text files, `sys.stdin`, `sys.argv`, `sys.exit`.
 
 ## What it refuses, and how to stay inside
@@ -21,7 +21,7 @@ One line per refusal kind: what fires it, then the way to stay inside.
 - `class` — `class` statements. Stay inside: use functions with dicts and tuples.
 - `class-subscript` — a class subscript such as `list[int]`. Stay inside: no type parameters at runtime.
 - `complex` — complex literals such as `1j`. Stay inside: no complex numbers.
-- `decorator` — `@decorator`. Stay inside: call the wrapping function explicitly.
+- `decorator` — `@decorator` on a `class`, on `async def` or before anything but a `def` (a decorated `def` is served). Stay inside: decorate plain `def`s only.
 - `ellipsis` — `...`. Stay inside: use `pass`.
 - `escape` — `\N{…}` named escapes and `\u` escapes naming a lone surrogate. Stay inside: write the character itself or its `\uXXXX` code.
 - `except` — an `except` clause other than a name or a flat parenthesised tuple of names (`except ((A, B), C)`, `except A, B`). Stay inside: `except (A, B, C):`.
@@ -32,7 +32,7 @@ One line per refusal kind: what fires it, then the way to stay inside.
 - `global` — a function made inside a nested function that declares `global`. Stay inside: declare `global` only in top-level functions.
 - `import` — relative and star imports. Stay inside: `import m` or `from m import name`.
 - `indent` — an indented first line. Stay inside: start the program in column 0.
-- `kwonly` — keyword-only parameters, `def f(*, a)`. Stay inside: make every parameter positional-or-keyword.
+- `kwonly` — a keyword-only parameter list CPython rejects (`def f(*)`, `def f(*, a, /)`); `def f(*, a)` itself is served. Stay inside: write keyword-only parameters after one `*`, each a name.
 - `nonlocal` — `nonlocal`. Stay inside: return the value, or keep state in a dict or list.
 - `slice-assign` — extended slice assignment, `xs[::2] = …`. Stay inside: assign with a loop or rebuild the list.
 - `subscript` — a tuple subscript containing a slice, `x[0:1, 2]`. Stay inside: index with one value or one slice.
@@ -57,6 +57,7 @@ One line per refusal kind: what fires it, then the way to stay inside.
 - `pathlib` — a `Path` shape not served: `PurePath`, `.stat()`, `.iterdir()` order, a `ValueError` text. Stay inside: `Path(p).read_text()`, `.write_text()`, `.exists()`, `.name`, `.suffix`, `.stem`, `.parent`, `/` joins.
 - `re` — a regex construct outside the served slice: lookaround, backreferences, bytes patterns, Unicode `\w \d \s`, non-ASCII group names, case folding, a step budget. Stay inside: ASCII patterns with classes, groups, alternation, quantifiers and anchors, through `search match findall sub split compile`.
 - `statistics` — a `statistics` shape the engine does not serve. Stay inside: `mean`, `median`, `mode`, `stdev`, `pstdev`, `variance` on lists of numbers.
+- `struct` — a `struct` call outside `pack unpack unpack_from calcsize`, a code outside `x c b B ? h H i I l L q Q s d`, or input that would raise `struct.error`. Stay inside: an explicit byte order (`'<'`, `'>'`) and in-range values.
 - `textwrap` — a `textwrap` shape the engine does not serve, such as `TextWrapper`. Stay inside: `textwrap.wrap`, `fill`, `dedent`, `indent`, `shorten` with plain arguments.
 - `time` — a `time` shape the engine does not serve: `gmtime`, `strftime`, a `sleep` in a loop or longer than a second, a time function used as a value. Stay inside: call `time.time()` or `time.perf_counter()` directly.
 
@@ -65,7 +66,7 @@ One line per refusal kind: what fires it, then the way to stay inside.
 - `aug-assign` — `d |= x` where `d` is a dict and `x` is not one. Stay inside: `d.update(x)`.
 - `bigint` — an integer shape this build cannot carry exactly (most arithmetic past 64 bits is served). Stay inside: keep integers within 64 bits where the task allows.
 - `bytes-method` — a bytes method outside `decode hex lower upper find replace join`. Stay inside: decode to `str` and use the str methods.
-- `call` — a keyword given twice through `**`, or `**` over something that is not a dict. Stay inside: pass each keyword once, and `**` only a dict.
+- `call` — a keyword given twice through `**`, `**` over something that is not a dict, or a wrong-arity or unknown-keyword call in a program that uses a decorator, a keyword-only parameter or a module only the larger build serves. Stay inside: pass each keyword once, `**` only a dict, and call functions with the arguments they take.
 - `class-union` — a `|` union of classes (`int | None`). Stay inside: no runtime type unions.
 - `dict-method` — a dict method outside `get keys values items setdefault pop popitem update copy clear`. Stay inside: use those.
 - `dunder-attr` — reading a data-model dunder such as `.__dict__` or `.__class__`. Stay inside: do not introspect objects.

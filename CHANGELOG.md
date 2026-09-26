@@ -14,6 +14,26 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-26** — lypning-l serves decorators and keyword-only parameters (PR pending)
+
+- Under `cap-future`: `@<expr>` lines before a `def` (evaluated top to bottom
+  before the defaults, applied bottom to top, the name bound once), and
+  `def f(a, *, b, c=1)`, `def f(*args, k, **kw)` and the same in `lambda`.
+- The core's parser refuses both at parse, so such a run is held from its
+  first statement: a binding `TypeError` or `*` over a non-iterable refuses
+  as `call`, a function as a set element or dict key as
+  `iterator-identity`, and any compile-time error after the first `@` or
+  keyword-only name as `decorator`/`kwonly`. A decorated `class`, `async
+  def` or generator still refuses.
+- The core evaluates a `def`'s annotations after its defaults, as CPython
+  3.9-3.13 do; they ran first.
+- Routing: `decorator` and `kwonly` join the `cap-future` row of
+  `route::CAPS`, the core's only other change (host `__text` +12 B on the
+  3.14-reference build and +8 B on the 3.11-reference build, macOS arm64,
+  2026-09-26; musl unmeasured). A decorated class and `@staticmethod` are
+  now routed into lypning-l and refused there: a late spawn, not a wrong
+  answer.
+
 **2026-09-26** — lypning-l serves `struct` and `random.getrandbits(64)` (PR pending)
 
 - `struct.pack` / `unpack` / `unpack_from` / `calcsize` and their `from struct

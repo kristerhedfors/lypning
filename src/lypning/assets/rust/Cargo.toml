@@ -187,7 +187,10 @@ cap-time = []
 # answers with a `SyntaxError` refuses statically, as does the `_Feature` name
 # and `__annotations__`. 76 corpus programs (census 2026-09-24, 9,064 loaded)
 # stopped first on this import. `src/future.rs` is the whole of it, plus one
-# `#[cfg]` line at the end of `parse::parse()`.
+# `#[cfg]` line at the end of `parse::parse()`. It also serves the two
+# PARSE-time kinds the core refuses under the same contract — held from the
+# first statement: decorators on a `def` and keyword-only parameters
+# (`parse.rs`, the binder in `eval.rs`), which its `route::CAPS` row lists.
 cap-future = []
 
 # `random.Random(int)` instances, `random.sample`, `random.shuffle`, and
