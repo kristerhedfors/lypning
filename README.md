@@ -56,6 +56,27 @@ One instrument per question (§5, §6), and every instrument prints the corpus
 size it loaded: quote that number with its date, never a remembered one
 (`CLAUDE.md` invariant 3).
 
+**Coverage: `lypning conformance --mixture both`, 2026-09-26, commit f6b0728,
+corpus 14,816 loaded and 10,173 graded.** How much of the Python that coding
+agents actually ran each engine answers by itself, compared with CPython
+3.14.5 on a macOS arm64 build. The other 4,643 programs were skipped by the
+tool's own rules: absolute paths outside the sandbox, programs that drive a
+lypning test run, external mutation, or no reproducible CPython answer.
+
+| engine | answers itself, as CPython does | declines, passes it on | answers differently | share answered |
+|---|---:|---:|---:|---:|
+| `lypning` | 4,583 | 5,590 | 0 | 45.1% |
+| `lypning-l` | 7,357 | 2,816 | 0 | 72.3% |
+| `mixture` (the chain) | 10,173 | 0 | 0 | 100% |
+
+A program an engine declines goes to the next one up (`lypning-l`, then
+CPython), so declining costs a spawn and never an answer. No engine answered a
+graded program differently from CPython, and the Python and Rust dispatchers
+agreed on all 10,173. The router picked the cheapest engine that answers for
+94.6% of programs. What each round added, and why the rest still decline, is in
+`docs/HILLCLIMB.md`. Re-run the command before quoting a number: capture grows
+the corpus every session.
+
 **`lypning bench`, 2026-09-06 — corpus 3,688 loaded, 2,504 measured, shared
 subset 1,572, min of 3, arms interleaved per entry.** Darwin arm64, 10 cpus,
 load 1.2–3.3: a shared box, so the ratios are the reading and the milliseconds
