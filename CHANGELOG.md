@@ -38,7 +38,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   this). A 3.14-built engine refuses the two errors whose wording 3.14
   changed. Before 3.14, module-level annotations refuse. Listing
   `os.environ` is run-specific in the grader.
-- The Pages landing page has a dated **Coverage** section. `L-COVERAGE.md`
+- The Pages landing page has a dated **Coverage** section. [L-COVERAGE.md](docs/L-COVERAGE.md)
   gains the `ast` and hex rows.
 
 **2026-09-25** — lypning-l: hold where the capability runs, one parse for every variant, refuse the staged moves the disk cannot see ([#128](https://github.com/kristerhedfors/lypning/pull/128))

@@ -75,7 +75,10 @@ jobs:
     # 2,906 entries (2026-09-01), timed out at 25 with 3,688 (2026-09-02). A
     # timed-out job is reported "cancelled", which reads as somebody's hand
     # rather than a budget — so the budget is stated here, with its history.
-    timeout-minutes: 40
+    # 27 min at about 9,000 loaded (2026-09-25); cancelled at 40 once the
+    # 2026-09-25 harvest took the corpus to 14,816: the clean arms took 23.5
+    # min and the library arm did not finish (run 36200774214).
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
