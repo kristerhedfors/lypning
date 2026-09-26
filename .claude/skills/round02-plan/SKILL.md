@@ -19,7 +19,8 @@ almost every paid training and eval step so far has crashed. The resume order,
 with the current state, is the top section of
 `training/START_NEXT_ROUND.md`; read it first. In short:
 
-1. The optional seed-1111 finish (after the user merges PR #130) runs only
+1. The seed-1111 finish was dispatched 2026-09-26 (Actions 36239792036, HF job
+   6ab7b0b76b030d633f693e48); read its reports first. A redispatch runs only
    while the verifier Space head is still arm A's revision — before any
    non-finish `round02.yml` dispatch or `round02/**` push rebuilds it — and
    only from a main whose `VERIFIER_MODULES` (`training/pipeline/training.py`),

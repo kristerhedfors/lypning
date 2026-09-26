@@ -25,8 +25,10 @@ job `6ab6a20c6b030d633f691a95` (Actions `36161157776`, 2026-09-25, about 3h50m
 of submit-job wall), completed base-test (1,260 draws, 1 engine mismatch) and
 sft-test (1,260 draws, 0), then ran out of CUDA memory in the prefill of
 base-eval2 chunk index 26 (the 27th of 51; `RAMP.md` §3). No eval-2 arm has finished on any seed. The fix,
-PR #130 (`--eval-prefill-tokens`, prefill in parts), has green CI and is **not
-merged**; merging is the user's. Everything arm A trained and graded is bound
+PR #130 (`--eval-prefill-tokens`, prefill in parts), merged 2026-09-26 as
+`9b17b32`. The seed-1111 salvage below was then dispatched: finish Actions
+`36239792036`, HF job `6ab7b0b76b030d633f693e48` — read its result before
+anything else here. Everything arm A trained and graded is bound
 to engine sha256 `3da77f03…` at verifier Space revision `eafca686…`, which the
 finish log (Actions `36161157776`) pinned and the bootstrap of Actions
 `36196784607` still read as the head at 2026-09-25T22:28Z.

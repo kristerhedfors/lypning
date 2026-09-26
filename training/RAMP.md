@@ -95,8 +95,8 @@ this order, each with a pinning test under `training/tests/`, each $0 to build:
 
 Other notes on existing tooling:
 
-- R1 `eval2-shape.yml` and `.github/scripts/eval2_shape.py` ship with PR #130
-  (open, 2026-09-26; not on `origin/main`). Both it and `hf-status.yml` declare
+- R1 `eval2-shape.yml` and `.github/scripts/eval2_shape.py` shipped with PR #130
+  (merged 2026-09-26, `9b17b32`). Both it and `hf-status.yml` declare
   `workflow_dispatch`, which runs them without triggering round02.yml.
 - R1 `bank-ceiling.yml`: its last run, 35427139796 (2026-09-19), failed.
   Re-validate it before relying on it.
@@ -255,6 +255,7 @@ completed after (actual). The climb starts at R0 on the next engine; a waiver
 
 | Date | Rung | Actions run | HF job | Ceiling approved | Wall | Cost | Running total | Result |
 |---|---|---|---|---|---|---|---|---|
+| 2026-09-26 | R8 salvage (seed-1111 finish at step 1,050), §5 item 2 **waived** by the operator ("run the eval now, we need that data to course correct training", then "merge and go") | 36239792036 | 6ab7b0b76b030d633f693e48 | 720m, $60 (h200 $5/h); projection ~520 min, ~$43 | pending | pending | pending | pending |
 
 ## 8. Operating constraints
 

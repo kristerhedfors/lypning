@@ -90,8 +90,8 @@ marked paid; stop at the first that fails.
 2. **Land the coverage stack whole.** #128 alone leaves main's training verifier
    red (Actions `36172527214`); #129, stacked on it, carries the training-side
    regenerations and was green (Actions `36230324509`, 2026-09-26). Fold draft
-   #118 in (§5). #118 (draft), #128, #129 and #130 were all OPEN when checked
-   2026-09-26.
+   #118 in (§5). #128, #129 and #133 (coverage) and #130 (prefill parts) were
+   merged on 2026-09-26; #118 was still a draft.
 3. **Freeze the engine commit.** Pick one main commit as the candidate and write
    it into the pin file (§3). Later coverage PRs on main do not move it.
 4. **MISMATCH 0 on that candidate, where it counts.** The reference is CI's
@@ -158,11 +158,11 @@ finish runs **before any Space rebuild or never**. The pilot
 `6ab52a686b030d633f68e503` (Actions `36008052722`, 2026-09-24) completed SFT at
 1,050 steps; its finish `6ab6a20c6b030d633f691a95` (Actions `36161157776`,
 2026-09-25) completed base-test and sft-test (1,260 draws each) and then ran out
-of CUDA memory in base-eval2 prefill. PR #130 fixes that; it must be merged by
-the user. A rerun (`stage=finish`, `finish_of 6ab52a686b030d633f68e503`,
+of CUDA memory in base-eval2 prefill. PR #130 fixes that (merged 2026-09-26,
+`9b17b32`). A rerun (`stage=finish`, `finish_of 6ab52a686b030d633f68e503`,
 `sft_step 1050`) holds the Space and was projected near 520 min against the
 648-min budget in the #130 body — about $43 at $5/h by arithmetic, not a bill.
-It is an R8 rung and climbs under [RAMP.md](RAMP.md) §5's salvage conditions.
+It is an R8 rung and climbs under [RAMP.md](RAMP.md) §5's salvage conditions. **Dispatched 2026-09-26** on the operator's instruction ("run the eval now"; the waiver is recorded in `RAMP.md` §7): #130 merged as `9b17b32`, finish Actions `36239792036`, HF job `6ab7b0b76b030d633f693e48`.
 
 The finish refuses for free in `.github/scripts/finish_preflight.py` unless all
 of these still match the pilot: the Space head (`eafca686…`); the
@@ -194,8 +194,8 @@ was one: bootstrap skipped an identical upload, the run was then cancelled, and
 no Space build started, so the head stayed `eafca686`. A push whose head commit
 message carries `[submit-pilot]` or `[submit-smoke]` also bills. Free readers
 (`hf-status.yml`) also listens on that glob (`eval2-shape.yml` is dispatch-only since 2026-09-26); both declare
-`workflow_dispatch`: run them with `gh workflow run` on main (eval2-shape once
-#130 merges), never by a push. Until §3 lands, push no `round02/**` branch.
+`workflow_dispatch`: run them with `gh workflow run` on main, never by a
+push. Until §3 lands, push no `round02/**` branch.
 
 **Coverage PRs turn training CI red; keep it green in the same PR.** A coverage
 PR that changes what the engine serves must regenerate the files that describe
