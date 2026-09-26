@@ -339,7 +339,7 @@ pub fn forgot_import(e: &LypningError) -> Option<LypningError> {
     // programs, including one whose capability never ran: the core answers
     // them, and what the core answers lypning-l answers. The hints are 3.10's; 3.9 prints the bare line, which
     // is what this engine prints (measured on 3.9.6, 3.11.15 and 3.14.5).
-    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
     if crate::io::held()
         && REF_PY_MINOR >= 10
         && (x.kind == "NameError"

@@ -21,7 +21,7 @@ One line per refusal kind: what fires it, then the way to stay inside.
 - `class` — `class` statements. Stay inside: use functions with dicts and tuples.
 - `class-subscript` — a class subscript such as `list[int]`. Stay inside: no type parameters at runtime.
 - `complex` — complex literals such as `1j`. Stay inside: no complex numbers.
-- `decorator` — `@decorator`. Stay inside: call the wrapping function explicitly.
+- `decorator` — `@decorator` on a `class`, on `async def` or before anything but a `def` (a decorated `def` is served). Stay inside: decorate plain `def`s only.
 - `ellipsis` — `...`. Stay inside: use `pass`.
 - `escape` — `\N{…}` named escapes and `\u` escapes naming a lone surrogate. Stay inside: write the character itself or its `\uXXXX` code.
 - `except` — an `except` clause other than a name or a flat parenthesised tuple of names (`except ((A, B), C)`, `except A, B`). Stay inside: `except (A, B, C):`.
@@ -32,7 +32,7 @@ One line per refusal kind: what fires it, then the way to stay inside.
 - `global` — a function made inside a nested function that declares `global`. Stay inside: declare `global` only in top-level functions.
 - `import` — relative and star imports. Stay inside: `import m` or `from m import name`.
 - `indent` — an indented first line. Stay inside: start the program in column 0.
-- `kwonly` — keyword-only parameters, `def f(*, a)`. Stay inside: make every parameter positional-or-keyword.
+- `kwonly` — a keyword-only parameter list CPython rejects (`def f(*)`, `def f(*, a, /)`); `def f(*, a)` itself is served. Stay inside: write keyword-only parameters after one `*`, each a name.
 - `nonlocal` — `nonlocal`. Stay inside: return the value, or keep state in a dict or list.
 - `slice-assign` — extended slice assignment, `xs[::2] = …`. Stay inside: assign with a loop or rebuild the list.
 - `subscript` — a tuple subscript containing a slice, `x[0:1, 2]`. Stay inside: index with one value or one slice.
@@ -66,7 +66,7 @@ One line per refusal kind: what fires it, then the way to stay inside.
 - `aug-assign` — `d |= x` where `d` is a dict and `x` is not one. Stay inside: `d.update(x)`.
 - `bigint` — an integer shape this build cannot carry exactly (most arithmetic past 64 bits is served). Stay inside: keep integers within 64 bits where the task allows.
 - `bytes-method` — a bytes method outside `decode hex lower upper find replace join`. Stay inside: decode to `str` and use the str methods.
-- `call` — a keyword given twice through `**`, or `**` over something that is not a dict. Stay inside: pass each keyword once, and `**` only a dict.
+- `call` — a keyword given twice through `**`, `**` over something that is not a dict, or a wrong-arity or unknown-keyword call in a program that uses a decorator, a keyword-only parameter or a module only the larger build serves. Stay inside: pass each keyword once, `**` only a dict, and call functions with the arguments they take.
 - `class-union` — a `|` union of classes (`int | None`). Stay inside: no runtime type unions.
 - `dict-method` — a dict method outside `get keys values items setdefault pop popitem update copy clear`. Stay inside: use those.
 - `dunder-attr` — reading a data-model dunder such as `.__dict__` or `.__class__`. Stay inside: do not introspect objects.

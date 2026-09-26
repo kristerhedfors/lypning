@@ -209,7 +209,7 @@ either binary):
 | `cap-collections` | the `collections` module — `Counter`, `defaultdict` | `collections.rs` |
 | `cap-csv` | the `csv` module — the two readers | `csv.rs` |
 | `cap-difflib` | the `difflib` module — the import, and no name on it | `modules.rs:MODULES` |
-| `cap-future` | `__future__` — a head of no-op feature imports; `def` annotations never evaluated under `annotations`, or under any head on a 3.14+ reference (PEP 649) | `future.rs` |
+| `cap-future` | `__future__` — a head of no-op feature imports; `def` annotations never evaluated under `annotations`, or under any head on a 3.14+ reference (PEP 649); and decorators on a `def` and keyword-only parameters, two parse-time kinds the core refuses (§7) | `future.rs`, `parse.rs` |
 | `cap-glob` | the `glob` module | `glob.rs` |
 | `cap-hashlib` | the `hashlib` module — four constructors | `hashlib.rs` |
 | `cap-itertools` | the `itertools` module — `product`, `combinations` | `itertools.rs` |
@@ -275,20 +275,35 @@ generator expressions, and f-strings with format specs (`parse.rs`). `del`
 takes a name, a subscript or a tuple of them; a slice or an attribute target
 is `unsupported: del`.
 
-Refused, on both engines, and detected before a statement runs:
+Refused, on both engines, and detected before a statement runs (the two rows
+marked *core* are served by lypning-l, below):
 
 | construct | refusal |
 |---|---|
 | `class` | `unsupported: class` |
-| `@decorator` | `unsupported: decorator` |
+| `@decorator` — *core*; on lypning-l, one before anything but a `def` | `unsupported: decorator` |
 | `yield`, and so every generator function | `unsupported: generator` |
 | `async def`, `await`, `async for` | `unsupported: async` |
 | `:=` | `unsupported: walrus` |
 | `nonlocal` | `unsupported: nonlocal` |
 | `except*` | `unsupported: except-star` |
-| keyword-only parameters, `def f(*, a)` | `unsupported: kwonly` |
+| keyword-only parameters, `def f(*, a)` — *core*; on lypning-l, a list CPython rejects | `unsupported: kwonly` |
 | `...` | `unsupported: ellipsis` |
 | `1j` | `unsupported: complex` |
+
+lypning-l serves decorators on a `def` and keyword-only parameters under
+`cap-future`, whose `route::CAPS` row answers both kinds, so the core routes
+such a program there when every import is served. The decorator expressions
+run top to bottom before the defaults, apply bottom to top, and bind the name
+once. Since the core refuses the program before its first statement, the run
+is held from that statement: an uncaught error refuses as `name-hint`, a
+binding `TypeError` or `*` over a non-iterable as `call` (CPython names the
+function by a qualified name that differs by minor), and a function used as a
+set element or dict key as `iterator-identity`. After the first `@` or
+keyword-only name, a compile-time error refuses with that kind rather than
+printing a `SyntaxError` the core never reached. A decorated `class`, `async
+def` or generator still refuses, as do `@staticmethod`, `@classmethod` and
+`@property`, which lypning-l does not have.
 
 `match` is the one construct that is **not** a refusal: the grammar predates it,
 so every engine answers `SyntaxError` at exit 1. The chain is still right —

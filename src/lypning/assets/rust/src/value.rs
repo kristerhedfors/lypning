@@ -399,6 +399,17 @@ pub fn hkey(v: &Value) -> R<HKey> {
                 &format!("a {k} as a dict or set key, which CPython hashes by object identity"),
             ))
         }
+        // A function IS hashable in CPython, by identity, and unhashable here:
+        // `f in {f}` is `True` there and a TypeError in every variant. In a
+        // HELD run — a decorator's registry (`REG[fn] = …`, `seen.add(fn)`)
+        // is the likely one — it refuses; un-held it is the core's answer.
+        #[cfg(feature = "cap-future")]
+        Value::Func(_) | Value::Builtin(_) if crate::io::held() => {
+            return Err(unsupported(
+                "iterator-identity",
+                "a function as a dict or set key in a held run, which CPython hashes by object identity",
+            ))
+        }
         other => {
             return Err(type_err(format!(
                 "unhashable type: '{}'",

@@ -191,7 +191,7 @@ fn execute_inner(src: &str, report_refusal: bool, kind: &mut String, detail: &mu
     // exactly the programs the core's own walk routes past the core. The hold
     // itself starts where the capability runs (`io::hold`), which for a
     // served `__future__` head is before the first statement.
-    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
     route::arm_hold(&body, src);
     let mut interp = eval::Interp::new();
     let r = interp.run(&body);

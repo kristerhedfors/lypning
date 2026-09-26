@@ -33,8 +33,9 @@ answer, which is the one outcome worse than a refusal, and one that extending
 
 Every cell is a whole program, because what is under test is the process's exit
 code and stdout, and each is either byte-identical to CPython on both or a clean
-exit-90 refusal: one line on stderr, nothing on stdout. `lambda *, x` is that
-refusal today (`kwonly`), exactly as `def f(*, x)` has always been.
+exit-90 refusal: one line on stderr, nothing on stdout. On the core `lambda *,
+x` is that refusal (`kwonly`), exactly as `def f(*, x)` has always been;
+lypning-l answers both, and `tests/test_kwonly_grid.py` runs this grid there.
 """
 
 from __future__ import annotations

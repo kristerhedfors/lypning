@@ -317,8 +317,11 @@ runtime's FIRST probe; a later one's byte count is not a size.
   would keep the expensive pattern alive; each is a `module` refusal `--plan`
   ranks. `re` was on this list until `cap-re` (§3): the matcher is on `lypning-l`
   and the core still refuses it.
-- **No classes, decorators, generators, or `async`.** Each is a parse-time
-  refusal (`parse.rs`) and a route to `cpython`; `lambda` is in the subset.
+- **No classes, generators, or `async`.** Each is a parse-time refusal
+  (`parse.rs`) and a route to `cpython`; `lambda` is in the subset.
+  Decorators on a `def` and keyword-only parameters are parse-time refusals
+  on the core and served by lypning-l (`cap-future`, `docs/DIFFERENCES.md`
+  §7).
 - **No daemon.** Interpreter init is a rounding error inside the process-spawn
   floor (`docs/RESEARCH.md` §5), so a fork server has nothing to save.
 
