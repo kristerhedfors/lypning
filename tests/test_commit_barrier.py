@@ -240,7 +240,8 @@ def test_a_stream_with_no_end_refuses_rather_than_hangs(lypning_bin, engine, pro
     r = engines.run(engine, program, timeout=20)
     assert not r.timed_out, "the read never came back"
     assert r.returncode == UNSUPPORTED_EXIT, r.stderr
-    assert "open-special" in r.stderr
+    # `os.rename` of anything but a regular file refuses before it reads.
+    assert ("rename" if "os.rename" in program else "open-special") in r.stderr
 
 
 def test_a_regular_file_is_untouched_by_the_bound(lypning_bin, tmp_path) -> None:
@@ -373,3 +374,123 @@ def test_the_chain_runs_the_side_effect_exactly_once(tmp_path, program, made, _i
     assert got.result.returncode == ref.returncode, got.result.stderr
     assert _tree(chain) == _tree(alone)
     assert _tree(chain).count("D") == made, "the side effect did not run exactly once"
+
+
+# ---- the staged moves the disk cannot see ----------------------------------
+#
+# `os.rename` COPIES into the barrier: a staged write of the target and a staged
+# delete of the source. `os.remove` stages a delete; `os.rmdir` and `os.mkdir`
+# ask the disk. Where the disk and the stage disagree, each of these answered
+# wrongly — and three of them destroyed a file at exit 0. They refuse now, and
+# CPython does the real thing one spawn later.
+
+#: `(setup, program, why)`. `setup` is shell run in the cwd first.
+STAGED_MOVES = [
+    ("echo hi > a", "import os; os.rename('a', 'a'); print(os.path.exists('a'))",
+     "rename-self-deleted-the-file"),
+    ("echo hi > a", "import os; os.rename('a', './a'); print(os.path.exists('a'))",
+     "rename-self-other-spelling"),
+    ("", "import os; open('a','w').write('x'); os.rename('a', 'a'); print(open('a').read())",
+     "rename-self-of-a-staged-file"),
+    ("echo hi > a", "import os; os.rename('a', 'nodir/b'); print(1)",
+     "rename-into-a-missing-dir-lost-the-source"),
+    ("echo hi > a && chmod 755 a", "import os; os.rename('a', 'b'); print(1)",
+     "rename-dropped-the-mode"),
+    ("", "import os; os.mkdir('d'); open('d/f','w').write('x'); os.rmdir('d'); print('ok')",
+     "rmdir-over-a-staged-file"),
+    ("mkdir d", "import os; os.remove('d'); print(1)", "remove-of-a-directory"),
+    ("mkdir d", "import pathlib; pathlib.Path('d').unlink(); print(1)", "unlink-of-a-directory"),
+    ("", "import os; open('a','w').write('x'); os.mkdir('a/b'); print(1)",
+     "mkdir-under-a-staged-file"),
+    ("", "import os; open('a','w').write('x'); os.makedirs('a/b'); print(1)",
+     "makedirs-under-a-staged-file"),
+]
+
+
+def _setup(cwd, setup: str) -> None:
+    import subprocess
+    if setup:
+        subprocess.run(setup, shell=True, cwd=cwd, check=True)
+
+
+def _modes(root) -> list:
+    return sorted((str(q.relative_to(root)), q.stat().st_mode) for q in root.rglob("*"))
+
+
+@pytest.mark.parametrize("setup, program, _why", STAGED_MOVES, ids=[w for _s, _p, w in STAGED_MOVES])
+def test_a_staged_move_the_disk_cannot_see_refuses(lypning_bin, tmp_path, setup, program, _why) -> None:
+    cwd = _fresh(tmp_path, "engine")
+    _setup(cwd, setup)
+    before = _modes(cwd)
+    r = engines.run(engines.LYPNING, program, cwd=cwd)
+    assert r.returncode == UNSUPPORTED_EXIT, (r.returncode, r.stdout, r.stderr)
+    assert r.stdout == ""
+    assert _modes(cwd) == before, "a refusal left the disk changed"
+
+
+@pytest.mark.parametrize("setup, program, _why", STAGED_MOVES, ids=[w for _s, _p, w in STAGED_MOVES])
+def test_the_chain_answers_a_staged_move_as_cpython_does(tmp_path, setup, program, _why) -> None:
+    chain, alone = _fresh(tmp_path, "chain"), _fresh(tmp_path, "alone")
+    _setup(chain, setup)
+    _setup(alone, setup)
+    got = engines.dispatch(program, cwd=chain)
+    ref = engines.run(engines.CPYTHON, program, cwd=alone)
+    assert (got.result.returncode, got.result.stdout) == (ref.returncode, ref.stdout), \
+        got.result.stderr
+    assert got.result.stderr.strip().splitlines()[-1:] == ref.stderr.strip().splitlines()[-1:]
+    assert _modes(chain) == _modes(alone)
+
+
+def test_a_rename_between_files_the_run_wrote_is_still_served(lypning_bin, tmp_path) -> None:
+    """The one shape the copy IS a rename for, so it keeps running native."""
+    program = "import os; open('a','w').write('x'); os.rename('a', 'b'); print(open('b').read())"
+    r = engines.run(engines.LYPNING, program, cwd=_fresh(tmp_path, "engine"))
+    assert (r.returncode, r.stdout) == (0, "x\n"), r.stderr
+    assert _tree(tmp_path / "engine") == ["b"]
+
+
+def test_a_missing_source_names_both_paths(lypning_bin, tmp_path) -> None:
+    r = engines.run(engines.LYPNING, "import os; os.rename('nope', 'b')", cwd=_fresh(tmp_path, "e"))
+    assert r.returncode == 1
+    assert r.stderr.strip().splitlines()[-1] == \
+        "FileNotFoundError: [Errno 2] No such file or directory: 'nope' -> 'b'"
+
+
+#: `os.rename` once the run has COMMITTED (a foreign `os.rmdir`). A refusal
+#: there cannot reach CPython — it would be exit 1, `cannot be routed onward` —
+#: so the arm answers the cases its refusal guards as CPython does: onto itself
+#: is nothing, a missing directory is the two-path error, and a file already on
+#: disk is copied as it always was.
+AFTER_COMMIT = [
+    ("mkdir e; echo x > f", "import os\nos.rmdir('e')\nos.rename('f', 'g')\nprint(open('g').read())",
+     "rename-of-a-file-on-disk"),
+    ("mkdir e", "import os\nos.rmdir('e')\nopen('a','w').write('y')\nos.rename('a', 'a')\n"
+     "print(open('a').read())", "rename-onto-itself"),
+    ("echo hi > a; mkdir e", "import os\nos.rmdir('e')\nos.rename('a', './a')\nprint(open('a').read())",
+     "rename-onto-itself-on-disk"),
+    ("echo hi > a; mkdir e", "import os\nos.rmdir('e')\ntry:\n    os.rename('a', 'nodir/b')\n"
+     "except OSError as x:\n    print(x.errno, x)\nprint(os.path.exists('a'))", "rename-into-a-missing-dir"),
+    ("echo hi > a; echo f > g; mkdir e", "import os\nos.rmdir('e')\ntry:\n    os.rename('a', 'g/b')\n"
+     "except OSError as x:\n    print(x.errno, x)\nprint(os.path.exists('a'))", "rename-under-a-file"),
+]
+
+
+@pytest.mark.parametrize("setup, program, _why", AFTER_COMMIT, ids=[w for _s, _p, w in AFTER_COMMIT])
+def test_after_a_commit_a_rename_is_answered_as_cpython_does(lypning_bin, tmp_path, setup, program, _why) -> None:
+    engine, alone = _fresh(tmp_path, "engine"), _fresh(tmp_path, "alone")
+    _setup(engine, setup)
+    _setup(alone, setup)
+    got = engines.run(engines.LYPNING, program, cwd=engine)
+    ref = engines.run(engines.CPYTHON, program, cwd=alone)
+    assert (got.returncode, got.stdout) == (ref.returncode, ref.stdout), got.stderr
+    assert _modes(engine) == _modes(alone)
+
+
+def test_a_delete_the_disk_never_saw_does_not_block_rmdir(lypning_bin, tmp_path) -> None:
+    """A staged delete of a file that was only ever staged leaves the disk's
+    directory empty, so `os.rmdir` is served, not refused."""
+    program = ("import os\nos.mkdir('tmp')\nopen('tmp/f','w').write('z')\nos.remove('tmp/f')\n"
+               "os.rmdir('tmp')\nprint('done')")
+    r = engines.run(engines.LYPNING, program, cwd=_fresh(tmp_path, "engine"))
+    assert (r.returncode, r.stdout) == (0, "done\n"), r.stderr
+    assert _tree(tmp_path / "engine") == []

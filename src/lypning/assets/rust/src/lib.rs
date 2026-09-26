@@ -41,6 +41,11 @@ pub mod builtins;
 /// entirely rather than merely unreachable in it.
 #[cfg(feature = "cap-bigint")]
 pub mod bigint;
+/// `binascii.hexlify` / `unhexlify` and their aliases, `a2b_base64` and
+/// `b2a_base64` — the `cap-binascii` capability. Absent from the smaller
+/// variant entirely, not merely unreachable in it.
+#[cfg(feature = "cap-binascii")]
+pub mod binascii;
 /// `collections.Counter` / `defaultdict` — the `cap-collections` capability.
 /// Absent from the smaller variant entirely, not merely unreachable in it.
 #[cfg(feature = "cap-collections")]
@@ -53,6 +58,11 @@ pub mod embed;
 pub mod err;
 pub mod eval;
 pub mod fmt;
+/// `from __future__ import …` — the `cap-future` capability, a pass over the
+/// parse rather than a module. Absent from the smaller variant entirely, not
+/// merely unreachable in it.
+#[cfg(feature = "cap-future")]
+pub mod future;
 pub mod hash;
 /// `hashlib.md5` / `sha1` / `sha256` / `sha512` — the `cap-hashlib` capability.
 /// Absent from the smaller variant entirely, not merely unreachable in it.
@@ -61,6 +71,10 @@ pub mod hashlib;
 pub mod host;
 pub mod io;
 pub mod iter;
+/// `itertools.product` / `combinations` — the `cap-itertools` capability.
+/// Absent from the smaller variant entirely, not merely unreachable in it.
+#[cfg(feature = "cap-itertools")]
+pub mod itertools;
 pub mod json;
 pub mod lex;
 /// `math` — the exactly-defined subset, in EVERY variant, because nothing in it
@@ -83,6 +97,10 @@ pub mod pow;
 #[cfg(feature = "cap-pathlib")]
 pub mod pathlib;
 pub mod random;
+/// `random.Random(int)`, `random.sample`, `random.shuffle` and the served
+/// spellings of `sys.version_info` — the `cap-random` capability.
+#[cfg(feature = "cap-random")]
+pub mod randobj;
 /// The `re` SURFACE — module, flags, `escape`, `purge`, the compiler back end
 /// and the matching machine — the `cap-re` capability. Absent from the smaller
 /// variant entirely, not merely unreachable in it. The pattern PARSER is not
@@ -109,6 +127,30 @@ pub mod repat;
 #[cfg(feature = "cap-glob")]
 pub mod glob;
 pub mod route;
+/// `statistics.mean` / `median` / `median_low` / `median_high` — the
+/// `cap-statistics` capability. Absent from the smaller variant entirely, not
+/// merely unreachable in it.
+#[cfg(feature = "cap-statistics")]
+pub mod statistics;
+
+/// `textwrap.dedent` / `indent` / `wrap` / `fill` / `shorten` — the
+/// `cap-textwrap` capability. Absent from the smaller variant entirely, not
+/// merely unreachable in it.
+#[cfg(feature = "cap-textwrap")]
+pub mod textwrap;
+
+/// `import ast` and `ast.literal_eval` — the `cap-ast` capability. Not
+/// `ast.rs`, which is the engine's own syntax tree. Absent from the smaller
+/// variant entirely, not merely unreachable in it.
+#[cfg(feature = "cap-ast")]
+pub mod pyast;
+
+/// `time.time` / `monotonic` / `perf_counter` (and their `_ns` forms),
+/// `time.sleep`, and the one fused `strftime(<literal>, gmtime())` UTC stamp —
+/// the `cap-time` capability. Absent from the smaller variant entirely, not
+/// merely unreachable in it. Nothing local-time: `time.rs` says why.
+#[cfg(feature = "cap-time")]
+pub mod time;
 pub mod value;
 
 // The handle types are named the way C names them, because they ARE the C

@@ -46,7 +46,7 @@ executing a program is simply absent, and the absences are the architecture:
 | `__file__`, `__spec__`, `__package__` bound per module | `__name__`, which is `__main__` | `__file__` is `unsupported: dunder-missing` rather than a `NameError`, because CPython binds it for a script and leaves it unbound under `-c`, and only one of those can be faked (`err.rs:name_err`) |
 
 **An absent module and an absent package are the same refusal to the engine and
-different answers to the caller.** `import numpy` and `import itertools` both
+different answers to the caller.** `import numpy` and `import subprocess` both
 exit 90; the *chain* then runs the program on CPython, where one raises
 `ModuleNotFoundError` at exit 1 and the other works. The engine cannot tell them
 apart — it has no `sys.path` to look on — and does not have to, because the
@@ -102,7 +102,41 @@ Everything else CPython puts in `builtins` — `frozenset`, `bytearray`,
 listed above — is `unsupported: builtin: <name>` at exit 90. A name **neither**
 has is the program's own bug and keeps CPython's `NameError` at exit 1; the
 split is `err.rs:CPYTHON_BUILTINS`, and without it a typo'd name and a missing
-capability would be indistinguishable to the dispatcher.
+capability would be indistinguishable to the dispatcher. One exception: an
+UNCAUGHT `NameError` on the name of a module some variant serves (`os`, `time`,
+…) is `unsupported: name-hint`, because CPython 3.14 ends that traceback with
+an import hint that rests on a suggestion search the engine does not run
+(`err.rs:forgot_import`). On `lypning-l`, a run in which a capability the core
+lacks has **run** is *held*: every uncaught `NameError`, `AttributeError` and
+unexpected-keyword `TypeError` is `name-hint` too, and the run refuses rather
+than commit past 8 MiB of output or `os.rmdir` a directory it did not make, so
+that refusal stays possible (`io.rs:hold`). The capabilities are `itertools`,
+`difflib`, `time`, `statistics`, `textwrap` and `binascii` (held when imported),
+a served `from __future__` head (held from the first statement), and
+`cap-random`'s `random.Random`/`sample`/`shuffle` and `sys.version_info` (held
+when evaluated) — the points at which the core, running the same program,
+refuses. Those programs went to CPython before the capability existed. The
+spectrum router's own verdict, computed inside `lypning-l` before the first
+statement (`route.rs:hint_held`), only *arms* such a run (`route.rs:arm_hold`):
+output past 8 MiB is still held back, so a capability that runs later finds a
+run it can refuse, and until one runs the program is answered byte for byte as
+`lypning` answers it — directly or through either dispatcher, which set no
+variable in the program's environment — as is any program the core routes to
+itself, whatever its comments, strings or variable names say (invariant 10,
+`tests/test_hold_monotone.py`). No other `Did you mean` hint is written.
+
+Every compile-time `SyntaxError` CPython raises that the parser used to let
+through — a duplicate parameter, `break` outside a loop, `0777`, a bare
+`except:` before another clause, a lone or second starred target, a bare or
+repeated `/`, a name assigned, used or a parameter before its `global` — is
+the lexer's or parser's own `SyntaxError` in every variant (`parse.rs:parse`):
+exit 1 and empty stdout run directly, and routed to CPython as `syntax`, whose
+message the caller reads. A tab and space mix CPython calls a `TabError`, and a
+dedent to no outer level (`IndentationError`), refuse as `indent`: the last
+stderr line is the subclass's name, which a `SyntaxError` cannot spell. A
+non-ASCII identifier or whitespace character refuses as `token` (CPython
+NFKC-folds identifiers and admits only XID characters; the tables are not
+carried), and so does any `__debug__` (`builtin`).
 
 The methods on the types that do exist are a larger surface with the same rule:
 a method CPython has and the engine lacks refuses as `<type>-method` or
@@ -127,24 +161,31 @@ transcendentals are refused rather than approximated, which is why `math` needs
 no capability feature — a larger engine would answer every `math` program
 exactly as the smaller one does (`math.rs`).
 
-Any other import — `itertools`, `functools`, `time`, `datetime`, `textwrap`,
+Any other import — `functools`, `datetime`,
 `string`, `struct`, `argparse`, `subprocess`, a third-party package, a module of
 the user's own — is `unsupported: module: import <name>` on both engines, and
 `lypning-l` adds the modules in §5.
 
 ### 4.3 Modules served in part
 
-Four modules on `lypning-l` are served as a named list of attributes rather than
+Eleven modules on `lypning-l` are served as a named list of attributes rather than
 whole, so the walk in the *smaller* engine can decide statically whether the
 larger one would answer. Everything not listed is `unsupported: module-attr:
 <module>.<name>` — including under `from <module> import <name>`:
 
 | module | served | source |
 |---|---|---|
+| `ast` | `literal_eval` | `route.rs:AST_SERVED` — over a `str` only; `parse`, `walk`, `dump` and the node classes are CPython's, and every input CPython raises or warns on refuses |
 | `base64` | `b64decode` `b64encode` `urlsafe_b64decode` `urlsafe_b64encode` | `route.rs:BASE64_SERVED` |
+| `binascii` | `a2b_base64` `a2b_hex` `b2a_base64` `b2a_hex` `hexlify` `unhexlify` | `route.rs:BINASCII_SERVED` — `Error` and `crc32` are CPython's |
 | `csv` | `DictReader` `QUOTE_ALL` `QUOTE_MINIMAL` `QUOTE_NONE` `QUOTE_NONNUMERIC` `reader` | `route.rs:MODULE_ATTRS` — the writers are CPython's |
 | `glob` | `escape` `glob` `has_magic` `iglob` | `route.rs:GLOB_SERVED` |
 | `hashlib` | `md5` `sha1` `sha256` `sha512` | `hashlib.rs:SERVED` — `new`, the SHA-3 family and the KDFs are CPython's |
+| `statistics` | `mean` `median` `median_high` `median_low` | `statistics.rs:SERVED` — `mean` exact over ints, bools and floats; empty data, a float beside an int past 64 bits, a median over items `<` does not totally order (mixed kinds past the first pair, a nested NaN, a set, an int past 2**53 beside a float) and the spread functions are CPython's |
+| `itertools` | `combinations` `product` | `itertools.rs:SERVED` — `chain`, `islice`, `permutations` and the rest are CPython's |
+| `difflib` | nothing: the import alone | `route.rs:MODULE_ATTRS` — an EMPTY row, so every `difflib.<name>` is CPython's |
+| `textwrap` | `dedent` `fill` `indent` `shorten` `wrap` | `route.rs:TEXTWRAP_SERVED` — `TextWrapper`, `max_lines`, `indent`'s `predicate` and the other `TextWrapper` keywords are CPython's |
+| `time` | `gmtime` `monotonic` `monotonic_ns` `perf_counter` `perf_counter_ns` `sleep` `strftime` `time` `time_ns` | `time.rs:SERVED` — everything local-time is CPython's |
 
 `collections` serves `Counter` and `defaultdict`; `pathlib` serves `Path`. Both
 are whole-module claims in `route.rs:CAPS`, so an attribute neither serves —
@@ -153,27 +194,36 @@ rather than in the smaller engine's walk, which costs one spawn and no answer.
 
 ## 5. What `lypning-l` adds
 
-`lypning-l` is the same crate built with eight `cap-*` features
+`lypning-l` is the same crate built with seventeen `cap-*` features
 (`engines.VARIANT_CAPS`, `route.rs:CAPS`, and `lypning route --spectrum` from
 either binary):
 
 | capability | what it adds | source |
 |---|---|---|
+| `cap-ast` | the `ast` module — `literal_eval` over a `str`, and no other name (`ast.parse` refuses) | `pyast.rs` |
 | `cap-base64` | the `base64` module, four functions of it | `base64.rs` |
 | `cap-bigint` | no module: integers past 64 bits, exact | `bigint.rs` |
+| `cap-binascii` | the `binascii` module, six functions of it | `binascii.rs` |
 | `cap-collections` | the `collections` module — `Counter`, `defaultdict` | `collections.rs` |
 | `cap-csv` | the `csv` module — the two readers | `csv.rs` |
+| `cap-difflib` | the `difflib` module — the import, and no name on it | `modules.rs:MODULES` |
+| `cap-future` | `__future__` — a head of no-op feature imports; `def` annotations never evaluated under `annotations`, or under any head on a 3.14+ reference (PEP 649) | `future.rs` |
 | `cap-glob` | the `glob` module | `glob.rs` |
 | `cap-hashlib` | the `hashlib` module — four constructors | `hashlib.rs` |
+| `cap-itertools` | the `itertools` module — `product`, `combinations` | `itertools.rs` |
 | `cap-pathlib` | the `pathlib` module — `Path` | `pathlib.rs` |
+| `cap-random` | no module: `random.Random(int)`, `random.sample`, `random.shuffle`, and `sys.version_info` as `[0]`, `[:2]`, `.major`/`.minor` or against a tuple of at most two items | `randobj.rs` |
 | `cap-re` | the `re` module and its matcher | `re.rs` |
+| `cap-statistics` | the `statistics` module — four functions of it | `statistics.rs` |
+| `cap-textwrap` | the `textwrap` module — five functions of it | `textwrap.rs` |
+| `cap-time` | the `time` module — the clocks, a bounded `sleep`, one UTC stamp | `time.rs` |
 
 `cap-re` serves a **slice** of the pattern language, and the rest of it is
 refusals rather than a best effort: non-ASCII group names, backreferences, lookaround,
 bytes patterns, Unicode `\w`/`\d`/`\s`, Unicode case folding and a backtracking
 step budget all refuse (`docs/LYPNING.md` §3).
 
-The cost of the eight is the binary: `lypning` 1,147,088 B in 9 blocks and
+The cost of the first eight is the binary: `lypning` 1,147,088 B in 9 blocks and
 `lypning-l` 1,323,216 B in 11 blocks, both x86\_64-unknown-linux-musl, measured
 2026-09-14 by `lypning build --rust` on this tree. `lypning gate` holds each
 against its own budget (`gate.VARIANT_BLOCK_BUDGET`), and `docs/LYPNING.md` §11
@@ -190,7 +240,7 @@ CPython (`route.rs:ONLY_CPYTHON_KINDS`, `engines.ONLY_CPYTHON_REFUSALS`):
 
 `del` · `dict-view` · `dunder-missing` · `encoding` · `exception-chaining` ·
 `glob-order` · `identity` · `iterator-type-name` · `json` · `math` ·
-`nan-identity` · `nan-order` · `percent-format` · `random` · `repr-unicode` ·
+`name-hint` · `nan-identity` · `nan-order` · `percent-format` · `random` · `repr-unicode` ·
 `set-method` · `set-order`
 
 Three of them show what the list is for: `identity` fires on `is` between two

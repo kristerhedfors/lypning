@@ -22,10 +22,10 @@ MODEL = "qwen-3.8-27b"
 INPUTS = [{"stdin": "3 1 2\n"}, {"stdin": "10 20\n"}, {"stdin": "5\n"}, {"stdin": "\n"}]
 SUM = "import sys\nprint(sum(int(x) for x in sys.stdin.read().split()))"
 SUM2 = "import sys\nns=[int(t) for t in sys.stdin.read().split()]\nprint(sum(ns))"
-MEDIAN = ("import sys, statistics\nns=[int(x) for x in sys.stdin.read().split()]\n"
-          "print(statistics.median(ns) if ns else 'none')")
-MEDIAN2 = ("import sys\nimport statistics\nvals=[int(v) for v in sys.stdin.read().split()]\n"
-           "print('none' if not vals else statistics.median(vals))")
+SMALLEST = ("import sys, heapq\nns=[int(x) for x in sys.stdin.read().split()]\n"
+            "print(heapq.nsmallest(2, ns) if ns else 'none')")
+SMALLEST2 = ("import sys\nimport heapq\nvals=[int(v) for v in sys.stdin.read().split()]\n"
+             "print('none' if not vals else heapq.nsmallest(2, vals))")
 FRACTION = ("import sys\nfrom fractions import Fraction\nns=[int(x) for x in sys.stdin.read().split()]\n"
             "print(Fraction(sum(ns), len(ns)) if ns else 'none')")
 FRACTION2 = ("import sys, fractions\nns=[int(x) for x in sys.stdin.read().split()]\n"
@@ -35,12 +35,12 @@ TEXTWRAP2 = "import sys\nimport textwrap\nt=sys.stdin.read().strip()\nprint('\\n
 
 
 def fake_engine(tmp_path):
-    """Refuses statistics/fractions/textwrap; lies, crashes or half-refuses on a marker."""
+    """Refuses heapq/fractions/textwrap; lies, crashes or half-refuses on a marker."""
     path = tmp_path / "fake-lypning-l"
     path.write_text(
         "#!/bin/sh\n"
         "prog=\"$1\"; shift\n"
-        "for m in statistics fractions textwrap; do\n"
+        "for m in heapq fractions textwrap; do\n"
         "  if grep -Eq \"^(import|from) .*$m\" \"$prog\"; then\n"
         "    echo \"fake-l: unsupported: module: import $m\" >&2; exit 90; fi\n"
         "done\n"
@@ -135,9 +135,9 @@ def test_a_program_the_engine_serves_is_a_native_row(runner):
 
 
 def test_a_refused_rewrite_row_goes_to_the_repair_queue(runner):
-    verdict = synth.judge(candidate([MEDIAN, MEDIAN2], construct="statistics.median"), runner)
+    verdict = synth.judge(candidate([SMALLEST, SMALLEST2], construct="heapq.nsmallest"), runner)
     assert verdict["kind"] == "repair"
-    assert verdict["row"]["refusals"] == ["module: import statistics"]
+    assert verdict["row"]["refusals"] == ["module: import heapq"]
 
 
 def test_a_refused_ceiling_row_is_a_control_not_a_repair(runner):
@@ -205,12 +205,12 @@ def test_an_engine_that_disagrees_with_cpython_is_a_witness_never_a_row(runner, 
 
 
 def test_a_repair_is_accepted_only_when_native_and_byte_identical(runner):
-    queued = synth.judge(candidate([MEDIAN, MEDIAN2], construct="statistics.median"), runner)["row"]
+    queued = synth.judge(candidate([SMALLEST, SMALLEST2], construct="heapq.nsmallest"), runner)["row"]
     outcome = synth.repair(queued, runner)
-    assert outcome["repaired"] and outcome["row"]["repair_rule"] == "statistics"
-    assert "statistics" not in outcome["row"]["program"]
-    assert outcome["row"]["original"] == MEDIAN
-    assert outcome["fired"] == ["statistics"] and outcome["rejected"] == {}
+    assert outcome["repaired"] and outcome["row"]["repair_rule"] == "heapq"
+    assert "heapq" not in outcome["row"]["program"]
+    assert outcome["row"]["original"] == SMALLEST
+    assert outcome["fired"] == ["heapq"] and outcome["rejected"] == {}
 
 
 def test_a_queue_row_no_rule_reaches_stays_owed(runner):
@@ -224,9 +224,9 @@ def test_a_queue_row_no_rule_reaches_stays_owed(runner):
 
 def test_a_rule_that_changes_behaviour_is_rejected_by_verification(runner):
     """The expected output was agreed before the repair existed; a rule cannot move it."""
-    queued = synth.judge(candidate([MEDIAN, MEDIAN2], construct="statistics.median"), runner)["row"]
-    lying = [("liar", lambda src: src.replace("statistics.median(ns)", "0").replace(
-        "statistics.median(vals)", "0").replace("import sys, statistics", "import sys"))]
+    queued = synth.judge(candidate([SMALLEST, SMALLEST2], construct="heapq.nsmallest"), runner)["row"]
+    lying = [("liar", lambda src: src.replace("heapq.nsmallest(2, ns)", "0").replace(
+        "heapq.nsmallest(2, vals)", "0").replace("import sys, heapq", "import sys"))]
     outcome = synth.repair(queued, runner, rules=lying)
     assert not outcome["repaired"] and outcome["rejected"] == {"liar": "cpython-mismatch"}
 
@@ -242,8 +242,8 @@ def test_every_admitted_kind_projects_to_a_case_the_trainer_validates(runner):
                                          task="Print the exact mean of the integers on stdin as a fraction."),
                                runner)["row"],
     }
-    queued = synth.judge(candidate([MEDIAN, MEDIAN2], construct="statistics.median",
-                                   task="Print the median of the integers on stdin, or none."), runner)["row"]
+    queued = synth.judge(candidate([SMALLEST, SMALLEST2], construct="heapq.nsmallest",
+                                   task="Print the two smallest integers on stdin, or none."), runner)["row"]
     rows["repaired"] = synth.repair(queued, runner)["row"]
     cases = [synth.to_case(row, kind=kind, batch="t") for kind, row in rows.items()]
     for case in cases:
@@ -253,8 +253,8 @@ def test_every_admitted_kind_projects_to_a_case_the_trainer_validates(runner):
     assert by_kind["repaired"]["population"] == "coverage"
     assert by_kind["ceiling"]["population"] == "fallback-control"
     assert by_kind["repaired"]["reference"] == rows["repaired"]["program"]
-    assert by_kind["repaired"]["synth"]["original"] == MEDIAN
-    assert by_kind["repaired"]["synth"]["repair_rule"] == "statistics"
+    assert by_kind["repaired"]["synth"]["original"] == SMALLEST
+    assert by_kind["repaired"]["synth"]["repair_rule"] == "heapq"
     assert by_kind["ceiling"]["synth"]["refusals"] == ["module: import fractions"]
     for case in cases:
         assert case["case_id"].startswith("v3-")
@@ -284,8 +284,8 @@ def test_family_and_capability_come_from_the_construct():
 def batch_rows():
     return [
         candidate([SUM, SUM2]),
-        candidate([MEDIAN, MEDIAN2], construct="statistics.median",
-                  task="Print the median of the integers on stdin, or none when there are none."),
+        candidate([SMALLEST, SMALLEST2], construct="heapq.nsmallest",
+                  task="Print the two smallest integers on stdin, or none when there are none."),
         candidate([FRACTION, FRACTION2], stratum="ceiling", construct="fractions.Fraction",
                   task="Print the exact mean of the integers on stdin as a reduced fraction."),
         candidate([TEXTWRAP, TEXTWRAP2], construct="textwrap.fill",
@@ -308,7 +308,7 @@ def test_run_routes_a_whole_batch_and_counts_every_outcome(runner):
         or report["unserved_kinds"] == [("module: import textwrap", 1)]
     assert report["witnesses"] == 1 and result["witnesses"][0]["why"].startswith("mismatch")
     assert report["tally"]["duplicate"] == 1 and report["tally"]["rejected:malformed"] == 1
-    assert report["rules_accepted"] == {"statistics": 1} and report["rules_fired"] == {"statistics": 1}
+    assert report["rules_accepted"] == {"heapq": 1} and report["rules_fired"] == {"heapq": 1}
     assert all(c["synth"]["batch"] == "b1" for c in result["cases"])
     validate_cases(result["cases"])
 
@@ -407,7 +407,7 @@ def test_the_report_carries_a_verdict_for_every_rule_that_fired(runner):
     """
     report = synth.run(batch_rows(), runner, batch="b1")["report"]
     assert set(report["rule_verdicts"]) == set(report["rules_fired"])
-    assert report["rule_verdicts"] == {"statistics": "engine-addressable"}
+    assert report["rule_verdicts"] == {"heapq": "engine-addressable"}
     text = synth.render(report)
-    assert "rule verdicts: statistics engine-addressable" in text
+    assert "rule verdicts: heapq engine-addressable" in text
     assert "RULE WITHOUT" not in text

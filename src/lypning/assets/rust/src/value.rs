@@ -242,7 +242,8 @@ pub enum HKey {
 /// The identity of a bound method, as a dict or set key — see [`HKey::Bound`].
 #[derive(PartialEq, Eq, Hash)]
 pub struct BoundId {
-    /// `0` a module, `1` a type object, `2` an instance. Part of the key
+    /// `0` a module, `1` a type object, `2` an instance — the receiver of a
+    /// bound method — and `3` a module ITSELF, as a key (`{os}`). Part of the key
     /// because the first two are identified by NAME and nothing stops a module
     /// and a type from sharing one; two objects that hash alike and compare
     /// alike are one dict entry, which would be a wrong answer at exit 0.
@@ -256,6 +257,25 @@ pub struct BoundId {
     addr: usize,
     /// The function: CPython's `m_ml` / `__func__` half.
     name: &'static str,
+}
+
+/// [`hkey`] for a dict key or a set element. From 3.14 CPython names where the
+/// value was used — `cannot use 'tuple' as a dict key (unhashable type:
+/// 'list')`, the OUTER type first — and `hash()` keeps the bare message, so
+/// the container supplies the context. A compile-time constant before 3.14.
+#[inline(always)]
+pub fn hkey_in(v: &Value, place: &str) -> R<HKey> {
+    if crate::err::REF_PY_MINOR < 14 {
+        return hkey(v);
+    }
+    hkey(v).map_err(|e| {
+        let m = crate::eval::err_msg(&e);
+        if m.starts_with("unhashable type") {
+            type_err(format!("cannot use '{}' as a {place} ({m})", type_name(v)))
+        } else {
+            e
+        }
+    })
 }
 
 pub fn hkey(v: &Value) -> R<HKey> {
@@ -351,6 +371,16 @@ pub fn hkey(v: &Value) -> R<HKey> {
         // which the chain never retries — so `{csv.reader}`, `{os.getcwd: 1}`
         // and `x.append in {x.append}` simply died where CPython answers.
         Value::Bound(r, name) => return bound_key(r, *name),
+        // A MODULE is hashable in CPython, by identity — and one process holds
+        // one of each, so the name is the identity, exactly as `is` and `==`
+        // above compare it. The key is a `BoundId` of its own kind (`3`), so a
+        // module is never one entry with a bound method, a type or a string
+        // that shares its name. `{os}`, `{time: 1}` and `m in {…}` raised
+        // `unhashable type: 'module'` at exit 1, the program's own exit.
+        // Set iteration order stays refused (see the module docs above).
+        Value::Module(m) => {
+            return Ok(HKey::Bound(Rc::new(BoundId { kind: 3, owner: m, addr: 0, name: "" })))
+        }
         // An iterator IS hashable in CPython — by object identity, which is an
         // address this engine has no business reproducing. It refuses for the
         // same reason a `re.Match` and a `.parents` view do, and the refusal is
@@ -432,14 +462,14 @@ impl Dict {
         self.entries.len() - self.holes
     }
     pub fn get(&self, k: &Value) -> R<Option<Value>> {
-        let h = hkey(k)?;
+        let h = hkey_in(k, "dict key")?;
         Ok(self.index.get(&h).map(|i| self.entries[*i].1.clone()))
     }
     pub fn contains(&self, k: &Value) -> R<bool> {
-        Ok(self.index.contains_key(&hkey(k)?))
+        Ok(self.index.contains_key(&hkey_in(k, "dict key")?))
     }
     pub fn insert(&mut self, k: Value, v: Value) -> R<()> {
-        let h = hkey(&k)?;
+        let h = hkey_in(&k, "dict key")?;
         match self.index.get(&h) {
             // Python keeps the ORIGINAL key object and position on overwrite.
             Some(i) => self.entries[*i].1 = v,
@@ -452,7 +482,7 @@ impl Dict {
         Ok(())
     }
     pub fn remove(&mut self, k: &Value) -> R<Option<Value>> {
-        let h = hkey(k)?;
+        let h = hkey_in(k, "dict key")?;
         match self.index.remove(&h) {
             Some(i) => {
                 let old = std::mem::replace(&mut self.entries[i].1, Value::None);
@@ -501,10 +531,10 @@ impl Set {
         self.items.len()
     }
     pub fn contains(&self, v: &Value) -> R<bool> {
-        Ok(self.index.contains_key(&hkey(v)?))
+        Ok(self.index.contains_key(&hkey_in(v, "set element")?))
     }
     pub fn add(&mut self, v: Value) -> R<()> {
-        let h = hkey(&v)?;
+        let h = hkey_in(&v, "set element")?;
         if !self.index.contains_key(&h) {
             self.index.insert(h, self.items.len());
             self.items.push(v);
@@ -512,7 +542,7 @@ impl Set {
         Ok(())
     }
     pub fn discard(&mut self, v: &Value) -> R<bool> {
-        let h = hkey(v)?;
+        let h = hkey_in(v, "set element")?;
         match self.index.remove(&h) {
             Some(i) => {
                 self.items.remove(i);
@@ -1310,6 +1340,8 @@ fn bound_kind(recv: &Value, name: &str) -> Callable {
             ("glob", _) => Function,
             #[cfg(feature = "cap-base64")]
             ("base64", _) => Function,
+            #[cfg(feature = "cap-statistics")]
+            ("statistics", _) => Function,
             // `os` is `posix` re-exported, so its names are C — except the two
             // served here that `os.py` defines itself.
             ("os", "makedirs" | "getenv") => Function,
@@ -1323,6 +1355,8 @@ fn bound_kind(recv: &Value, name: &str) -> Callable {
             // that come straight off the C `_random.Random`: `random()` and
             // `getrandbits()`.
             ("random", "seed" | "randint" | "randrange" | "choice") => Method,
+            #[cfg(feature = "cap-random")]
+            ("random", "sample" | "shuffle") => Method,
             // The receiver `ops::get_attr` gives `Path.cwd`, a classmethod —
             // and a classmethod read off the class is a bound method of it.
             #[cfg(feature = "cap-pathlib")]
@@ -1332,6 +1366,12 @@ fn bound_kind(recv: &Value, name: &str) -> Callable {
             // and `hashlib.md5`.
             #[cfg(feature = "cap-csv")]
             ("csv", "DictReader") => Class("DictReader"),
+            // Both are C TYPES, and a C type's `tp_name` is dotted: CPython's
+            // own AttributeError says `type object 'itertools.product'`.
+            #[cfg(feature = "cap-itertools")]
+            ("itertools", "product") => Class("itertools.product"),
+            #[cfg(feature = "cap-itertools")]
+            ("itertools", "combinations") => Class("itertools.combinations"),
             _ => Builtin,
         },
         // The UNBOUND method off a type object — `str.upper`, which
@@ -1345,6 +1385,13 @@ fn bound_kind(recv: &Value, name: &str) -> Callable {
         // `method` exactly as `Path.cwd` off the class is.
         #[cfg(feature = "cap-pathlib")]
         Value::Path(..) => Method,
+        // `random.Random` is a pure-Python subclass of the C `_random.Random`:
+        // the two it inherits are C, the rest are `random.py`'s functions.
+        #[cfg(feature = "cap-random")]
+        Value::IterObj(_, crate::randobj::TYPE) => match name {
+            "random" | "getrandbits" => Builtin,
+            _ => Method,
+        },
         // `_sre.SRE_Pattern`'s six vectorcall methods. `findall` and `split` are
         // METH_VARARGS and stay the ordinary name.
         //
@@ -1412,6 +1459,13 @@ fn bound_kind(recv: &Value, name: &str) -> Callable {
 /// through `except AttributeError as e: print(e)`.
 pub fn attr_error(base: &Value, name: &str) -> crate::err::LypningError {
     match callable_kind(base) {
+        // `mro` is the one non-dunder attribute EVERY type object has
+        // (`dir(type)`), so `int.mro()` and `itertools.product.mro()` answer in
+        // CPython. Nothing here builds a class's MRO: refused, never the
+        // AttributeError at exit 1 it used to be.
+        Some(Callable::Class(cls)) if name == "mro" => {
+            crate::err::unsupported("type-attr", &format!("{cls}.mro"))
+        }
         Some(Callable::Class(cls)) => crate::err::attr_err(format!(
             "type object '{cls}' has no attribute '{name}'"
         )),
@@ -1553,7 +1607,7 @@ fn bound_key(recv: &Value, name: &'static str) -> R<HKey> {
             return Err(unsupported(
                 "identity",
                 &format!(
-                    "a bound method of a {} as a dict or set key, whose receiver's identity CPython answers from interning",
+                    "a bound method of a {} as a dict or set key, a key by identity",
                     type_name(recv)
                 ),
             ))

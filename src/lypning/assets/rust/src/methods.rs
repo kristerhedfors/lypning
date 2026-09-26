@@ -201,7 +201,7 @@ fn one_ascii_byte(needle: &str) -> Option<u8> {
 ///     `White_Space` — `int('\x1c5')` is a ValueError in CPython — so
 ///     `builtins.rs`'s `trim()` is right and must stay a `trim()`.
 #[inline]
-fn py_space(c: char) -> bool {
+pub(crate) fn py_space(c: char) -> bool {
     matches!(c, '\u{1c}'..='\u{1f}') || c.is_whitespace()
 }
 
@@ -343,6 +343,10 @@ pub fn method_name(recv: &Value, name: &str) -> Option<&'static str> {
         if let Some(k) = crate::collections::kind_of(d) {
             return crate::collections::method_name(k, name);
         }
+    }
+    #[cfg(feature = "cap-binascii")]
+    if name == "fromhex" && matches!(recv, Value::Bytes(_)) {
+        return Some("fromhex");
     }
     let table: &[&str] = match recv {
         Value::Str(_) => STR_METHODS,
@@ -491,7 +495,8 @@ fn arity(ty: &str, name: &str) -> Option<(usize, usize)> {
         ("bytes", "strip" | "lstrip" | "rstrip") => (0, 1),
         ("bytes", "join" | "partition" | "rpartition") => (1, 1),
         ("bytes", "splitlines") => (0, 1),
-        ("bytes", "decode") => (0, 2),
+        ("bytes", "decode" | "hex") => (0, 2),
+        ("bytes", "upper" | "lower") => (0, 0),
         ("list", "append" | "remove" | "extend" | "count") => (1, 1),
         ("list", "insert") => (2, 2),
         ("list", "pop") => (0, 1),
@@ -526,12 +531,26 @@ fn check_arity(ty: &str, name: &str, args: &Args, kw: &[(Rc<str>, Value)]) -> R<
     if n <= hi && (n >= lo || !kw.is_empty()) {
         return Ok(());
     }
-    Err(type_err(if lo == hi {
-        format!("{ty}.{name}() takes exactly {lo} {} ({n} given)", plural(lo))
+    // CPython's three spellings, read off 3.14.5: METH_NOARGS and METH_O name
+    // the type, Argument Clinic names the bare method with `()`, and the
+    // `PyArg_UnpackTuple` methods say `expected`.
+    let clinic = matches!(name, "split" | "rsplit" | "splitlines" | "encode" | "decode" | "hex")
+        || (ty, name) == ("str", "replace");
+    Err(type_err(if (ty, name) == ("list", "sort") {
+        "sort() takes no positional arguments".to_string()
+    } else if lo == hi && lo < 2 {
+        let what = if lo == 0 { "no arguments" } else { "exactly one argument" };
+        format!("{ty}.{name}() takes {what} ({n} given)")
+    } else if lo == hi {
+        format!("{name} expected {lo} {}, got {n}", plural(lo))
+    } else if clinic && n > hi {
+        format!("{name}() takes at most {hi} {} ({n} given)", plural(hi))
+    } else if clinic {
+        format!("{name}() takes at least {lo} positional {} ({n} given)", plural(lo))
     } else if n > hi {
-        format!("{ty}.{name}() takes at most {hi} {} ({n} given)", plural(hi))
+        format!("{name} expected at most {hi} {}, got {n}", plural(hi))
     } else {
-        format!("{ty}.{name}() takes at least {lo} {} ({n} given)", plural(lo))
+        format!("{name} expected at least {lo} {}, got {n}", plural(lo))
     }))
 }
 
@@ -542,6 +561,12 @@ pub fn call_method(
     args: &mut Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
+    // `bytes.fromhex` is a CLASSMETHOD: off the type or off an instance, the
+    // argument is the text.
+    #[cfg(feature = "cap-binascii")]
+    if name == "fromhex" && matches!(recv, Value::Bytes(_) | Value::Builtin("bytes")) {
+        return crate::binascii::fromhex(args, &kw);
+    }
     // An unbound method (`str.upper`) arrives with the TYPE as receiver; the
     // real receiver is the first argument, exactly as CPython does it.
     if let Value::Builtin(t) = recv {
@@ -609,6 +634,10 @@ pub fn call_method(
     #[cfg(feature = "cap-hashlib")]
     if let Some(cell) = crate::hashlib::as_hasher(recv) {
         return crate::hashlib::method(&cell, name, args, &kw);
+    }
+    #[cfg(feature = "cap-random")]
+    if let Some(cell) = crate::randobj::as_random(recv) {
+        return crate::randobj::method(it, cell, name, args, &kw);
     }
     match recv {
         Value::Str(s) => str_method(it, s, name, args, kw),
@@ -998,32 +1027,44 @@ fn str_method(
             }
         }
         "startswith" | "endswith" => {
-            let pats: Vec<Rc<str>> = match args.first() {
-                Some(Value::Str(p)) => vec![p.clone()],
-                Some(Value::Tuple(t)) => t
-                    .iter()
-                    .map(|x| match x {
-                        Value::Str(p) => Ok(p.clone()),
-                        other => Err(type_err(format!(
-                            "tuple for {name} must only contain str, not {}",
-                            type_name(other)
-                        ))),
-                    })
-                    .collect::<R<Vec<_>>>()?,
-                _ => return Err(type_err(format!("{name} first arg must be str or a tuple of str"))),
-            };
             // The optional start/end arguments slice first — and a start past
             // the end of the string is False, not a test against the empty
-            // slice. See `slice_str`.
-            match slice_str(s, args.get(1), args.get(2))? {
-                None => Value::Bool(false),
-                Some((sub, _)) => Value::Bool(pats.iter().any(|p| {
-                    if name == "startswith" {
-                        sub.starts_with(p.as_ref())
-                    } else {
-                        sub.ends_with(p.as_ref())
+            // slice. See `slice_str`. They are converted BEFORE the first
+            // argument's type is looked at, as Argument Clinic does.
+            let sub = slice_str(s, args.get(1), args.get(2))?;
+            let hit = |p: &str| match &sub {
+                None => false,
+                Some((sub, _)) if name == "startswith" => sub.starts_with(p),
+                Some((sub, _)) => sub.ends_with(p),
+            };
+            match args.first() {
+                Some(Value::Str(p)) => Value::Bool(hit(p)),
+                // `tailmatch` per item, LEFT TO RIGHT: a match returns True
+                // before a later non-str is ever looked at, so
+                // `'abc'.startswith(('a', 1))` is True and `(1, 'a')` the
+                // TypeError (3.14.5, measured).
+                Some(Value::Tuple(t)) => {
+                    for x in t.iter() {
+                        match x {
+                            Value::Str(p) if hit(p) => return Ok(Value::Bool(true)),
+                            Value::Str(_) => {}
+                            other => {
+                                return Err(type_err(format!(
+                                    "tuple for {name} must only contain str, not {}",
+                                    type_name(other)
+                                )))
+                            }
+                        }
                     }
-                })),
+                    Value::Bool(false)
+                }
+                Some(other) => {
+                    return Err(type_err(format!(
+                        "{name} first arg must be str or a tuple of str, not {}",
+                        type_name(other)
+                    )))
+                }
+                None => return Err(type_err(format!("{name} first arg must be str or a tuple of str"))),
             }
         }
         "find" | "index" | "rfind" | "rindex" => {
@@ -1209,11 +1250,30 @@ pub(crate) fn ascii_encode_errors(s: &str, errors: Option<&Value>) -> R<Vec<u8>>
         None => "strict".to_string(),
     };
     Ok(match e.as_str() {
+        // CPython names the first RUN of unencodable characters, by
+        // character index: one character is escaped (`'\xe9'`, `'\u20ac'`,
+        // `'\U0001f600'`, never its printable repr), a run is `0-2`.
         "strict" => {
+            let cs: Vec<char> = s.chars().collect();
+            let lo = cs.iter().position(|c| !c.is_ascii()).unwrap_or(0);
+            let hi = lo + cs[lo..].iter().take_while(|c| !c.is_ascii()).count();
+            let what = if hi - lo == 1 {
+                let u = cs[lo] as u32;
+                let esc = if u < 0x100 {
+                    format!("\\x{u:02x}")
+                } else if u < 0x10000 {
+                    format!("\\u{u:04x}")
+                } else {
+                    format!("\\U{u:08x}")
+                };
+                format!("character '{esc}' in position {lo}")
+            } else {
+                format!("characters in position {lo}-{}", hi - 1)
+            };
             return Err(LypningError::exc(
                 "UnicodeEncodeError",
-                "'ascii' codec can't encode character",
-            ))
+                format!("'ascii' codec can't encode {what}: ordinal not in range(128)"),
+            ));
         }
         // Every byte of a non-ASCII character has the high bit set, so dropping
         // the non-ASCII BYTES drops exactly the characters CPython drops.
@@ -1263,6 +1323,17 @@ fn join_parts(sep: &str, items: &[Value]) -> R<Value> {
         }
     }
     Ok(Value::Str(out.into()))
+}
+
+/// A `start`/`end` bound: `_PyEval_SliceIndex`'s TypeError for a non-integer
+/// (3.9.6 through 3.14.5, measured), never `int_val`'s.
+fn slice_bound(v: &Value) -> R<i64> {
+    int_val(v).map_err(|e| match e.kind() {
+        ErrKind::Exc(_) => {
+            type_err("slice indices must be integers or None or have an __index__ method")
+        }
+        _ => e,
+    })
 }
 
 /// Apply the optional `start`/`end` arguments that several str methods take:
@@ -1319,7 +1390,7 @@ fn slice_str<'a>(
     let lo = match start {
         None | Some(Value::None) => 0,
         Some(v) => {
-            let raw = int_val(v)?;
+            let raw = slice_bound(v)?;
             // Folded and floored, never capped — see above.
             if raw < 0 {
                 (n + raw).max(0)
@@ -1330,7 +1401,7 @@ fn slice_str<'a>(
     };
     let hi = match end {
         None | Some(Value::None) => n,
-        Some(v) => crate::eval::clamp_index(int_val(v)?, n),
+        Some(v) => crate::eval::clamp_index(slice_bound(v)?, n),
     };
     if hi < lo {
         return Ok(None);
@@ -1724,13 +1795,8 @@ pub(crate) fn dict_method(
                         }
                     }
                     other => {
-                        for pair in it.iter_collect(other.clone())? {
-                            let kv = it.iter_collect(pair)?;
-                            if kv.len() != 2 {
-                                return Err(value_err(
-                                    "dictionary update sequence element has length != 2",
-                                ));
-                            }
+                        for (i, pair) in it.iter_collect(other.clone())?.into_iter().enumerate() {
+                            let kv = crate::builtins::dict_pair(it, pair, i)?;
                             d.borrow_mut().insert(kv[0].clone(), kv[1].clone())?;
                         }
                     }
@@ -2306,9 +2372,31 @@ fn bytes_method(
     check_arity("bytes", name, args, &kw)?;
     Ok(match name {
         "decode" => {
-            crate::builtins::check_decode_errors(
-                crate::args::bind(args, &kw, 1, "errors", name)?.as_ref(),
-            )?;
+            // Only `encoding` and `errors`, two at most: anything else is
+            // CPython's TypeError, which the arms below answered past. In
+            // lypning-l, where `bytes.fromhex` routes these programs.
+            #[cfg(feature = "cap-binascii")]
+            if args.len() + kw.len() > 2 || !kw.iter().all(|(k, _)| matches!(k.as_ref(), "encoding" | "errors")) {
+                return Err(unsupported("bytes-method", "decode() arguments"));
+            }
+            let errors = crate::args::bind(args, &kw, 1, "errors", name)?;
+            // UTF-8 with `errors='replace'`: each maximal ill-formed subpart
+            // becomes one U+FFFD, which is both CPython's decoder and
+            // `from_utf8_lossy`. Any other codec or handler still refuses.
+            #[cfg(feature = "cap-binascii")]
+            if let Some(Value::Str(e)) = &errors {
+                let enc = crate::args::bind(args, &kw, 0, "encoding", name)?;
+                let utf8 = match &enc {
+                    None => true,
+                    Some(Value::Str(n)) => matches!(n.as_ref(), "utf-8" | "utf8" | "UTF-8" | "UTF8"),
+                    _ => false,
+                };
+                if e.as_ref() == "replace" && utf8 {
+                    crate::io::hold();
+                    return Ok(Value::Str(String::from_utf8_lossy(b).into_owned().into()));
+                }
+            }
+            crate::builtins::check_decode_errors(errors.as_ref())?;
             match crate::args::bind(args, &kw, 0, "encoding", name)?.as_ref() {
                 // The encoding name is read by `iter::decode_named`, which
                 // `str(bytes, encoding)` reads it through as well.
@@ -2698,7 +2786,7 @@ fn slice_bytes<'a>(b: &'a [u8], start: Option<&Value>, end: Option<&Value>) -> R
     let lo = match start {
         None | Some(Value::None) => 0,
         Some(v) => {
-            let raw = int_val(v)?;
+            let raw = slice_bound(v)?;
             if raw < 0 {
                 (n + raw).max(0)
             } else {
@@ -2708,7 +2796,7 @@ fn slice_bytes<'a>(b: &'a [u8], start: Option<&Value>, end: Option<&Value>) -> R
     };
     let hi = match end {
         None | Some(Value::None) => n,
-        Some(v) => crate::eval::clamp_index(int_val(v)?, n),
+        Some(v) => crate::eval::clamp_index(slice_bound(v)?, n),
     };
     if hi < lo {
         return Ok(None);
@@ -3028,7 +3116,7 @@ fn text_chunk(fo: &mio::FileObj, chunk: Vec<u8>, whole: bool) -> R<Vec<u8>> {
     if !whole {
         return Err(unsupported(
             "file-read",
-            "read(n) across a \\r under newline=None, which CPython translates into one character",
+            "read(n) across a \\r under newline=None",
         ));
     }
     let mut out = Vec::with_capacity(chunk.len());

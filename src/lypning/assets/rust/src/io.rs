@@ -140,6 +140,104 @@ thread_local! {
     static MADE: RefCell<Vec<std::path::PathBuf>> = const { RefCell::new(Vec::new()) };
     static DELETED: RefCell<crate::hash::Set<String>> =
         RefCell::new(crate::hash::Set::with_hasher(crate::hash::BuildFnv));
+    /// See [`hold`].
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+    static HELD: RefCell<bool> = const { RefCell::new(false) };
+    /// See [`arm`].
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+    static ARMED: RefCell<bool> = const { RefCell::new(false) };
+}
+
+/// This run may not commit early: past [`COMMIT_THRESHOLD`] it REFUSES
+/// instead of flushing, and an `os.rmdir` of a directory it did not make
+/// refuses instead of committing.
+///
+/// Called when a capability the CORE lacks actually RUNS — the import of a
+/// module only a [`crate::route::HINT_HELD_CAPS`] capability serves
+/// (`modules::import`), `random.sample`/`shuffle`/`Random` or
+/// `sys.version_info` being evaluated, or a served `__future__` head, which
+/// runs before the first statement. That is exactly the point at which the
+/// core, running the same program, would have refused: before it, the two
+/// binaries have done the same thing and must keep doing it (invariant 10);
+/// after it, the program is one only this variant answers. Every such program
+/// went to CPython before, and its served surface keeps runtime refusals —
+/// `repr` of a product, `set-order`, a dynamic `getattr`, and above all an
+/// uncaught error whose last line CPython ends with a `Did you mean`
+/// suggestion this engine does not compute (`err::forgot_import`). A refusal
+/// needs a run that can still be taken back; a flush would turn it into an
+/// exit 1 with half the output on stdout. The cost is a spawn for such a
+/// program that prints more than 8 MiB.
+///
+/// It is not decided from the walk: a program whose capability sits under an
+/// import that never runs (`if False: import time`) is answered exactly as the
+/// core answers it — its `NameError`, its 9 MB of output — whether a
+/// dispatcher routed it here or it was run directly. What the walk decides is
+/// [`arm`] (`route::arm_hold`); only a served `__future__` head is held from
+/// the first statement.
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+pub fn hold() {
+    HELD.with(|h| *h.borrow_mut() = true);
+}
+
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+pub fn held() -> bool {
+    HELD.with(|h| *h.borrow())
+}
+
+#[cfg(not(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time")))]
+pub fn held() -> bool {
+    false
+}
+
+/// The run MAY become held: the core's own walk routes this program past the
+/// core (`route::hint_held`), so a capability the core lacks is somewhere in
+/// it, reachable or not. An armed run that is not yet [`held`] behaves as the
+/// core does in every observable way but one: past [`COMMIT_THRESHOLD`] it
+/// keeps buffering, up to [`ARMED_LIMIT`], instead of flushing, so that the
+/// capability, if it does run later, still finds a run it can take back. A
+/// program that never reaches it commits at its end, byte for byte what the
+/// core printed.
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+pub fn arm() {
+    ARMED.with(|a| *a.borrow_mut() = true);
+}
+
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+fn armed() -> bool {
+    ARMED.with(|a| *a.borrow())
+}
+
+/// How far an [`arm`]ed run that is not yet [`held`] buffers before it
+/// flushes as the core does. Past it a capability that runs later finds a
+/// committed run, and the program keeps its output, as any committed run does.
+///
+/// Refusing here instead was tried and is wrong: an armed program whose
+/// capability never runs is one the core answers, and a refusal would be
+/// `lypning-l` doing worse than the core on it (invariant 10). The price is an
+/// uncaught error after 64 MiB that ends without CPython's `Did you mean`.
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+pub const ARMED_LIMIT: usize = 8 * COMMIT_THRESHOLD;
+
+/// Does an armed run keep buffering past [`COMMIT_THRESHOLD`] at `len` bytes?
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+fn defer_commit(len: usize) -> bool {
+    armed() && !held() && len <= ARMED_LIMIT
+}
+
+
+/// The refusal a held run raises where it would otherwise commit.
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+fn keep_reversible(what: &str) -> R<()> {
+    if held() {
+        return Err(unsupported(
+            "name-hint",
+            &format!(
+                "{what} in a program only a capability of this variant admits, \
+                 whose uncaught errors must stay refusable"
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// The bytes have left the process.
@@ -235,12 +333,24 @@ fn maybe_commit() -> R<()> {
             ));
         }
         if !is_committed() && staged_len() > COMMIT_THRESHOLD {
+            #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+            keep_reversible("more than 8 MiB of staged file writes")?;
+            #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+            if defer_commit(staged_len()) {
+                return Ok(());
+            }
             commit()?;
             mark_committed(WHY_FLUSHED);
         }
         return Ok(());
     }
     if !is_committed() && buffered_len() > COMMIT_THRESHOLD {
+        #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+        keep_reversible("more than 8 MiB of output")?;
+        #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+        if defer_commit(buffered_len()) {
+            return Ok(());
+        }
         commit()?;
         mark_committed(WHY_FLUSHED);
     }
@@ -584,6 +694,25 @@ pub fn stage_delete(path: &str) {
     });
 }
 
+/// `os.remove`, `os.unlink` and `Path.unlink` — one implementation.
+///
+/// A directory is refused: staged as a file delete it would fail only at
+/// commit, after the program has printed, where CPython raises at once — and
+/// with the platform's error (`EPERM` on macOS, `EISDIR` on Linux).
+pub fn remove_file(path: &str) -> R<()> {
+    if !path_exists(path) {
+        return Err(LypningError::exc(
+            "FileNotFoundError",
+            format!("[Errno 2] No such file or directory: '{path}'"),
+        ));
+    }
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir()) {
+        return Err(unsupported("remove", "os.remove() of a directory"));
+    }
+    stage_delete(path);
+    Ok(())
+}
+
 pub fn stage_write(path: &str, bytes: Vec<u8>) {
     note_write(path);
     let k = stage_key(path);
@@ -690,6 +819,15 @@ pub fn make_dir(path: &str, parents: bool, exist_ok: bool) -> R<()> {
 /// real, one spawn later. The test is the staging layer's alone, so the two
 /// halves of a `mkdir` now consult exactly one.
 fn staged_delete_blocks(path: &str) -> R<()> {
+    // The parent is a file this run has staged: the disk has no such path, so
+    // `create_dir` says `ENOENT` where CPython says `ENOTDIR`.
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        if !parent.as_os_str().is_empty()
+            && PENDING.with(|p| p.borrow().files.contains_key(&stage_key(&parent.to_string_lossy())))
+        {
+            return Err(unsupported("mkdir", "mkdir() under a staged file"));
+        }
+    }
     if is_staged_deleted(path) {
         return Err(unsupported(
             "mkdir",
@@ -720,8 +858,23 @@ fn note_made(p: &std::path::Path) {
 /// it and the run stays routable. Removing anyone else's is irreversible in a
 /// way `create_dir` cannot fake: the mode, the timestamps and the ownership are
 /// gone. That one commits.
+///
+/// A directory that holds a STAGED entry is refused: the disk cannot see a
+/// staged write (CPython's `ENOTEMPTY`, which this engine answered with an
+/// empty `rmdir` and then lost the write at commit) nor a staged delete (the
+/// disk's `ENOTEMPTY` where CPython succeeds).
+///
+/// A [`held`] run refuses a foreign one. An [`arm`]ed run does not, for the
+/// reason [`ARMED_LIMIT`] gives: the core answers it.
 pub fn remove_dir(path: &str) -> R<()> {
+    if staged_under(path) {
+        return Err(unsupported("rmdir", "os.rmdir() over a staged entry"));
+    }
     let real = std::fs::canonicalize(path).ok();
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+    if held() && !real.as_ref().is_some_and(|r| MADE.with(|m| m.borrow().contains(r))) {
+        keep_reversible("os.rmdir of a directory this run did not make")?;
+    }
     std::fs::remove_dir(path).map_err(|e| os_error(path, &e))?;
     let ours = real
         .map(|r| {
@@ -741,6 +894,25 @@ pub fn remove_dir(path: &str) -> R<()> {
         mark_committed(WHY_FOREIGN_RMDIR);
     }
     Ok(())
+}
+
+/// Does this run hold back a write or a delete of some path inside `dir`?
+fn staged_under(dir: &str) -> bool {
+    let mut prefix = stage_key(dir);
+    prefix.push('/');
+    PENDING.with(|p| p.borrow().files.keys().any(|k| k.starts_with(&prefix)))
+        // A delete of a path the disk never had leaves the disk's directory as
+        // empty as the program's.
+        || DELETED.with(|d| {
+            d.borrow().iter().any(|k| k.starts_with(&prefix) && std::fs::symlink_metadata(k).is_ok())
+        })
+}
+
+/// Do two spellings name one staged file? `os.rename('a', './a')` stages a
+/// write of the target and then a delete of the source, and when both are one
+/// key the delete wins and the file is gone.
+pub fn same_staged_path(a: &str, b: &str) -> bool {
+    stage_key(a) == stage_key(b)
 }
 
 /// Does the path exist, as the PROGRAM sees it?
@@ -1058,6 +1230,10 @@ pub fn reset() {
     MADE.with(|m| m.borrow_mut().clear());
     COMMITTED.with(|c| *c.borrow_mut() = false);
     COMMIT_WHY.with(|w| *w.borrow_mut() = "");
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+    HELD.with(|h| *h.borrow_mut() = false);
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+    ARMED.with(|a| *a.borrow_mut() = false);
     STDIN.with(|s| *s.borrow_mut() = None);
     STDIN_POS.with(|p| *p.borrow_mut() = 0);
     #[cfg(feature = "cap-csv")]

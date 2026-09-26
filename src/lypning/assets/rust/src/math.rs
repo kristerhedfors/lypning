@@ -198,7 +198,15 @@ pub fn call(_it: &mut Interp, name: &str, args: &mut Args, kw: &[(Rc<str>, Value
         }
         "copysign" => {
             arity(2, 2)?;
-            Value::Float(num(name, &args[0])?.copysign(num(name, &args[1])?))
+            let y = num(name, &args[1])?;
+            // The sign of a NaN is the one thing that shows it, and CPython's
+            // depends on how the NaN was made: `nan ** 1` keeps it, `-n + n`
+            // takes whichever operand its compiler put first. Refused rather
+            // than reproduced operation by operation.
+            if y.is_nan() {
+                return Err(unsupported("math", "copysign() taking the sign of a NaN"));
+            }
+            Value::Float(num(name, &args[0])?.copysign(y))
         }
         "fmod" => {
             arity(2, 2)?;

@@ -153,6 +153,13 @@ pub const ENGINE: &str = env!("LYPNING_ENGINE");
 /// Read the boundaries at their sites, not here: each one carries the five-way
 /// measurement that fixed it.
 pub const REF_PY_MINOR: u32 = parse_minor(env!("LYPNING_REF_PY"));
+/// `REF_PY_MINOR` was named by the caller or measured from a live interpreter,
+/// not `build.rs`'s fallback guess. Everything that branches on the minor
+/// answers the same either way (the fallback is the newest calibrated
+/// behaviour), except a boundary that cannot be guessed (`future.rs`, PEP 649)
+/// and a program that PRINTS the version: `sys.version_info` is served only
+/// when this is true.
+pub const REF_PY_KNOWN: bool = env!("LYPNING_REF_PY_KNOWN").as_bytes()[0] == b'1';
 
 /// Build-dependent facts measured against the selected CPython, not guessed
 /// from its minor version. See reference_probe.py and build.rs.
@@ -293,6 +300,71 @@ static CPYTHON_BUILTINS: &[&str] = &[
 
 pub fn is_cpython_builtin(name: &str) -> bool {
     CPYTHON_BUILTINS.contains(&name)
+}
+
+/// Every module some variant serves, spelled as a bare name, WITHOUT the cfg
+/// gates `modules::MODULES` carries: the rule below must give the same answer
+/// on every rung of the spectrum, or the core would answer a program its own
+/// superset refuses. Each is in CPython's `sys.stdlib_module_names`
+/// (`tests/test_semantics.py` holds it to that, and to `MODULES`).
+pub const SERVED_MODULE_NAMES: &[&str] = &[
+    "ast", "base64", "binascii", "collections", "csv", "difflib", "glob", "hashlib", "io", "itertools", "json",
+    "math", "os", "pathlib", "posixpath", "random", "re", "statistics", "sys", "textwrap",
+    "time",
+];
+
+/// An UNCAUGHT `NameError` on a stdlib module name, as a refusal.
+///
+/// CPython 3.14 ends that traceback with `. Did you forget to import 'time'?` —
+/// or, when its suggestion search found a near name, `. Did you mean: 'x'? Or
+/// did you forget to import 'time'?`. The search runs over the frame's locals,
+/// globals and builtins, and this engine does not run it, so it printed the bare
+/// `name 'time' is not defined` at the program's own exit 1. Refused at the
+/// exit path rather than where the name is looked up: a `NameError` the program
+/// CATCHES is its own business and has no hint in it. Both callers ask only
+/// while the run's output is still staged, so CPython re-runs it from a clean
+/// slate; past a commit the traceback is kept, as the lesser wrong.
+/// Only the served modules, because a program reaches one of those names by
+/// forgetting an import this engine would have run; the other ~290 stdlib names
+/// would be a table in every binary for a message the battery does not grade.
+pub fn forgot_import(e: &LypningError) -> Option<LypningError> {
+    let ErrKind::Exc(x) = e.kind() else { return None };
+    // A run in which a capability the core lacks has RUN — itertools,
+    // difflib, time, statistics, textwrap, binascii imported, a served
+    // `__future__` head, `random.Random`/`sample`/`shuffle` or
+    // `sys.version_info` evaluated (`io::hold`) — is one the core refused at
+    // that point, and whose programs went to CPython before and got the
+    // hint. Any uncaught error CPython may end with a `Did you mean` refuses
+    // here, and `io::hold` keeps the run reversible so this can. Not the other
+    // programs, including one whose capability never ran: the core answers
+    // them, and what the core answers lypning-l answers. The hints are 3.10's; 3.9 prints the bare line, which
+    // is what this engine prints (measured on 3.9.6, 3.11.15 and 3.14.5).
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+    if crate::io::held()
+        && REF_PY_MINOR >= 10
+        && (x.kind == "NameError"
+            || x.kind == "AttributeError"
+            || (x.kind == "TypeError" && x.msg.contains("unexpected keyword argument")))
+    {
+        return Some(unsupported(
+            "name-hint",
+            &format!(
+                "uncaught {} in a program only a capability of this variant admits, \
+                 which CPython may end with a suggestion",
+                x.kind
+            ),
+        ));
+    }
+    if x.kind != "NameError" {
+        return None;
+    }
+    let name = x.msg.strip_prefix("name '")?.strip_suffix("' is not defined")?;
+    SERVED_MODULE_NAMES.contains(&name).then(|| {
+        unsupported(
+            "name-hint",
+            &format!("NameError on {name}, which CPython ends with an import hint"),
+        )
+    })
 }
 
 /// An undefined name: lypning being small, or the program being wrong.
@@ -449,4 +521,36 @@ impl Drop for Nest {
 /// Resetting on the way in costs one store and removes the whole class.
 pub fn reset_nesting() {
     NEST.with(|n| n.set(0));
+}
+
+thread_local! {
+    /// The `str()` of every `assert` message that was not a non-empty `str`,
+    /// in this run. See [`opaque_assert`].
+    static OPAQUE_ASSERT: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// An `assert x, <msg>` whose message is not a non-empty `str` raised with
+/// `str(msg)` as its text: `args` and `repr()` of it would read `('5',)` where
+/// CPython reads `(5,)`, so those two refuse on it ([`opaque_assert`]) and
+/// everything that reads `str()` — a traceback, `print(e)` — answers.
+pub fn note_opaque_assert(msg: &str) {
+    OPAQUE_ASSERT.with(|o| {
+        let mut o = o.borrow_mut();
+        if !o.iter().any(|m| m == msg) {
+            o.push(msg.to_string());
+        }
+    });
+}
+
+/// Is this an `AssertionError` whose text some opaque `assert` of this run
+/// raised? By TEXT, since the exception is rebuilt on the way to its handler;
+/// a str-message assert that happens to say the same thing refuses too,
+/// which is the safe direction.
+pub fn opaque_assert(kind: &str, msg: &str) -> bool {
+    kind == "AssertionError" && OPAQUE_ASSERT.with(|o| o.borrow().iter().any(|m| m == msg))
+}
+
+/// Forget the opaque messages: a fresh run inherits none.
+pub fn reset_opaque_asserts() {
+    OPAQUE_ASSERT.with(|o| o.borrow_mut().clear());
 }

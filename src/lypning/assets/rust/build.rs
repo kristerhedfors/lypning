@@ -43,6 +43,14 @@ fn main() {
         .filter_map(|(k, _)| k.strip_prefix("CARGO_FEATURE_CAP_").map(|c| format!("cap-{}", c.to_lowercase().replace('_', "-"))))
         .collect();
     caps.sort();
+    // One rule for every capability, present and future: a `cap-*` is only
+    // built as part of `variant-l`, whose feature names the full set. The NAME
+    // above is what both dispatchers route on, so a `lypning` carrying a
+    // capability would answer for a sibling it is not. Keyed on the feature
+    // prefix rather than a list, so adding a `cap-*` adds nothing here.
+    if !caps.is_empty() && !on("VARIANT_L") {
+        panic!("{} on without variant-l: a cap-* feature is only built as part of variant-l (it names the full set)", caps.join(","))
+    }
     println!("cargo:rustc-env=LYPNING_CAPS={}", caps.join(","));
     // The REFERENCE CPython's minor version, because a handful of CPython's own
     // answers are not the same on every version this package supports
@@ -63,11 +71,19 @@ fn main() {
     println!("cargo:rerun-if-env-changed=LYPNING_REF_PY");
     println!("cargo:rerun-if-env-changed=LYPNING_CPYTHON");
     let probed = probe_python();
-    let ref_py = std::env::var("LYPNING_REF_PY")
+    let named = std::env::var("LYPNING_REF_PY")
         .ok()
         .filter(|s| parse_minor(s).is_some())
-        .or_else(|| probed.as_ref().map(|p| p.0.clone()))
-        .unwrap_or_else(|| REF_PY_FALLBACK.to_string());
+        .or_else(|| probed.as_ref().map(|p| p.0.clone()));
+    // Whether the minor was NAMED or MEASURED — handed down by `lypning build`
+    // out of `engines.find_cpython()`, or asked of a python here — rather than
+    // the fallback guess. A site whose answer turns on a version boundary it
+    // cannot guess safely (`future.rs`: PEP 649, 3.14) refuses on a guessed
+    // minor instead of picking a side, and `sys.version_info` is answered only
+    // when it is known (`randobj.rs`): a guessed minor is a wrong number at
+    // exit 0.
+    println!("cargo:rustc-env=LYPNING_REF_PY_KNOWN={}", named.is_some() as u8);
+    let ref_py = named.unwrap_or_else(|| REF_PY_FALLBACK.to_string());
     println!("cargo:rustc-env=LYPNING_REF_PY={ref_py}");
     // Minor versions are insufficient: patch/vendor builds can change these
     // answers without changing 3.x. Compile the selected oracle's actual

@@ -30,19 +30,59 @@ returned unchanged (`docs/VERIFICATION.md` §C1).
 <div class="tiers">
 <div class="tier"><h3>lypning</h3>
 <p class="meta">Rust · no crates · static musl on Linux · frozen at
-8 blocks (<code>gate.VARIANT_BLOCK_BUDGET</code>)</p>
+9 blocks (<code>gate.VARIANT_BLOCK_BUDGET</code>)</p>
 <p>The core, run in-process. Stages its output and discards it on refusal, so
 a refused run is observably a no-op.</p></div>
 <div class="tier"><h3>lypning-l</h3>
 <p class="meta">the same crate, built larger ·
 32 blocks (<code>gate.VARIANT_BLOCK_BUDGET</code>)</p>
-<p>Carries every new capability — <code>collections</code>,
-<code>pathlib</code> (<code>engines.VARIANT_CAPS</code>) — and answers what
-the core refuses.</p></div>
+<p>Carries every new capability — seventeen, from <code>collections</code>,
+<code>re</code> and <code>pathlib</code> to <code>ast.literal_eval</code>
+(<code>engines.VARIANT_CAPS</code>) — and answers part of what the core refuses.</p></div>
 <div class="tier"><h3>cpython</h3>
 <p>The reference, and the answer to everything the other two refuse. Correct
 always, cheap never.</p></div>
 </div>
+
+## Coverage
+
+How much of the Python that coding agents actually ran each engine can answer
+by itself. The programs come from the corpus: the `python -c` one-liners and
+scripts agents ran in this project's sessions, recorded by the capture hooks
+([how capture works](docs/capture.html)). Every answer is compared with what
+CPython prints.
+
+Measured 2026-09-26 at commit `f6b0728` by `lypning conformance --mixture
+both`, on a macOS arm64 build rather than the musl binary CI ships, compared
+with CPython 3.14.5. The corpus loaded 14,816 programs and 10,173 were
+graded. The other 4,643 were skipped by the tool's own rules: 4,024 name an
+absolute path outside the sandbox, 581 drive or start a lypning test run, 26
+change files outside the sandbox, and 12 have no reproducible CPython answer.
+
+| engine | answers itself, as CPython does | declines, passes it on | answers differently | share answered |
+| --- | ---: | ---: | ---: | ---: |
+| `lypning` (core) | 4,583 | 5,590 | 0 | 45.1% |
+| `lypning-l` | 7,357 | 2,816 | 0 | 72.3% |
+| the chain, Python dispatcher | 10,173 | 0 | 0 | 100% |
+| the chain, `lypning run` | 10,173 | 0 | 0 | 100% |
+
+Declining is not a failure. The program goes to the next, larger engine
+(`lypning-l`, then CPython), and that engine answers it. No engine answered
+any graded program differently from CPython, and the two dispatchers agreed on
+all 10,173. That is the gate: a wrong answer is the one outcome that is never
+traded for coverage. The run still printed `FAIL` for one reason: the
+repository net restored this session's own capture logs, which programs in the
+corpus append to. The net did its job; no answer was involved.
+
+Before running a program, the router predicts which engine to use. It chose
+the cheapest engine that answers correctly for 94.6% of programs, and an
+engine that answers correctly, sometimes a costlier one than needed, for
+96.7%. It sent none to an engine that answers wrongly.
+
+What the newest programs needed, and why the rest are still declined, is the
+newest entry (iteration 84) in the [hillclimb ledger](docs/hillclimb.html),
+which records every measured step. Re-run the command before quoting a number:
+capture grows the corpus every session.
 
 ## How a program reaches an interpreter
 

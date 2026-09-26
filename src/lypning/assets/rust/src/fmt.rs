@@ -239,6 +239,21 @@ pub fn repr(v: &Value) -> R<String> {
         #[cfg(feature = "cap-re")]
         Value::Pattern(_) | Value::Match(_) => return crate::re::repr(v),
         Value::Exc(kind, msg) => {
+            if crate::ops::is_unicode_error(kind) {
+                return Err(crate::err::unsupported(
+                    "exception",
+                    &format!("repr() of a {kind}, whose constructor arguments this value does not keep"),
+                ));
+            }
+            if crate::err::opaque_assert(kind, msg) {
+                return Err(crate::err::unsupported(
+                    "exception",
+                    "repr() of an assert whose message was not a non-empty str",
+                ));
+            }
+            if let Some((n, text)) = crate::ops::errno_args(kind, msg)? {
+                return Ok(format!("{kind}({n}, {})", str_repr(text)?));
+            }
             if msg.is_empty() {
                 format!("{kind}()")
             } else if *kind == "KeyError" {

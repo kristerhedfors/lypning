@@ -23,7 +23,7 @@ supplies the native rewrite, and THAT PAIR is the rewrite case.
 The two lists are not interchangeable and the difference is the whole point:
   REWRITABLE    a native equivalent exists, so the pair teaches a substitution.
                 Proof it exists: `repair_rules` already rewrites functools,
-                statistics, heapq and string, verified byte-identical.
+                heapq and string, verified byte-identical.
   UNREWRITABLE  no native equivalent exists, so the right answer KEEPS the
                 import and takes the fallback. These are the ceiling cases, the
                 counterweight that stops an arm scoring well by learning to
