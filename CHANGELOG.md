@@ -14,6 +14,28 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-26** — lypning-l answers `glob.glob()` unsorted, in CPython's own order ([#133](https://github.com/kristerhedfors/lypning/pull/133))
+
+- An eager `glob.glob(P[, recursive=])` is served in any position: a bare
+  `for` loop, `print`, `[0]`, `glob(a) + glob(b)`. `glob.rs` already yields in
+  `_iglob`'s order over `readdir`; GitHub Actions run 36230478729
+  (2026-09-26) measured musl `read_dir` against glibc CPython 3.9/3.11/3.14
+  with 0 mismatches on six Linux filesystems, and APFS was measured the same
+  day on macOS.
+- Still `glob-order`, statically and in every variant: `iglob` outside
+  `sorted`/`min`/`max`/`any`/`all`/`sum`/`in`, and `glob`/`iglob` used as a
+  value. New, at runtime in lypning-l: a call whose order shows, listing a
+  directory this run has written, renamed or removed something at or below.
+- `**` over a path that is not a directory (and `**/**`) refuses on a build
+  whose reference CPython is older than 3.11, which answers it differently.
+- The core loses the eager stop instead of gaining a row, so it gets
+  smaller. It now routes these programs to lypning-l, including two corpus
+  programs that also call `os.path.getmtime`, which lypning-l refuses: a
+  late spawn the core's walk cannot see.
+- lypning-l answers 73 more graded programs: 7,357 to 7,430 of 10,173 in
+  `lypning conformance --mixture both`, 2026-09-26, macOS arm64, graded
+  against CPython 3.14.5. MISMATCH 0, UNSAFE 0, dispatchers agree 10,173/10,173.
+
 **2026-09-26** — The coverage table on the live landing page ([#132](https://github.com/kristerhedfors/lypning/pull/132))
 
 - lypning.dev is GitHub Pages in legacy mode: it renders `README.md` from

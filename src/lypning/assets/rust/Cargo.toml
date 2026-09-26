@@ -88,12 +88,11 @@ cap-re = []
 # `src/csv.rs` is the whole of it.
 cap-csv = []
 
-# `glob` — `glob.glob`, `glob.iglob`, `glob.escape` and `glob.has_magic`. The
-# match SET is computed exactly and the match ORDER is never observable,
-# because `route.rs` admits the call only where a walk can see that the order
-# cannot be seen (`sorted(...)`, `len(...)`, `in`, …) and blocks `glob-order`
-# statically everywhere else. 69 corpus programs (mined 2026-09-06) import it
-# and every one of them calls `glob.glob`. `src/glob.rs` is the whole of it.
+# `glob` — `glob.glob`, `glob.iglob`, `glob.escape` and `glob.has_magic`.
+# `glob.glob` answers in CPython's own yield order over `readdir`, in any
+# position; the lazy `iglob` only where `route.rs` sees its order cannot show
+# (`sorted(...)`, `in`, …). A visible order over a directory the run has
+# changed refuses `glob-order` at runtime. `src/glob.rs` is the whole of it.
 cap-glob = []
 
 # `base64.b64encode` / `b64decode` / `urlsafe_b64encode` / `urlsafe_b64decode`,
