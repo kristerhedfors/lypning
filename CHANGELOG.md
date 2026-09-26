@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-26** — Pause training for engine coverage; an engine-bump checklist and a spend ramp (PR link added when the PR opens)
+**2026-09-26** — Pause training for engine coverage; an engine-bump checklist and a spend ramp ([#131](https://github.com/kristerhedfors/lypning/pull/131))
 
 - Training resumes on the next `lypning-l`, as a new arm:
   `training/ENGINE_BUMP.md` maps every engine-labelled training artifact and
