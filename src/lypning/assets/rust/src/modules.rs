@@ -77,6 +77,8 @@ pub const MODULES: &[&str] = &[
     "ast",
     #[cfg(feature = "cap-binascii")]
     "struct",
+    #[cfg(feature = "cap-re")]
+    "unicodedata",
 ];
 // A `cap-*` is never built except as part of `variant-l`: `build.rs` refuses
 // any `CARGO_FEATURE_CAP_*` without `variant-l`, one rule that needs no list,
@@ -90,6 +92,15 @@ pub fn import(path: &str) -> R<Value> {
         // False at exit 0.
         Some(&"posixpath") => Ok(Value::Module("os.path")),
         Some(m) => {
+            // No reference tables (`build.rs` could not dump them): refused,
+            // never answered from a remembered Unicode version.
+            #[cfg(feature = "cap-re")]
+            if *m == "unicodedata" {
+                if !crate::ucd::available() {
+                    return Err(unsupported("module", "unicodedata: no reference UCD"));
+                }
+                crate::ucd::imported();
+            }
             // See `io::hold`: the core refuses this import, so from here the
             // program is one only a capability answers, and the run must stay
             // reversible.
@@ -343,6 +354,13 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
         // block in the core's walk.
         #[cfg(feature = "cap-binascii")]
         ("binascii", _) => return crate::binascii::module_attr(name),
+        // `unidata_version`, `category`, `combining`, `decomposition`,
+        // `normalize`, `is_normalized`. Every other name — `name`, `lookup`,
+        // `numeric`, `__file__` — refuses as `module-attr`, which lypning-l's
+        // own walk reads here and blocks on, and a run refuses where it is
+        // evaluated, inside the run `import unicodedata` held.
+        #[cfg(feature = "cap-re")]
+        ("unicodedata", _) => return crate::ucd::module_attr(name),
         // `pack`, `unpack`, `unpack_from` and `calcsize`. `error`, `Struct`,
         // `pack_into` and `iter_unpack` refuse as `module-attr` HERE, at run
         // time: `struct` has no `route::MODULE_ATTRS` row, so the core's walk
@@ -466,6 +484,8 @@ pub fn call_module_method(
         ("textwrap", _) => return crate::textwrap::call(it, name, args, &kw),
         #[cfg(feature = "cap-time")]
         ("time", _) => return crate::time::call(it, name, args, &kw),
+        #[cfg(feature = "cap-re")]
+        ("unicodedata", _) => return crate::ucd::call(name, args, &kw),
         #[cfg(feature = "cap-random")]
         ("random", "sample" | "shuffle") => {
             crate::io::hold();

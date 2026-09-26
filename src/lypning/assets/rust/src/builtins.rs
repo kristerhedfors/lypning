@@ -1042,6 +1042,8 @@ pub fn call_builtin(
             match first {
                 None => ival(0),
                 Some(Value::Str(s)) => {
+                    #[cfg(feature = "cap-re")]
+                    crate::ucd::drift_guard(s)?;
                     let norm = ascii_digits(s);
                     let t = norm.trim();
                     let (t, neg) = match t.strip_prefix('-') {
@@ -1210,6 +1212,8 @@ pub fn call_builtin(
             }
             // `float('１２')` is 12.0: CPython reads every Unicode decimal digit
             // (and Unicode whitespace) as its ASCII counterpart first.
+            #[cfg(feature = "cap-re")]
+            Some(Value::Str(s)) if crate::ucd::drift_guard(s).is_err() => return Err(crate::ucd::drift_guard(s).unwrap_err()),
             Some(Value::Str(s)) => match parse_float(&ascii_digits(s)) {
                 Some(v) => Value::Float(v),
                 None => {
@@ -2116,6 +2120,10 @@ pub fn call_builtin(
             let n = int_val(&arg1(&args)?)?;
             match u32::try_from(n).ok().and_then(char::from_u32) {
                 Some(c) => Value::Str(crate::value::char_str(c)),
+                #[cfg(feature = "cap-re")]
+                None if crate::ucd::surrogate_refused(n).is_some() => {
+                    return Err(crate::ucd::surrogate_refused(n).unwrap())
+                }
                 None => return Err(value_err("chr() arg not in range(0x110000)")),
             }
         }

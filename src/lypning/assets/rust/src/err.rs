@@ -332,7 +332,7 @@ pub fn is_cpython_builtin(name: &str) -> bool {
 pub const SERVED_MODULE_NAMES: &[&str] = &[
     "ast", "base64", "binascii", "collections", "csv", "difflib", "glob", "hashlib", "io", "itertools", "json",
     "math", "os", "pathlib", "posixpath", "random", "re", "statistics", "struct", "sys", "textwrap",
-    "time",
+    "time", "unicodedata",
 ];
 
 /// An UNCAUGHT `NameError` on a stdlib module name, as a refusal.

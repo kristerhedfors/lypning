@@ -111,8 +111,8 @@ lacks has **run** is *held*: every uncaught `NameError`, `AttributeError` and
 unexpected-keyword `TypeError` is `name-hint` too, and the run refuses rather
 than commit past 8 MiB of output or `os.rmdir` a directory it did not make, so
 that refusal stays possible (`io.rs:hold`). The capabilities are `itertools`,
-`difflib`, `time`, `statistics`, `textwrap`, `binascii` and `struct` (held when
-imported),
+`difflib`, `time`, `statistics`, `textwrap`, `binascii`, `struct` and
+`unicodedata` (held when imported),
 a served `from __future__` head (held from the first statement), and
 `cap-random`'s `random.Random`/`sample`/`shuffle`, `sys.version_info` and `sys.version` (held
 when evaluated) — the points at which the core, running the same program,
@@ -215,7 +215,7 @@ either binary):
 | `cap-itertools` | the `itertools` module — `product`, `combinations` | `itertools.rs` |
 | `cap-pathlib` | the `pathlib` module — `Path` | `pathlib.rs` |
 | `cap-random` | no module: `random.Random(int)`, `random.sample`, `random.shuffle`, `sys.version_info` as `[0]`, `[:2]`, `.major`/`.minor` or against a tuple of at most two items, and `sys.version` while the fallback CPython is the file the build probed | `randobj.rs` |
-| `cap-re` | the `re` module and its matcher | `re.rs` |
+| `cap-re` | the `re` module and its matcher, and `unicodedata` (`unidata_version`, `category`, `combining`, `decomposition`, `normalize`, `is_normalized`) from the reference CPython's own tables, dumped at build time | `re.rs`, `ucd.rs` |
 | `cap-statistics` | the `statistics` module — four functions of it | `statistics.rs` |
 | `cap-textwrap` | the `textwrap` module — five functions of it | `textwrap.rs` |
 | `cap-time` | the `time` module — the clocks, a bounded `sleep`, one UTC stamp | `time.rs` |

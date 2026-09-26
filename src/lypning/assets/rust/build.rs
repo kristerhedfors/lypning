@@ -21,6 +21,7 @@ fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-changed=reference_probe.py");
     println!("cargo:rerun-if-changed=sys_probe.py");
+    println!("cargo:rerun-if-changed=ucd_dump.py");
     // The variant this build IS, from the one `variant-*` feature cargo turned
     // on. Emitted as an env var so `err::ENGINE` can be a compile-time constant
     // in library code, where `CARGO_BIN_NAME` does not reach. `rustc-env` is
@@ -99,6 +100,23 @@ fn main() {
         _ => None,
     };
     write_sys_version(baked);
+    // lypning-l's `unicodedata` tables, dumped from the same interpreter under
+    // the same condition — or an empty file, and `import unicodedata` refuses.
+    let ucd = std::path::Path::new(&std::env::var("OUT_DIR").expect("OUT_DIR")).join("ucd.bin");
+    let dumped = match &probed {
+        Some((_, _, exe)) if exact && on("CAP_RE") => std::process::Command::new(exe)
+            .args(["-c", include_str!("ucd_dump.py")])
+            .arg(&ucd)
+            .status()
+            .is_ok_and(|s| s.success()),
+        _ => false,
+    };
+    if !dumped {
+        if on("CAP_RE") {
+            println!("cargo:warning=unicodedata tables not dumped: lypning-l will refuse `import unicodedata`");
+        }
+        std::fs::write(&ucd, b"").expect("write ucd.bin");
+    }
     let flags = match probed {
         Some((version, flags, _)) if version == ref_py => flags,
         _ => {

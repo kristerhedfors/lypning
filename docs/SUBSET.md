@@ -139,6 +139,17 @@ another minor, a build with no bake), and that CPython prints its own
 version. The core never answers it; the router sends it to lypning-l only
 from a build whose probe ran (`route::cap_attr`).
 
+**`unicodedata` is the reference's own tables.** Every minor ships another
+Unicode, and 3.13 began answering `decomposition()` for Hangul syllables, so
+lypning-l (`cap-re`) carries no table of its own: `build.rs` runs
+`ucd_dump.py` on the probed reference, under the same `REF_PY_EXACT`
+condition, and `ucd.rs` answers `category`, `combining`, `decomposition`,
+`normalize` and `is_normalized` from that dump (UAX #15 for the forms). With
+no dump, `import unicodedata` refuses. While the module is imported, `str`'s
+own predicates and case mappings, argument-less `split`/`strip` and
+`int()`/`float()` of non-ASCII text refuse when the reference's Unicode is not
+Rust's, and so does `chr()` of a surrogate.
+
 **A call whose arguments do not bind refuses, in every variant.** CPython's
 binding `TypeError` names the function by its qualified name from 3.10, counts
 every missing argument at once, and adds `Did you mean` on 3.14, so no wording

@@ -53,6 +53,7 @@ MENTIONS = [
     "# ast.parse, ast.literal_eval, last, fast\n",
     "last = [1]\nprint(last[-1], 'ast')\n",
     "struct = {'pack': 1}\nprint(struct['pack'], 'struct.unpack')\n",
+    "# unicodedata.normalize\nunicodedata = 'x'\nprint(unicodedata.upper())\n",
 ]
 
 #: What a held run refuses and the core answers.
@@ -81,6 +82,8 @@ HELD = [
     "import ast\nprint(ast.literal_eval('[1]'))\nundefined_name",
     "import struct\nprint(struct.calcsize('<I'))\nundefined_name",
     "from struct import pack\nx = 1\nx.foo",
+    # `unicodedata` rides `cap-re`, which is not held; it is held by name.
+    "import unicodedata\nprint(unicodedata.category('a'))\nundefined_name",
     # A decorator: the core's parser refuses it, so the run is held from its
     # first statement.
     "def d(f):\n    return f\n@d\ndef g(): pass\nundefined_name",
@@ -104,6 +107,7 @@ ARMED = [
     "while False:\n    import textwrap\nx = 1\nx.foo",
     "if False:\n    import statistics\ndef f(a):\n    return a\nf(1).nosuch",
     "if False:\n    import textwrap\nprint('a' * 9000000)",
+    "if False:\n    import unicodedata\nprint(len(chr(0xD800)))",
     "barry_as_FLUFL = 1\nprint(barry_as_FLUFL)",
     "def barry_as_FLUFL(): return 2\nprint(barry_as_FLUFL())",
     "print(dict(barry_as_FLUFL=1))",

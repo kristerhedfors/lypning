@@ -323,6 +323,8 @@ RECIPES: Dict[str, Tuple[str, str, str]] = {
                   "`mean`, `median`, `mode`, `stdev`, `pstdev`, `variance` on lists of numbers"),
     "textwrap": (NAMES, "a `textwrap` shape the engine does not serve, such as `TextWrapper`",
                 "`textwrap.wrap`, `fill`, `dedent`, `indent`, `shorten` with plain arguments"),
+    "unicodedata": (NAMES, "a `unicodedata` call outside `category combining decomposition normalize is_normalized` of one plain str (and the form), a lone surrogate from `chr()`, or a Unicode property of non-ASCII text in a program that imports it",
+                    "call `unicodedata.normalize`, `category`, `combining` or `decomposition` with positional str arguments"),
     "time": (NAMES, "a `time` shape the engine does not serve: `gmtime`, `strftime`, a `sleep` in a loop or longer than a second, a time function used as a value",
             "call `time.time()` or `time.perf_counter()` directly"),
     "type-attr": (VALUES, "an attribute of a type object such as `int.mro`",

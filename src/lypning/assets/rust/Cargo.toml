@@ -75,7 +75,10 @@ cap-pathlib = []
 # NAMES of the matcher-backed functions, which refuse at call time until the
 # matcher lands. 248 corpus programs (2026-09-04) were blocked on `import re`
 # and 174 of them never reach a regex call in the battery. `src/re.rs` is the
-# whole of it; the core gains none of it.
+# whole of it; the core gains none of it. It also carries `unicodedata`
+# (`src/ucd.rs`), from the reference CPython's own tables that build.rs dumps
+# (`ucd_dump.py`) — folded in rather than a feature of its own, which would
+# be a new `route::CAPS` row in the frozen core.
 cap-re = []
 
 # `csv.reader` and `csv.DictReader`, LAZY, over files, stdin and in-memory
