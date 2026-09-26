@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-26** — lypning-l serves decorators and keyword-only parameters (PR pending)
+**2026-09-26** — lypning-l serves decorators and keyword-only parameters ([#135](https://github.com/kristerhedfors/lypning/pull/135))
 
 - Under `cap-future`: `@<expr>` lines before a `def` (evaluated top to bottom
   before the defaults, applied bottom to top, the name bound once), and
