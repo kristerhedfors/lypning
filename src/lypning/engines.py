@@ -63,7 +63,9 @@ SPECTRUM = (LYPNING, LYPNING_L)
 #: ``urlsafe_b64decode``; the rest of the module refuses as ``module-attr`` from
 #: the WALK), ``cap-binascii`` (``hexlify`` / ``b2a_hex`` / ``unhexlify`` /
 #: ``a2b_hex`` / ``a2b_base64`` / ``b2a_base64``; ``Error``, ``crc32`` and the
-#: rest refuse as ``module-attr`` from the WALK), ``cap-collections`` (``collections.Counter`` / ``defaultdict``),
+#: rest refuse as ``module-attr`` from the WALK; and ``struct.pack`` /
+#: ``unpack`` / ``unpack_from`` / ``calcsize``, whose unserved names refuse at
+#: RUN time, since ``struct`` has no ``route::MODULE_ATTRS`` row), ``cap-collections`` (``collections.Counter`` / ``defaultdict``),
 #: ``cap-csv`` (``csv.reader`` / ``csv.DictReader``; the writers are absent, so
 #: they refuse as ``module-attr`` from the WALK), ``cap-future`` (``from
 #: __future__ import`` at the head of a program, a pass over the parse that

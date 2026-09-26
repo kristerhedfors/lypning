@@ -75,6 +75,8 @@ pub const MODULES: &[&str] = &[
     "binascii",
     #[cfg(feature = "cap-ast")]
     "ast",
+    #[cfg(feature = "cap-binascii")]
+    "struct",
 ];
 // A `cap-*` is never built except as part of `variant-l`: `build.rs` refuses
 // any `CARGO_FEATURE_CAP_*` without `variant-l`, one rule that needs no list,
@@ -337,6 +339,13 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
         // block in the core's walk.
         #[cfg(feature = "cap-binascii")]
         ("binascii", _) => return crate::binascii::module_attr(name),
+        // `pack`, `unpack`, `unpack_from` and `calcsize`. `error`, `Struct`,
+        // `pack_into` and `iter_unpack` refuse as `module-attr` HERE, at run
+        // time: `struct` has no `route::MODULE_ATTRS` row, so the core's walk
+        // cannot block them and a program naming one is a spawn, never an
+        // answer (`pystruct.rs`).
+        #[cfg(feature = "cap-binascii")]
+        ("struct", _) => return crate::pystruct::module_attr(name),
         // `ast.literal_eval`, and nothing else: `parse`, `walk`, `dump` and
         // the node classes refuse as `module-attr`, which `route::MODULE_ATTRS`
         // makes a STATIC block in the core's walk.
@@ -465,6 +474,8 @@ pub fn call_module_method(
         }
         #[cfg(feature = "cap-binascii")]
         ("binascii", _) => return crate::binascii::call(it, name, args, &kw),
+        #[cfg(feature = "cap-binascii")]
+        ("struct", _) => return crate::pystruct::call(it, name, args, &kw),
         #[cfg(feature = "cap-ast")]
         ("ast", _) => return crate::pyast::call(it, name, args, &kw),
         ("random", _) => return crate::random::call(it, name, args, &kw),

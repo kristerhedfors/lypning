@@ -139,7 +139,13 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// the names [`MODULE_ATTRS`] lists — and answers no runtime kind, for
 /// `cap-base64`'s reason: its one runtime refusal (`binascii`) is a computed
 /// argument whose call CPython raises on or words, and there is no rung above
-/// lypning-l to carry the kind to.
+/// lypning-l to carry the kind to. It also serves the `struct` MODULE —
+/// `pack`, `unpack`, `unpack_from` and `calcsize` — folded into this row
+/// rather than a row of its own, because the frozen core carries this table
+/// and a row costs it bytes a module name does not. `struct` has no
+/// [`MODULE_ATTRS`] row for the same reason, so its unserved names
+/// (`error`, `Struct`, `pack_into`, `iter_unpack`) are LATE: routed into
+/// lypning-l, refused there at run time, a spawn and never an answer.
 ///
 /// `cap-hashlib` serves the `hashlib` MODULE — four CONSTRUCTORS, and only the
 /// names [`MODULE_ATTRS`] lists, for the same reason `csv` needs a row: adding
@@ -214,7 +220,7 @@ pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-ast", &["ast"], &[]),
     ("cap-base64", &["base64"], &[]),
     ("cap-bigint", &[], &["bigint", "int-div-precision"]),
-    ("cap-binascii", &["binascii"], &["fromhex"]),
+    ("cap-binascii", &["binascii", "struct"], &["fromhex"]),
     ("cap-collections", &["collections"], &[]),
     ("cap-csv", &["csv"], &[]),
     ("cap-difflib", &["difflib"], &[]),
