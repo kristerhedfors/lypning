@@ -412,7 +412,9 @@ jobs:
   packaging:
     name: sdist + wheel
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Runs the conformance battery too: 25 min held until the 2026-09-25
+    # harvest took the corpus to 14,816 (cancelled in run 36228765965).
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
