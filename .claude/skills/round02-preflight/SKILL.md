@@ -1,14 +1,19 @@
 ---
 name: round02-preflight
-description: Every failure a round-02 job has actually died of, and the free check that catches each one before the meter starts — bank identity, reference reproducibility, the supervised-token floor, preparation wall-clock, the sleeping verifier Space, orphaned pool hosts, and the follower that expires before the round. TRIGGER before dispatching round-02 or any billed HF job, after a round fails, when a result looks too much like an older one, or on requests like "why did the round die", "is the bank right", "can this schedule even train", "what should I check before submitting". SKIP for authoring cases (`training-cases`), cutting or sealing a bank (`training-bundle`), reading a finished job's artifacts (`round02-evidence`), and the launch route and cost model itself (`round02-launch`).
+description: Every failure a round-02 job has actually died of, and the free check that catches each one before the meter starts — bank identity, reference reproducibility, the supervised-token floor, preparation wall-clock, the sleeping verifier Space, orphaned pool hosts, pool hosts idling out between SFT evaluations, the eval-2 prefill at its longest prompt, a `round02/**` push that rebuilds the verifier Space, and the follower that expires before the round. TRIGGER before dispatching round-02 or any billed HF job, after a round fails, when a result looks too much like an older one, or on requests like "why did the round die", "is the bank right", "can this schedule even train", "what should I check before submitting". SKIP for authoring cases (`training-cases`), cutting or sealing a bank (`training-bundle`), reading a finished job's artifacts (`round02-evidence`), and the launch route and cost model itself (`round02-launch`).
 ---
 
 # Before the meter starts
 
-Six round-02 jobs have been paid for. **Not one produced a model-quality
-result.** Every single cause was knowable for nothing beforehand, and in four
-cases the number that would have shown it was already printed in a log nobody
-compared to anything.
+Almost every paid round-02 job to 2026-09-26 died or was cancelled before its
+planned result, and no eval-2 arm has completed on bank v3. The exceptions are
+the a10g smokes, the h200 hardware smoke, the 2026-09-16 run's dev/test read,
+and the seed-1111 finish's two test arms (`training/RAMP.md` §6, "Rungs that
+have run clean"). **Nearly every cause was knowable for nothing beforehand**,
+and in several cases the number that would have shown it was already printed
+in a log nobody compared to anything. The billed attempts themselves — job
+ids, dates, dollars, stage reached — are ledgered once, in `training/RAMP.md`
+§6; this skill keeps only failure mode → free check.
 
 This skill is that comparison, written down. Each row is a failure that
 actually happened, dated, with the check that prevents it. Run the sequence at
@@ -16,15 +21,19 @@ the end before dispatching; it costs about twenty minutes of free CI.
 
 ## The ledger of what has gone wrong
 
-| # | What happened | Cost | The free check |
+| # | What happened | Ledger | The free check |
 |---|---|---|---|
-| 1 | A round trained on **the wrong bank** and reported a result. `round02_bank.py` uploaded the committed `bank_v2` to whatever `BANK_PATH` named, so bootstrap overwrote the carved bank before the job read it | ~$30, 6 h | `bank.json` manifest; the job refuses a bank that is not the one it names |
-| 2 | One case's reference did not reproduce in the verifier image (`locale.setlocale`, no locales in `python:3.12-slim`) — `last_stage: prepare` | ~1 h of h200 | exclude clock/locale/tz families by name at carve time |
-| 3 | `--steps 250` exposed **46,535 tokens** against a 50,000 floor. `run()` refuses that *after* 55.6 GB of weights | would have been 3 × $25 | `token-floor.yml`, free, tokenizer only |
-| 4 | Two rounds died at the wall. The cost was **preparation**, not SFT: ~4 s/case through the 16-sandbox pool, so an 8,370-case pilot is 5.5 h before a single optimizer step | ~$55 | cap cases per family; count the projection before submitting |
+| 1 | A round trained on **the wrong bank** and reported a result. `round02_bank.py` uploaded the committed `bank_v2` to whatever `BANK_PATH` named, so bootstrap overwrote the carved bank before the job read it | `RAMP.md` §6 (2026-09-19 wrong-bank row) | `bank.json` manifest; the job refuses a bank that is not the one it names |
+| 2 | One case's reference did not reproduce in the verifier image (`locale.setlocale`, no locales in `python:3.12-slim`) — `last_stage: prepare` | `RAMP.md` §6 (2026-09-19 locale row) | exclude clock/locale/tz families by name at carve time |
+| 3 | `--steps 250` exposed **46,535 tokens** against a 50,000 floor. `run()` refuses that *after* 55.6 GB of weights | `RAMP.md` §6 (2026-09-18 token-floor row); would have repeated per seed | `token-floor.yml`, free, tokenizer only |
+| 4 | Two rounds died at the wall. The cost was **preparation**, not SFT: ~4 s/case through the 16-sandbox pool, so an 8,370-case pilot is 5.5 h before a single optimizer step | `RAMP.md` §6 (2026-09-20 prepare rows) | cap cases per family; count the projection before submitting |
 | 5 | The verifier Space was `SLEEPING`, nothing woke it, bootstrap waited out its whole 20-minute budget and failed a **free** job — skipping the billed one behind it | $0, but no round could start on any second attempt | `round02_space.py` requests a restart once |
 | 6 | Three `cpu-basic` pool hosts outlived the trainer that died | small, unnoticed | `hf-stop.yml` |
-| 7 | `--score-workers 64` against 16 hosts x 4 = **exactly 64 slots**. The pool RAISES rather than waits when every host is full, and stage two adopted stage one's warm hosts at their true occupancy | a pilot bundle that was already built | capacity must exceed scorers by one host; `prepare` now releases the pool in a `finally` |
+| 7 | `--score-workers 64` against 16 hosts x 4 = **exactly 64 slots**. The pool RAISES rather than waits when every host is full, and stage two adopted stage one's warm hosts at their true occupancy | a pilot bundle that was already built; `RAMP.md` §6 (2026-09-20 exact-fit row) | capacity must exceed scorers by one host; `prepare` now releases the pool in a `finally` |
+| 8 | Two SFT jobs in a row both died in an SFT evaluation on sandbox 503s. Pool hosts shut down after 600 s without a sandbox while SFT trained 25–40 minutes between evaluations. The second attempt only had a longer retry budget (#123), so it failed later and cost more | `RAMP.md` §6 (2026-09-24 rows) | #124: host idle timeout 3 h, pool closed on every exit. Before retrying, classify: a 503 that persists for a host already used is not an outage. Free check: compare `HOST_IDLE_TIMEOUT` in `hf_sandbox_runner.py` with the gap between SFT evaluations |
+| 9 | The arm-A pilot's SFT completed, then the base test arm aborted on one base-model draw that reached a known `lypning-l` bug. The policy aborted an arm on any engine mismatch, and Step 2's grade had already seen one on base-model outputs | `RAMP.md` §6 (2026-09-24 pilot row) | #126: a mismatch draw is counted (reward 0), with a 1% bound per arm. Free check: compare the mismatch rate already measured in a grade with the draws the arm plans |
+| 10 | The seed-1111 finish: CUDA OOM in the prefill of base-eval2 chunk index 26 (the 27th of 51). One 434-token prompt padded 256 sequences to 111,104 prefill tokens; the largest prefill ever run was 48,384 (189 × 256), and the h200 smoke measured only short starter prompts | `RAMP.md` §6 (2026-09-25 finish row); both test arms were done, no eval-2 arm finished | PR #130: `--eval-prefill-tokens` (default 48,384) draws an oversize chunk in parts. Free check: `.github/scripts/eval2_shape.py` (`eval2-shape.yml`) prints the chunk padded prompt lengths — Actions `36196784628`, 2026-09-25: p50 129, p90 164, max 434 — and max × 256 against the largest prefill ever run shows the OOM without a GPU |
+| 11 | A push to `round02/eval2-shape`, meant only to run the free shape reader, also triggered `round02.yml`, whose bootstrap rebuilds the verifier Space from the pushed commit's engine. Bootstrap skipped a byte-identical upload and the run was then cancelled, so no Space build started and the head stayed arm A's | $0, but a moved head would have made the seed-1111 finish unfinishable | Only `stage=finish` holds the Space (`SPACE_HOLD`). Name no branch `round02/**` unless you mean to bootstrap (a `[submit-pilot]`/`[submit-smoke]` marker in the head commit also bills); run readers with `gh workflow run` on main; check the Space head with `finish_preflight.py` before a finish |
 
 ## The exact-fit pool, which reads like a perfect fit
 
@@ -98,7 +107,7 @@ image can see.
 
 ## The sequence
 
-All five checks run as one job, so the list cannot be half-remembered:
+All six checks run as one job, so the list cannot be half-remembered:
 
 ```bash
 gh workflow run "round-02 preflight (every free check, before the meter)" \
@@ -126,6 +135,13 @@ In order, and each exits non-zero on the failure it prevents:
 6. **`main` points where this run checked** — compares `round02.yml`'s
    `BANK_PATH` on `origin/main` against the bank just verified, because an edit
    that silently did not apply once sent a dispatch at the wrong bank.
+
+Before an evaluation stage, also run the free eval-2 shape read (row 10) and
+compare its max padded length × 256 with `--eval-prefill-tokens`; before a
+finish, confirm the Space head is the pilot's revision (row 11) and that no
+`VERIFIER_MODULES` file has changed since the pilot (`training/ENGINE_BUMP.md`
+§5). Then check
+that `training/RAMP.md` has reached the rung you are about to bill.
 
 Then dispatch the round. The individual pieces are still there if you want one
 of them alone: `bank-gates.yml`, `token-floor.yml`, `hf-stop.yml`.

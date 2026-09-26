@@ -14,6 +14,19 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-26** — Pause training for engine coverage; an engine-bump checklist and a spend ramp (PR link added when the PR opens)
+
+- Training resumes on the next `lypning-l`, as a new arm:
+  `training/ENGINE_BUMP.md` maps every engine-labelled training artifact and
+  the order to rebuild it.
+- `training/RAMP.md` sets billed spend to climb one rung per explicit go, with
+  per-rung ceilings, and ledgers every paid failure since 2026-09-15.
+- The seed-1111 finish (HF job 6ab6a20c6b030d633f691a95, Actions 36161157776,
+  2026-09-25) becomes an optional salvage under the ramp's stop rule.
+- `training/START_NEXT_ROUND.md` gains the resume order. The round02-plan,
+  -preflight, -launch and -evidence skills warn that a `round02/**` push
+  rebuilds the verifier Space (Actions 36196784607, 2026-09-25).
+
 **2026-09-26** — Draw an oversize evaluation chunk in parts, so eval-2 fits the h200 ([#130](https://github.com/kristerhedfors/lypning/pull/130))
 
 - The seed-1111 finish (HF job 6ab6a20c6b030d633f691a95) completed both test

@@ -452,3 +452,11 @@ Answer these in writing, in the PR body, before the meter starts.
 4. **Does `training/STATUS.md` §10 still say this rung may run?** A bundle that
    would be admitted is not an authorisation, and no paid rung runs before the
    rung below it has been read.
+5. **Which `training/RAMP.md` rung is this, and is its entry met?** Name the
+   rung, the previous rung's green run id, and the ceiling row already written
+   in its §7. Since 2026-09-26 training is paused and resumes only on the next
+   engine (`training/START_NEXT_ROUND.md`, top section).
+6. **Will this dispatch move the verifier Space?** Every non-finish stage, and
+   every `round02/**` push, bootstraps and rebuilds the Space from this
+   commit's engine; a moved head makes any older pilot unfinishable. Only
+   `stage=finish` holds it.

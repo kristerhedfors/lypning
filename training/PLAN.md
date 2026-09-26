@@ -55,7 +55,7 @@ Advance a step by editing this table in the same PR as the work.
 | 1 | Fix the instrument | $0 | nothing else is readable until it is | done (2026-09-22, implementation in PRs #97–#101; validation limits below) |
 | 2 | Positive control (S1 / stage 0b) | ~$126 at 512 output tokens/request; ~$225 at allowance (full k=16); rungs run: $28.12751896 charged or reserved | distillation route, rejection-filtered distillation, or contrastive route | done (2026-09-23, full split k=4, merge `35912725289`: **flat** — no distillation route; Step 3 mandatory) |
 | 3 | Build contrastive targets | tokens | is there enough pair supply for a preference arm? | done (2026-09-23, `step3-pairs` `35918571219`: 110–257 pair prompts by source, **< 300** — no preference arm; arm C carries the signal) |
-| 4 | S4, re-specified, three seeds | up to ~$180 (three h200 seed jobs capped at 720m, ~$60 each) | the first result the instrument can read | in progress (2026-09-23: arm A configured; hardware smoke before seed 1111) |
+| 4 | S4, re-specified, three seeds | up to ~$180 (three h200 seed jobs capped at 720m, ~$60 each) | the first result the instrument can read | paused 2026-09-26 (engine coverage); resume on the next engine via `ENGINE_BUMP.md` and `RAMP.md`. Was in progress (2026-09-23: arm A configured; hardware smoke before seed 1111) |
 
 **Operator direction, 2026-09-22: free first.** Continue Step 2's free checks
 and preparation. Paid inference and GPU training remain held; no paid ceiling
@@ -656,6 +656,12 @@ arms included, so one job holds all four arms: the failed job reached chunk 26
 in about 228 minutes of wall clock, which puts a full rerun near 520 minutes,
 inside the 648-minute budget.
 
+**Paused, 2026-09-26.** The operator paused training while engine coverage
+continues; training resumes on the next engine, which is a new arm: arm A's
+targets, bundles and Space revision cannot train or evaluate it
+(`ENGINE_BUMP.md`). The finish redispatch above is now an optional salvage
+under `RAMP.md` §5, and every billed step climbs `RAMP.md` one rung per go.
+
 ## Kill criteria (unchanged, `LADDER.md` §6)
 
 If Step 2 is flat **and** Step 3's supply is tiny, the model lever is capped
@@ -685,5 +691,5 @@ not a claim that every refusal is engine-addressable or model-repairable.
 3. Do the work in a PR that also edits this table's state and adds a ledger row
    to `ORCHESTRATION.md`. A step whose decision changed a later step edits
    that step here, in the same PR, with the reason.
-4. Before any billed job: `round02-preflight` (all six checks) and the cost
-   ceiling in `ROUND_READINESS.md`.
+4. Before any billed job: `round02-preflight` (all six checks), and the rung,
+   its entry condition and its approved ceiling in `RAMP.md`.
