@@ -2504,7 +2504,13 @@ fn percent_one(v: &Value, spec: &str, pct: &IntPrec) -> R<String> {
             }
             // 3.14 words it `%c requires an int or a unicode character, not
             // …`, with a tail naming what it got.
-            _ if crate::err::REF_PY_MINOR >= 14 => return Err(unsupported("exception", "%c wording")),
+            _ if crate::err::REF_PY_MINOR >= 14 => {
+                let got = match v {
+                    Value::Str(s) => format!("a string of length {}", s.chars().count()),
+                    other => crate::value::type_name(other).to_string(),
+                };
+                return Err(type_err(format!("%c requires an int or a unicode character, not {got}")));
+            }
             _ => return Err(type_err("%c requires int or char")),
         }
     }

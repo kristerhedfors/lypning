@@ -6,7 +6,7 @@ The interpreter that will run your program executes a subset of Python 3 in-proc
 
 - Syntax: literals, operators with CPython precedence, chained comparison, slicing with a step, calls with `*args`/`**kwargs`, assignment and star unpacking, slice assignment, `global`, augmented assignment, `if`/`for`/`while`, `def` with defaults and closures, `lambda`, imports, `with open(...)`, `try`/`except`/`finally`, `raise`, `assert`, comprehensions, generator expressions, f-strings with format specs.
 - Builtins: `abs` `all` `any` `bin` `bool` `bytes` `chr` `dict` `divmod` `enumerate` `filter` `float` `format` `hex` `input` `int` `isinstance` `iter` `len` `list` `map` `max` `min` `next` `oct` `open` `ord` `print` `range` `repr` `reversed` `round` `set` `sorted` `str` `sum` `tuple` `type` `zip`.
-- Modules: `sys`, `os`, `os.path`, `io`, `json`, `math` (the functions named under `math` below, plus the constants), `posixpath`, `random` (seeded only: `seed(int)` first), `collections` (`Counter` and `defaultdict`), `pathlib` (`Path`), `re` (a slice of the pattern language, named under `re` below), `csv` (`DictReader` `QUOTE_ALL` `QUOTE_MINIMAL` `QUOTE_NONE` `QUOTE_NONNUMERIC` `reader`), `glob` (`escape` `glob` `has_magic` `iglob`), `base64` (`b64decode` `b64encode` `urlsafe_b64decode` `urlsafe_b64encode`), `hashlib` (`md5` `sha1` `sha256` `sha512`).
+- Modules: `sys`, `os`, `os.path`, `io`, `json`, `math` (the functions named under `math` below, plus the constants), `posixpath`, `random` (seeded only: `seed(int)` first), `cap-collections`, `collections` (`Counter` and `defaultdict`), `cap-pathlib`, `pathlib` (`Path`), `cap-re`, `re` (a slice of the pattern language, named under `re` below), `cap-csv`, `csv` (`DictReader` `QUOTE_ALL` `QUOTE_MINIMAL` `QUOTE_NONE` `QUOTE_NONNUMERIC` `reader`), `cap-glob`, `glob` (`escape` `glob` `has_magic` `iglob`), `cap-base64`, `base64` (`b64decode` `b64encode` `urlsafe_b64decode` `urlsafe_b64encode`), `cap-hashlib`, `hashlib` (`md5` `sha1` `sha256` `sha512`), `cap-statistics`, `statistics` (`mean` `median` `median_high` `median_low`), `cap-itertools`, `itertools` (`combinations` `product`), `cap-difflib`, `difflib` (), `cap-textwrap`, `textwrap` (`dedent` `fill` `indent` `shorten` `wrap`), `cap-time`, `time` (`gmtime` `monotonic` `monotonic_ns` `perf_counter` `perf_counter_ns` `sleep` `strftime` `time` `time_ns`), `cap-binascii`, `binascii` (`a2b_base64` `a2b_hex` `b2a_base64` `b2a_hex` `hexlify` `unhexlify`), `cap-ast`, `ast` (`literal_eval`).
 - Values: `int` exact past 64 bits, `float` with CPython's repr, `str`, `bytes`, `list`, `tuple`, `dict` (insertion-ordered), `set` (never show its order), `None`, `bool`; CPython's exception classes and messages; text files, `sys.stdin`, `sys.argv`, `sys.exit`.
 
 ## What it refuses, and how to stay inside
@@ -15,6 +15,7 @@ One line per refusal kind: what fires it, then the way to stay inside.
 
 ### Syntax, refused before the program starts
 
+- `annotation` — an annotation the engine cannot carry: a module-level annotation before Python 3.14 (evaluated there), `__annotations__`, an annotated name also declared `global`. Stay inside: drop the annotation: write `x = value`.
 - `async` — `async def`, `await`, `async for`. Stay inside: write synchronous code. No build of this interpreter has it.
 - `augassign` — augmented assignment to a slice (`xs[1:3] += …`). Stay inside: assign the slice with `=` or rebuild the list.
 - `class` — `class` statements. Stay inside: use functions with dicts and tuples.
@@ -23,9 +24,12 @@ One line per refusal kind: what fires it, then the way to stay inside.
 - `decorator` — `@decorator`. Stay inside: call the wrapping function explicitly.
 - `ellipsis` — `...`. Stay inside: use `pass`.
 - `escape` — `\N{…}` named escapes and `\u` escapes naming a lone surrogate. Stay inside: write the character itself or its `\uXXXX` code.
+- `except` — an `except` clause other than a name or a flat parenthesised tuple of names (`except ((A, B), C)`, `except A, B`). Stay inside: `except (A, B, C):`.
 - `except-star` — `except*`. Stay inside: use `except`.
 - `fstring` — `!a` conversions and self-documenting `{x=}` fields. Stay inside: `{x!r}`, `{x!s}`, or format the value explicitly.
+- `future` — a `from __future__` import outside the served ones, an alias, or `__future__` anywhere but the top. Stay inside: put `from __future__ import annotations` first, or leave it out.
 - `generator` — `yield`, and so every generator function. Stay inside: build and return a list; generator expressions are fine.
+- `global` — a function made inside a nested function that declares `global`. Stay inside: declare `global` only in top-level functions.
 - `import` — relative and star imports. Stay inside: `import m` or `from m import name`.
 - `indent` — an indented first line. Stay inside: start the program in column 0.
 - `kwonly` — keyword-only parameters, `def f(*, a)`. Stay inside: make every parameter positional-or-keyword.
@@ -39,25 +43,34 @@ One line per refusal kind: what fires it, then the way to stay inside.
 ### Modules, attributes and builtins
 
 - `argument` — a keyword a builtin does not take here (e.g. `zip(strict=…)`). Stay inside: call builtins with their plain positional forms.
+- `ast` — an `ast` shape outside `ast.literal_eval(str)`: `ast.parse`, `walk`, `dump`, the node classes, or text `literal_eval` would reject. Stay inside: `ast.literal_eval(s)` on a plain literal such as a repr of a dict or list.
 - `base64` — a base64 call whose argument or keyword the router could not read. Stay inside: `b64encode(bytes)` / `b64decode(bytes)` with no keywords.
+- `binascii` — a `binascii` call outside `hexlify unhexlify b2a_hex a2b_hex a2b_base64 b2a_base64`, input that would raise, or `bytes.fromhex` of anything but one well-formed str. Stay inside: those functions on well-formed input; `bytes.fromhex(s)` and `b.hex()`.
 - `builtin` — a builtin outside the served set, `iter(callable, sentinel)`, `open()` of a descriptor. Stay inside: use the served builtins listed above.
 - `collections` — an operator over a `Counter`, a non-int count, a non-builtin `default_factory`, `deque`. Stay inside: `Counter(iterable)`, `.most_common(n)`, `.update(iterable)`, `defaultdict(int|list|set|dict|str)`; a list instead of `deque`.
 - `csv` — a csv shape the readers do not serve: dialects, unserved keywords, `csv.Error` text. Stay inside: `csv.reader(f)` / `csv.DictReader(f)` over a file opened with `newline=''`; write CSV with `','.join`.
 - `glob` — a glob shape outside `glob(pattern, recursive=…)` / `iglob` / `escape` / `has_magic`. Stay inside: `sorted(glob.glob(pattern))`, with at most `recursive=True`.
 - `hashlib` — a hashlib shape outside `md5 sha1 sha256 sha512` over bytes: `new()`, sha3, blake2, KDFs, a str argument. Stay inside: `hashlib.sha256(text.encode()).hexdigest()`.
+- `itertools` — an `itertools` shape the engine does not serve. Stay inside: `chain`, `islice`, `product`, `permutations`, `combinations`, `groupby`, `accumulate` on lists.
 - `module` — `import` of any module outside the served list (`itertools`, `functools`, `string`, `textwrap`, `datetime`, `time`, `argparse`, `subprocess`, …). Stay inside: stay with the served modules and write the small helper by hand.
 - `module-attr` — a name of a partially served module outside its served names. Stay inside: use only the served names listed above.
 - `pathlib` — a `Path` shape not served: `PurePath`, `.stat()`, `.iterdir()` order, a `ValueError` text. Stay inside: `Path(p).read_text()`, `.write_text()`, `.exists()`, `.name`, `.suffix`, `.stem`, `.parent`, `/` joins.
 - `re` — a regex construct outside the served slice: lookaround, backreferences, bytes patterns, Unicode `\w \d \s`, non-ASCII group names, case folding, a step budget. Stay inside: ASCII patterns with classes, groups, alternation, quantifiers and anchors, through `search match findall sub split compile`.
+- `statistics` — a `statistics` shape the engine does not serve. Stay inside: `mean`, `median`, `mode`, `stdev`, `pstdev`, `variance` on lists of numbers.
+- `textwrap` — a `textwrap` shape the engine does not serve, such as `TextWrapper`. Stay inside: `textwrap.wrap`, `fill`, `dedent`, `indent`, `shorten` with plain arguments.
+- `time` — a `time` shape the engine does not serve: `gmtime`, `strftime`, a `sleep` in a loop or longer than a second, a time function used as a value. Stay inside: call `time.time()` or `time.perf_counter()` directly.
 
 ### Operations on values
 
+- `aug-assign` — `d |= x` where `d` is a dict and `x` is not one. Stay inside: `d.update(x)`.
 - `bigint` — an integer shape this build cannot carry exactly (most arithmetic past 64 bits is served). Stay inside: keep integers within 64 bits where the task allows.
 - `bytes-method` — a bytes method outside `decode hex lower upper find replace join`. Stay inside: decode to `str` and use the str methods.
+- `call` — a keyword given twice through `**`, or `**` over something that is not a dict. Stay inside: pass each keyword once, and `**` only a dict.
 - `class-union` — a `|` union of classes (`int | None`). Stay inside: no runtime type unions.
 - `dict-method` — a dict method outside `get keys values items setdefault pop popitem update copy clear`. Stay inside: use those.
 - `dunder-attr` — reading a data-model dunder such as `.__dict__` or `.__class__`. Stay inside: do not introspect objects.
 - `exception` — an exception the engine cannot carry: an unknown class, `SystemExit` with several arguments, `KeyError.args`, `sys.exit(kw=…)`. Stay inside: raise and catch the builtin classes with one string argument; `sys.exit(int)`.
+- `exception-note` — an error CPython annotates with a note, such as a dict update element that is not a pair. Stay inside: pass pairs to `dict()` and `.update()`.
 - `float-sum` — `sum()` over floats, which CPython versions round differently. Stay inside: accumulate with a loop: `total = 0.0; for x in xs: total += x`.
 - `format` — a format spec outside the common ones: `'n'`, a spec on a type CPython rejects, an int code on a float or the reverse. Stay inside: `{:d} {:.2f} {:>8} {:<8} {:^8} {:,} {:x} {:b} {:e} {:%}` and friends on the matching type.
 - `int-div-precision` — `int / int` past 2**53 in a build that cannot round it exactly. Stay inside: use `//` and `%` for exact integer work.
@@ -66,6 +79,7 @@ One line per refusal kind: what fires it, then the way to stay inside.
 - `iterator-identity` — an iterator, function or file as a dict or set key. Stay inside: key on strings, numbers and tuples.
 - `list-method` — a list method outside `append extend insert pop remove index count reverse clear copy sort`. Stay inside: use those.
 - `method` — a method the value's type does not have, or one called on the wrong type. Stay inside: call the methods that belong to the value's type.
+- `name-error` — a `NameError` in a nested scope, whose message depends on assignments elsewhere. Stay inside: define names before use; do not rely on the text of a NameError.
 - `repr` — `repr()` of a function, module, file, generator or `os.environ`, whose text carries an address. Stay inside: print values, not objects.
 - `round` — `round()` outside `round(x)` / `round(x, n)` on ordinary floats. Stay inside: `round(x, n)` on floats within 2**53.
 - `setattr` — assignment to an attribute of an object. Stay inside: keep state in dicts, lists and locals.
@@ -73,6 +87,7 @@ One line per refusal kind: what fires it, then the way to stay inside.
 - `str-method` — a str method outside the served set, or one over a code point it cannot fold. Stay inside: `split join strip replace upper lower startswith endswith find count format isdigit zfill center ljust rjust partition splitlines encode`.
 - `tuple-method` — a tuple method outside `index` and `count`. Stay inside: convert with `list()`.
 - `type` — `type()` with three arguments, or `type()` of a value the engine cannot name. Stay inside: `isinstance` for checks; never build classes with `type()`.
+- `type-attr` — an attribute of a type object such as `int.mro`. Stay inside: do not introspect types.
 
 ### Files, environment and limits
 
@@ -91,6 +106,9 @@ One line per refusal kind: what fires it, then the way to stay inside.
 - `output` — captured output past the host's byte limit. Stay inside: print less; a program printing megabytes needs full Python.
 - `print-file` — `print(file=…)` to anything but `sys.stdout`/`sys.stderr`. Stay inside: print to stdout, or `.write()` to the file.
 - `recursion` — nesting or call depth past the engine's limits, or a very long operator chain. Stay inside: iterate instead of recursing deeply; split long expressions.
+- `remove` — `os.remove()` of a directory. Stay inside: `os.rmdir()` for an empty directory.
+- `rename` — `os.rename()`/`os.replace()` of a directory, a link, or a file that existed before the program ran. Stay inside: rename files the program itself wrote, or write the new file and remove the old one.
+- `rmdir` — `os.rmdir()` of a directory that still holds a file the program wrote or removed. Stay inside: remove the files first, then the directory, or leave the directory in place.
 - `sandbox` — a filesystem access the host denied. Stay inside: nothing in the program; read stdin and print stdout.
 - `steps` — still running after the step limit. Stay inside: keep the work bounded; a long computation needs full Python.
 - `with` — `with` over a value that is not a file. Stay inside: use `with` only around `open()`.
@@ -109,6 +127,7 @@ These go straight to full Python. A rewrite is the only way to stay inside, and 
 - `iterator-type-name` — an error message that would name an iterator type (`list_iterator`, …). Stay inside: iterate with `for`; do not raise over iterator objects.
 - `json` — `json.dumps`/`loads` with hooks, `default=`, or a keyword outside `indent sort_keys ensure_ascii separators`; a lone surrogate. Stay inside: `json.loads(s)`, `json.dumps(obj, indent=2, sort_keys=True)`.
 - `math` — a math domain error, a non-number, a wrong count, and every function outside `ceil copysign fabs factorial floor fmod gcd isfinite isinf isnan isqrt sqrt trunc` and the constants. Stay inside: use those; `log`, `exp` and the trigonometry need full Python.
+- `name-hint` — an uncaught error where CPython may add a `Did you mean` suggestion. Stay inside: catch the errors you expect; do not rely on traceback text.
 - `nan-identity` — two NaNs in one comparison or containment test. Stay inside: test NaN with `math.isnan`.
 - `nan-order` — sorting, `min` or `max` over a NaN. Stay inside: filter NaNs out before ordering.
 - `percent-format` — `%` formatting with the `0` flag, grouping, or their interaction with `-`. Stay inside: f-strings or `str.format`.

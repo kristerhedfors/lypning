@@ -632,9 +632,6 @@ needs_engine = pytest.mark.skipif(
 )
 
 
-#: Cases whose error wording CPython 3.14 changed; see test_matches_cpython.
-WORDED_FROM_314 = {"pct-c-bad-string-is-a-type-error", "pct-c-float-is-a-type-error"}
-
 
 @needs_engine
 @pytest.mark.parametrize("name,program", CASES, ids=[c[0] for c in CASES])
@@ -643,11 +640,6 @@ def test_matches_cpython(name: str, program: str) -> None:
         [sys.executable, "-c", program], capture_output=True, text=True, timeout=30
     )
     got = engines.run(engines.LYPNING, program, timeout=30)
-    # From 3.14 CPython words the `%c` TypeError with a tail naming what it
-    # got, and an engine built against it refuses there so CPython words it
-    # (`ops::format_value_pct`). Before 3.14 these are answered, wording and all.
-    if got.unsupported and name in WORDED_FROM_314 and sys.version_info >= (3, 14):
-        return
     if got.unsupported:
         pytest.fail(
             "%s now REFUSES (exit 90) where it used to answer. A refusal is safe, "
