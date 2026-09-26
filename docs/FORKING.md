@@ -89,7 +89,7 @@ captured programs; tests object if you touch them.
 **Workload-general — keep the mechanism, re-derive the contents.**
 | mechanism | contents | re-derived by |
 |---|---|---|
-| what each variant serves | `route.rs::CAPS`, `modules.rs::MODULES` (one `cfg`-gated table per `cap-*` set), `engines.VARIANT_CAPS` | `conformance --plan` per variant; `tests/test_routing.py::test_the_spectrum_copy_in_engines_is_the_rust_table` |
+| what each variant serves | `route.rs::CAPS`, `modules.rs::MODULES` (ONE array: the core's rows, then each capability's module as one element behind its own `#[cfg(feature = "cap-…")]`, appended in build order and never reordered), `engines.VARIANT_CAPS` | `conformance --plan` per variant; `tests/test_routing.py::test_the_spectrum_copy_in_engines_is_the_rust_table` |
 | kinds no Rust variant may answer, at any size | `route.rs::ONLY_CPYTHON_KINDS` = `engines.ONLY_CPYTHON_REFUSALS`, read by both dispatchers, held equal by test | `routes --plan` lists them as `NOT IMPLEMENTABLE`; a kind leaves the set only by being implemented exactly |
 | the spectrum itself | `engines.SPECTRUM`, `route.rs::SPECTRUM` (`ENGINE_ORDER` and `conformance.DEFAULT_ARMS` derive from it) | the tests in §2 |
 | the nondeterminism screens | `conformance._RUN_SPECIFIC`, `_IMPLEMENTATION_DEFINED` | extend as your corpus surfaces shapes; never prune |

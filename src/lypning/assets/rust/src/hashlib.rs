@@ -548,11 +548,11 @@ pub fn not_iterable() -> LypningError {
 }
 
 /// CPython's `TypeError` for `x in h`, which is worded differently from the
-/// one above and is the message 3.11+ prints.
+/// one above: "a container or iterable" from 3.14, "iterable" before
+/// (`ops.rs` branches on the same boundary for every other type).
 pub fn not_a_container() -> LypningError {
-    type_err(format!(
-        "argument of type '{HASH_TYPE}' is not a container or iterable"
-    ))
+    let what = if crate::err::REF_PY_MINOR >= 14 { "a container or iterable" } else { "iterable" };
+    type_err(format!("argument of type '{HASH_TYPE}' is not {what}"))
 }
 
 // ---- the module surface ----------------------------------------------------

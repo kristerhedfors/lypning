@@ -16,6 +16,15 @@ use std::cell::RefCell;
 use crate::hash::{Map, Names, Set as FastSet};
 use std::rc::Rc;
 
+/// Is `e` spelled `<x>.version_info`? A syntactic pre-check, so the four
+/// parent arms in `eval_inner` pay one comparison and hand the rest to
+/// `randobj::parent`, out of line — the hottest function in the interpreter
+/// carries one call per arm and none of the capability.
+#[cfg(feature = "cap-random")]
+fn is_vi(e: &Expr) -> bool {
+    matches!(e, Expr::Attr(_, n) if n.as_ref() == "version_info")
+}
+
 pub type Scope = Rc<RefCell<Map<Rc<str>, Value>>>;
 
 /// `#[inline]` because it is one allocation on the function-call path and
@@ -60,9 +69,12 @@ pub struct Interp {
     /// `global` is a statement almost no function contains: the entry is then a
     /// null pointer pushed and popped, where an inline table was a whole empty
     /// hash set constructed, moved and dropped on every single call.
-    global_decls: Vec<Option<Box<FastSet<Rc<str>>>>>,
+    global_decls: Vec<Option<Box<Globals>>>,
     /// Names assigned somewhere in the current function body.
     assigned: Vec<Rc<Names>>,
+    /// The `assigned` depth of each generator-expression frame being
+    /// advanced, innermost last: is the current frame a genexp's?
+    gen_marks: Vec<usize>,
     pub modules: Map<Rc<str>, Value>,
     /// The `random` module's generator, `None` until `random.seed(int)`
     /// runs — an unseeded stream is a refusal (`random.rs`). Boxed: the
@@ -92,6 +104,17 @@ pub struct Interp {
     /// try/except and the inner one must not lose the outer's exception when it
     /// finishes.
     handling: Vec<(&'static str, Rc<str>)>,
+    /// Where the executing FUNCTION's own scope sits in `chain`, one entry per
+    /// `assigned` frame: a name found BELOW it was found in an enclosing
+    /// function, which is the wrong answer when this function assigns the name
+    /// too (see [`Interp::lookup`]). Zero — never below — for a generator
+    /// frame, whose chain this does not track.
+    frame_floor: Vec<usize>,
+    /// Every name some function body in the program assigns, collected once by
+    /// [`Interp::run`]. Only asked on the NameError path: a name nobody's body
+    /// assigns cannot be a free variable of anything, so its message is the
+    /// plain `name 'x' is not defined` at any depth.
+    fn_locals: Names,
     /// Spent scope-chain vectors, kept to be filled again. See
     /// `call_func_inner`; capped at [`CHAIN_POOL_MAX`] so a deep recursion
     /// cannot leave the pool holding its whole depth for the rest of the run.
@@ -111,6 +134,21 @@ pub struct Interp {
 /// runtime allows to finish, and small enough to be nothing.
 const CHAIN_POOL_MAX: usize = 64;
 
+/// What [`Interp::gen_frame`] captures: the creating frame's assigned names and
+/// its `global` table.
+pub(crate) type GenFrame = (Rc<Names>, Option<Box<Globals>>);
+
+/// One frame's `global` declarations, and where that frame's own scope sits
+/// in the chain. A declared name is looked up only in the scopes from `base`
+/// on — the comprehensions of this frame — and then in the module: in a
+/// function nested in another, the ENCLOSING function's local of the same
+/// name used to answer (`1` where CPython answers the module's `0`).
+#[derive(Clone)]
+pub(crate) struct Globals {
+    base: usize,
+    names: FastSet<Rc<str>>,
+}
+
 /// The same bound for [`Interp::scope_pool`], and for the same reason: a deep
 /// recursion must not leave the pool holding its whole depth for the rest of
 /// the run.
@@ -118,17 +156,21 @@ const SCOPE_POOL_MAX: usize = 64;
 
 impl Interp {
     pub fn new() -> Self {
+        crate::err::reset_opaque_asserts();
         Interp {
             globals: new_scope(),
             chain: Vec::new(),
             global_decls: Vec::new(),
             assigned: Vec::new(),
+            gen_marks: Vec::new(),
             modules: crate::hash::map(),
             rng: None,
             depth: 0,
             steps: 0,
             expr_depth: 0,
             handling: Vec::new(),
+            frame_floor: Vec::new(),
+            fn_locals: Names::new(),
             chain_pool: Vec::new(),
             scope_pool: Vec::new(),
             // Read once, here, rather than per statement. Zero — the CLI's
@@ -141,18 +183,37 @@ impl Interp {
     // ---- names ------------------------------------------------------------
 
     pub fn lookup(&self, name: &str) -> R<Value> {
-        for s in self.chain.iter().rev() {
+        let from = match self.global_decls.last() {
+            Some(Some(g)) if g.names.contains(name) => g.base.min(self.chain.len()),
+            _ => 0,
+        };
+        for (i, s) in self.chain[from..].iter().enumerate().rev() {
             if let Some(v) = s.borrow().get(name) {
+                // Found in an ENCLOSING function's scope while this function
+                // assigns the name itself: the name is this frame's local, and
+                // unbound — `except E as x` in a closure unbinds `x`, and the
+                // outer `x` is not the one CPython reads.
+                if from + i < self.frame_floor.last().copied().unwrap_or(0)
+                    && self.assigned.last().is_some_and(|f| f.contains(name))
+                    && !self.declared_global(name)
+                {
+                    return Err(unbound_local(name));
+                }
                 return Ok(v.clone());
             }
         }
         if let Some(f) = self.assigned.last() {
             // Assigned somewhere in this function but not bound yet.
             if f.contains(name) && !self.declared_global(name) {
-                return Err(LypningError::exc(
-                    "UnboundLocalError",
-                    format!("cannot access local variable '{name}' where it is not associated with a value"),
-                ));
+                // Read from a generator expression, the name is a FREE
+                // variable of the genexp's own scope, and CPython says so.
+                if self.gen_marks.last() == Some(&self.assigned.len()) {
+                    return Err(LypningError::exc(
+                        "NameError",
+                        format!("cannot access free variable '{name}' where it is not associated with a value in enclosing scope"),
+                    ));
+                }
+                return Err(unbound_local(name));
             }
         }
         if let Some(v) = self.globals.borrow().get(name) {
@@ -160,6 +221,17 @@ impl Interp {
         }
         if let Some(v) = crate::builtins::builtin(name) {
             return Ok(v);
+        }
+        // Two scopes deep, the name may be one an ENCLOSING function assigns
+        // later, and CPython's NameError then reads "cannot access free
+        // variable"; which enclosing function assigns what is not kept here.
+        // Only for a name some function body assigns: any other name is not
+        // a free variable of anything, and its message is the plain one.
+        if self.chain.len() > 1 && self.fn_locals.contains(name) {
+            return Err(unsupported(
+                "name-error",
+                &format!("NameError for '{name}' in a nested scope, whose message depends on enclosing assignments"),
+            ));
         }
         Err(name_err(name))
     }
@@ -172,7 +244,89 @@ impl Interp {
     fn declared_global(&self, name: &str) -> bool {
         self.global_decls
             .last()
-            .is_some_and(|g| g.as_ref().is_some_and(|g| g.contains(name)))
+            .is_some_and(|g| g.as_ref().is_some_and(|g| g.names.contains(name)))
+    }
+
+    /// A `def` or `lambda` made inside a NESTED function that declares
+    /// `global`: its free variables resolve through that declaration, which
+    /// the closure's scope chain does not carry — it would find the enclosing
+    /// function's local instead. Refused; a top-level function has no
+    /// enclosing locals to find, and is untouched.
+    fn nested_global_guard(&self) -> R<()> {
+        match self.global_decls.last() {
+            Some(Some(g)) if g.base >= 2 => Err(unsupported(
+                "global",
+                "a function made inside a nested function that declares `global`",
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// Bind a comprehension's or generator expression's loop TARGET.
+    ///
+    /// A comprehension is its own scope, so its target is always local to it —
+    /// even when the enclosing function declared the same name `global`. [`bind`]
+    /// consults the frame's `global` table first, so `global v; [v for v in
+    /// [1]]` wrote `1` into the module's `v` where CPython leaves it alone.
+    ///
+    /// Only the names the target BINDS leave the table, for the one
+    /// assignment. Setting the whole table aside was wrong the other way: in
+    /// `global d; d = {}; [0 for d['k'] in [1]]` the target READS `d`, which is
+    /// still the module's, and found it unbound as a local (UnboundLocalError
+    /// where CPython answers `{'k': 1}`).
+    ///
+    /// [`bind`]: Interp::bind
+    pub(crate) fn comp_assign(&mut self, t: &Target, v: Value) -> R<()> {
+        let hit = match self.global_decls.last() {
+            Some(Some(g)) => binds_any(t, &g.names),
+            _ => false,
+        };
+        if !hit {
+            return self.assign(t, v);
+        }
+        let mut saved = None;
+        if let Some(slot) = self.global_decls.last_mut() {
+            saved = slot.take();
+            let mut narrowed = saved.clone();
+            if let Some(g) = narrowed.as_mut() {
+                unbind(t, &mut g.names);
+            }
+            *slot = narrowed;
+        }
+        let r = self.assign(t, v);
+        if let Some(g) = self.global_decls.last_mut() {
+            *g = saved;
+        }
+        r
+    }
+
+    /// The frame a generator expression is created in, as far as name
+    /// RESOLUTION needs it: the names that frame assigns and the names it
+    /// declared `global`. A generator runs its body wherever it is advanced,
+    /// and the consumer's frame is the wrong one to ask — `x = 5; g = (x for _
+    /// in [1])` consumed inside a `def` that assigns its own `x` raised
+    /// UnboundLocalError where CPython answers `[5]`.
+    pub(crate) fn gen_frame(&self) -> GenFrame {
+        (
+            self.assigned.last().cloned().unwrap_or_else(|| Rc::new(Names::new())),
+            self.global_decls.last().cloned().flatten(),
+        )
+    }
+
+    /// Enter and leave a generator's creation frame (see [`Interp::gen_frame`]).
+    /// The `global` table is moved in and back out, not cloned per element.
+    pub(crate) fn push_gen_frame(&mut self, f: &mut GenFrame) {
+        self.frame_floor.push(0);
+        self.assigned.push(f.0.clone());
+        self.global_decls.push(f.1.take());
+        self.gen_marks.push(self.assigned.len());
+    }
+
+    pub(crate) fn pop_gen_frame(&mut self, f: &mut GenFrame) {
+        self.gen_marks.pop();
+        self.frame_floor.pop();
+        self.assigned.pop();
+        f.1 = self.global_decls.pop().flatten();
     }
 
     pub fn bind(&mut self, name: &Rc<str>, v: Value) {
@@ -190,13 +344,33 @@ impl Interp {
         }
     }
 
+    /// Remove `name` from the scope `bind` would have written it to. Absent is
+    /// not an error here: the caller is an implicit `N = None; del N`.
+    fn unbind(&mut self, name: &Rc<str>) {
+        if self.declared_global(name.as_ref()) {
+            self.globals.borrow_mut().remove(name.as_ref());
+            return;
+        }
+        match self.chain.last() {
+            Some(s) => {
+                s.borrow_mut().remove(name.as_ref());
+            }
+            None => {
+                self.globals.borrow_mut().remove(name.as_ref());
+            }
+        }
+    }
+
     // ---- statements -------------------------------------------------------
 
     pub fn run(&mut self, body: &[Stmt]) -> R<()> {
-        match self.exec_block(body)? {
-            Flow::Normal => Ok(()),
-            _ => Err(LypningError::syntax(0, "'return'/'break' outside a block")),
-        }
+        collect_fn_locals(body, &mut self.fn_locals);
+        // An UNCAUGHT NameError or AttributeError in a run a capability the
+        // core lacks has run in refuses at the exit path
+        // (`err::forgot_import`, behind `io::hold`), not here. No flow but
+        // Normal reaches the module: `return`, `break` and `continue` outside
+        // what takes them are the parser's SyntaxError.
+        self.exec_block(body).map(drop)
     }
 
     pub fn exec_block(&mut self, body: &[Stmt]) -> R<Flow> {
@@ -263,7 +437,54 @@ impl Interp {
                     self.assign(target, cur)?;
                     return Ok(Flow::Normal);
                 }
-                let nv = self.binop(*op, &cur, &rhs)?;
+                // `dict |= x` is `dict.update(x)`: any mapping, or an iterable
+                // of pairs, where the binary `|` takes only a dict.
+                // And `os.environ |=` changes the process environment, which a
+                // mapping swapped in place here would not.
+                if let (BinOp::BitOr, Value::Dict(d)) = (op, &cur) {
+                    if !matches!(rhs, Value::Dict(_)) || d.borrow().environ {
+                        return Err(unsupported("aug-assign", "dict |="));
+                    }
+                }
+                // CPython names the IN-PLACE operator in this TypeError —
+                // `unsupported operand type(s) for +=: 'module' and 'int'` —
+                // and the binary operator printed `+` without the `=`.
+                let nv = match self.binop(*op, &cur, &rhs) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        const HEAD: &str = "unsupported operand type(s) for ";
+                        let m = err_msg(&e);
+                        match m.strip_prefix(HEAD).and_then(|t| t.split_once(": ")) {
+                            Some((_, rest)) if err_kind(&e) == "TypeError" => {
+                                return Err(type_err(format!(
+                                    "{HEAD}{}=: {rest}",
+                                    crate::ops::op_sym(*op)
+                                )))
+                            }
+                            _ => return Err(e),
+                        }
+                    }
+                };
+                // A mutable container's in-place operator MUTATES it — `dict
+                // |=`, the four set ones, `list *=` — so every other name bound
+                // to it sees the change. Rebinding to the new value left them
+                // holding the old one: `b = a; a |= {'k': 1}` printed `{}` for
+                // `b` at exit 0. The result moves into the original container.
+                let nv = match (&cur, nv) {
+                    (Value::Dict(d), Value::Dict(n)) if !Rc::ptr_eq(d, &n) => {
+                        std::mem::swap(&mut *d.borrow_mut(), &mut *n.borrow_mut());
+                        cur.clone()
+                    }
+                    (Value::Set(d), Value::Set(n)) if !Rc::ptr_eq(d, &n) => {
+                        std::mem::swap(&mut *d.borrow_mut(), &mut *n.borrow_mut());
+                        cur.clone()
+                    }
+                    (Value::List(d), Value::List(n)) if !Rc::ptr_eq(d, &n) => {
+                        std::mem::swap(&mut *d.borrow_mut(), &mut *n.borrow_mut());
+                        cur.clone()
+                    }
+                    (_, nv) => nv,
+                };
                 self.assign(target, nv)?;
             }
             Stmt::If { arms, els } => {
@@ -322,8 +543,24 @@ impl Interp {
             Stmt::Assert { test, msg } => {
                 let t = self.eval(test)?;
                 if !truthy(&t)? {
+                    // The message IS `args[0]`, and `Value::Exc` keeps one
+                    // string whose emptiness means "no arguments" (see
+                    // `call_builtin`). So a message that is not a non-empty
+                    // str — `assert x, 5`, `assert x, ''` — would read back as
+                    // `('5',)` or `()` where CPython says `(5,)` or `('',)`.
+                    // Only `args` and `repr()` can see that; `str()`, which
+                    // is what a traceback and `print(e)` read, is exact. So
+                    // the message is noted, and those two refuse on it
+                    // (`err::opaque_assert`) rather than the raise itself.
                     let m = match msg {
-                        Some(m) => fmt::to_str(&self.eval(m)?)?,
+                        Some(m) => match self.eval(m)? {
+                            Value::Str(s) if !s.is_empty() => s.to_string(),
+                            v => {
+                                let t = fmt::to_str(&v)?;
+                                crate::err::note_opaque_assert(&t);
+                                t
+                            }
+                        },
                         None => String::new(),
                     };
                     return Err(LypningError::exc("AssertionError", m));
@@ -344,6 +581,7 @@ impl Interp {
                 };
                 return Err(match e {
                     Value::Exc(k, m) => LypningError::exc(k, m.to_string()),
+                    Value::Builtin("UnicodeDecodeError") => crate::builtins::unicode_decode_arity(0),
                     Value::Builtin(name) if crate::builtins::is_exception_name(name) => {
                         LypningError::exc(crate::builtins::exception_static(name), "")
                     }
@@ -356,11 +594,17 @@ impl Interp {
                 });
             }
             Stmt::Def { name, params, body } => {
-                // Annotations run when the `def` does, and their VALUES are
-                // discarded -- what survives is whatever they raised or printed
-                // on the way. Before the defaults, as CPython orders it.
-                for a in &params.anns {
-                    self.eval(a)?;
+                self.nested_global_guard()?;
+                // Before 3.14 annotations run when the `def` does, and their
+                // VALUES are discarded -- what survives is whatever they raised
+                // or printed on the way. Before the defaults, as CPython orders
+                // it. From 3.14 (PEP 649) they are evaluated lazily, only when
+                // `__annotations__` is read, which nothing here can do: a side
+                // effect or a NameError in one is simply never seen.
+                if crate::err::REF_PY_MINOR < 14 {
+                    for a in &params.anns {
+                        self.eval(a)?;
+                    }
                 }
                 let mut defaults = Vec::with_capacity(params.defaults.len());
                 for d in &params.defaults {
@@ -381,10 +625,11 @@ impl Interp {
                 self.bind(name, f);
             }
             Stmt::Global(names) => {
+                let base = self.chain.len();
                 if let Some(g) = self.global_decls.last_mut() {
-                    let g = g.get_or_insert_with(|| Box::new(crate::hash::set()));
+                    let g = g.get_or_insert_with(|| Box::new(Globals { base, names: crate::hash::set() }));
                     for n in names {
-                        g.insert(n.clone());
+                        g.names.insert(n.clone());
                     }
                 }
             }
@@ -392,12 +637,19 @@ impl Interp {
                 for t in targets {
                     match t {
                         Target::Name(n) => {
-                            let removed = match self.chain.last() {
+                            // Inside a function `del x` makes `x` local, so an
+                            // unbound one is UnboundLocalError — unless it was
+                            // declared `global`, which deletes the global.
+                            let local = self.chain.last().filter(|_| !self.declared_global(n));
+                            let removed = match local {
                                 Some(s) => s.borrow_mut().remove(n.as_ref()).is_some(),
                                 None => self.globals.borrow_mut().remove(n.as_ref()).is_some(),
                             };
                             if !removed {
-                                return Err(name_err(n));
+                                return Err(match local {
+                                    Some(_) => unbound_local(n),
+                                    None => name_err(n),
+                                });
                             }
                         }
                         Target::Index(base, idx) => {
@@ -455,6 +707,27 @@ impl Interp {
                             let kind = err_kind(&err);
                             let mut handled = None;
                             for h in handlers {
+                                // CPython validates the WHOLE clause before it
+                                // matches any of it: `except (int, ZeroDivision
+                                // Error)` is a TypeError, not a catch. This
+                                // engine matches clauses by name, so a clause
+                                // that is not an exception class it knows would
+                                // silently never match; refuse it instead.
+                                // A bare name is read through the scopes, not
+                                // off its spelling: `ValueError = len` makes
+                                // `except ValueError` a TypeError in CPython,
+                                // and matching by name caught it at exit 0.
+                                if let Some(k) = h.kinds.iter().find(|k| {
+                                    !crate::route::except_clause(k.rsplit_once('.'), k).0
+                                        || (!k.contains('.')
+                                            && !matches!(self.lookup(k),
+                                                Ok(Value::Builtin(n)) if name_eq(n, k)))
+                                }) {
+                                    return Err(unsupported(
+                                        "exception",
+                                        &format!("except {k}"),
+                                    ));
+                                }
                                 if h.kinds.is_empty()
                                     || h.kinds.iter().any(|k| exc_matches(k, kind))
                                 {
@@ -470,6 +743,17 @@ impl Interp {
                                     self.handling.push((kind, msg));
                                     handled = Some(self.exec_block(&h.body));
                                     self.handling.pop();
+                                    // `except E as N` ends in CPython with an
+                                    // implicit `N = None; del N`, on every path
+                                    // out of the handler, so the name is UNBOUND
+                                    // afterwards — including a name the program
+                                    // had bound before the try. Leaving it bound
+                                    // printed `x` at exit 0 for
+                                    // `x = 1` / `except ValueError as x: pass` /
+                                    // `print(x)`, where CPython raises NameError.
+                                    if let Some(n) = &h.name {
+                                        self.unbind(n);
+                                    }
                                     break;
                                 }
                             }
@@ -543,6 +827,12 @@ impl Interp {
             Stmt::FromImport { module, names } => {
                 let m = modules::import(module)?;
                 for (n, bind) in names {
+                    #[cfg(feature = "cap-random")]
+                    if let Value::Module(name) = &m {
+                        if crate::route::core_refuses_attr(name, n) {
+                            crate::io::hold();
+                        }
+                    }
                     let v = modules::get_attr(&m, n)?;
                     self.bind(bind, v);
                 }
@@ -782,14 +1072,12 @@ impl Interp {
             Expr::Str(s) => Value::Str(s.clone()),
             Expr::Bytes(b) => Value::Bytes(b.clone()),
             Expr::Name(n) => self.lookup(n)?,
-            // A bare `*x` in an expression position has no value; the parser
-            // only produces it where a target list is possible.
-            Expr::Starred(_) => {
-                return Err(LypningError::syntax(
-                    0,
-                    "can't use starred expression here",
-                ))
-            }
+            // `*x` reaches here only as an element of a bare tuple the parser
+            // built — `return 0, *a`, `b = 0, *a`, `for x in 0, *a:` — which is
+            // VALID Python that this engine does not unpack. It was a
+            // SyntaxError at exit 1, the program's own exit; `route` blocks the
+            // same shape statically, and this is the backstop for a `-c` run.
+            Expr::Starred(_) => return Err(unsupported("unpack", "* in a tuple display")),
             Expr::Tuple(items) => {
                 let mut v = Vec::with_capacity(items.len());
                 for x in items {
@@ -881,6 +1169,10 @@ impl Interp {
                 }
             }
             Expr::Compare { first, rest } => {
+                #[cfg(feature = "cap-random")]
+                if is_vi(first) || rest.iter().any(|(_, x)| is_vi(x)) {
+                    return crate::randobj::parent(self, e);
+                }
                 // Each operand is evaluated at most once, and the chain
                 // short-circuits — both are guaranteed by Python.
                 let mut left = self.eval(first)?;
@@ -922,10 +1214,18 @@ impl Interp {
                 }
             }
             Expr::Attr(b, n) => {
+                #[cfg(feature = "cap-random")]
+                if is_vi(b) {
+                    return crate::randobj::parent(self, e);
+                }
                 let bv = self.eval(b)?;
                 self.get_attr(&bv, n)?
             }
             Expr::Index(b, i) => {
+                #[cfg(feature = "cap-random")]
+                if is_vi(b) {
+                    return crate::randobj::parent(self, e);
+                }
                 let bv = self.eval(b)?;
                 let iv = self.eval(i)?;
                 self.index(&bv, &iv)?
@@ -936,6 +1236,10 @@ impl Interp {
                 hi,
                 step,
             } => {
+                #[cfg(feature = "cap-random")]
+                if is_vi(base) {
+                    return crate::randobj::parent(self, e);
+                }
                 let bv = self.eval(base)?;
                 let lo = match lo {
                     Some(e) => Some(self.eval(e)?),
@@ -987,6 +1291,7 @@ impl Interp {
                 Value::Str(out.into())
             }
             Expr::Lambda { params, body } => {
+                self.nested_global_guard()?;
                 let mut defaults = Vec::with_capacity(params.defaults.len());
                 for d in &params.defaults {
                     defaults.push(match d {
@@ -1010,7 +1315,7 @@ impl Interp {
                 val,
                 clauses,
             } => match kind {
-                CompKind::Gen => self.make_gen(clauses, elt),
+                CompKind::Gen => self.make_gen(clauses, elt)?,
                 _ => self.eval_comp(*kind, elt, val.as_deref(), clauses)?,
             },
             Expr::Call {
@@ -1019,6 +1324,7 @@ impl Interp {
                 star,
                 kwargs,
                 dstar,
+                dstar_at,
             } => {
                 // A method call is the commonest call an agent types — a
                 // `.foo()` is in most corpus programs — and routing one through
@@ -1041,13 +1347,32 @@ impl Interp {
                             Some(m) if !matches!(bv, Value::Module(_)) => {
                                 method = Some((bv, m));
                             }
+                            // `random.Random(…)`: the class exists only as the
+                            // callee of a call (`randobj.rs`), so it is built
+                            // here and never by `get_attr`.
+                            #[cfg(feature = "cap-random")]
+                            _ if n.as_ref() == "Random" && matches!(bv, Value::Module("random")) => {
+                                f = Value::Bound(Rc::new(bv), "Random");
+                            }
                             _ => f = self.get_attr(&bv, n)?,
                         }
                     }
                     _ => f = self.eval(func)?,
                 }
                 let mut a = Args::with_capacity(args.len());
+                // `time.strftime(<fmt>, time.gmtime())`: the one place a
+                // `gmtime()` is served, and the runtime's own check of it —
+                // see `time::fused_gmtime`.
+                #[cfg(feature = "cap-time")]
+                let fused = crate::time::fused_gmtime(&f, args, star, kwargs, dstar);
                 for (i, x) in args.iter().enumerate() {
+                    #[cfg(feature = "cap-time")]
+                    let v = if fused && i == 1 {
+                        crate::time::eval_blessed(self, x)?
+                    } else {
+                        self.eval(x)?
+                    };
+                    #[cfg(not(feature = "cap-time"))]
                     let v = self.eval(x)?;
                     if star.contains(&i) {
                         a.extend(self.iter_collect(v)?);
@@ -1055,14 +1380,40 @@ impl Interp {
                         a.push(v);
                     }
                 }
+                // Literal keywords and `**` mappings are taken in SOURCE
+                // order, which is CPython's: `f(x=1, **{'y': 2}, z=3)` sees
+                // `x, y, z`, and gathering every literal first printed
+                // `{'x': 1, 'z': 3, 'y': 2}` at exit 0 for a `**k` callee.
                 let mut kw: Vec<(Rc<str>, Value)> = Vec::with_capacity(kwargs.len());
-                for (n, x) in kwargs {
-                    kw.push((n.clone(), self.eval(x)?));
-                }
-                for d in dstar {
+                let mut next = 0;
+                for slot in dstar.iter().zip(dstar_at.iter()).map(Some).chain([None]) {
+                    let (d, upto) = match slot {
+                        Some((d, &at)) => (Some(d), at),
+                        None => (None, kwargs.len()),
+                    };
+                    while next < upto {
+                        let (n, x) = &kwargs[next];
+                        next += 1;
+                        let v = self.eval(x)?;
+                        // A literal after a `**` that already supplied it.
+                        if !dstar.is_empty() && kw.iter().any(|(k, _)| k == n) {
+                            return Err(crate::err::unsupported(
+                                "call",
+                                "keyword argument given twice through **",
+                            ));
+                        }
+                        kw.push((n.clone(), v));
+                    }
+                    let Some(d) = d else { break };
                     let v = self.eval(d)?;
+                    // CPython's TypeError names the callee's QUALNAME
+                    // (`__main__.f() argument after ** must be a mapping, not
+                    // NoneType`), and a Counter or defaultdict IS a mapping.
                     let Value::Dict(m) = &v else {
-                        return Err(type_err("argument after ** must be a mapping"));
+                        return Err(crate::err::unsupported(
+                            "call",
+                            &format!("argument after ** of type {}", type_name(&v)),
+                        ));
                     };
                     let pairs: Vec<(Value, Value)> =
                         m.borrow().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
@@ -1070,12 +1421,30 @@ impl Interp {
                         let Value::Str(ks) = k else {
                             return Err(type_err("keywords must be strings"));
                         };
+                        // `f(a=1, **{'a': 2})` is a TypeError in CPython whose
+                        // message names the callee (`sorted()`, `binascii.
+                        // b2a_base64()`, `A.m()`), and every callee here used
+                        // to take the LAST value and answer at exit 0. Naming
+                        // the callee right is per-callable work; handing the
+                        // program to CPython, which says it exactly, is not.
+                        if kw.iter().any(|(n, _)| *n == ks) {
+                            return Err(crate::err::unsupported(
+                                "call",
+                                "keyword argument given twice through **",
+                            ));
+                        }
                         kw.push((ks, v));
                     }
                 }
                 match method {
                     Some((recv, m)) => crate::methods::call_method(self, &recv, m, &mut a, kw)?,
-                    None => self.call(&f, &mut a, kw)?,
+                    None => {
+                        // `glob.rs` asks whether THIS call node is one the
+                        // walk blessed as order-blind.
+                        #[cfg(feature = "cap-glob")]
+                        crate::glob::at_call(e);
+                        self.call(&f, &mut a, kw)?
+                    }
                 }
             }
         })
@@ -1197,7 +1566,7 @@ impl Interp {
                 continue;
             };
             stack.push(st);
-            self.assign(&clauses[level].target, v)?;
+            self.comp_assign(&clauses[level].target, v)?;
             let mut ok = true;
             for cond in &clauses[level].ifs {
                 let c = self.eval(cond)?;
@@ -1387,6 +1756,7 @@ impl Interp {
         c.push(scope);
         let saved_chain = std::mem::replace(&mut self.chain, c);
         self.global_decls.push(None);
+        self.frame_floor.push(f.env.len());
         self.assigned.push(f.assigned.clone());
         let r = match &f.lambda {
             Some(body) => self.eval(body),
@@ -1397,6 +1767,7 @@ impl Interp {
             },
         };
         self.assigned.pop();
+        self.frame_floor.pop();
         self.global_decls.pop();
         // Cleared here rather than on reuse, so the frame's scopes are dropped
         // when the frame ends and not whenever the vector is next taken out.
@@ -1445,16 +1816,24 @@ impl Interp {
     /// same 8% survived three other explanations (a `thread_local`, an
     /// extracted helper, and code layout, which is worth only ~1% here).
     #[inline(never)]
-    fn make_gen(&mut self, clauses: &[crate::ast::CompClause], elt: &Expr) -> Value {
+    fn make_gen(&mut self, clauses: &[crate::ast::CompClause], elt: &Expr) -> R<Value> {
+        // The FIRST iterable is evaluated, and `iter()` called on it, here in
+        // the creating frame, as CPython does: `(x for x in 5)` raises at
+        // creation, and `g = (i for i in items); items = [3]` still iterates
+        // the old list. It used to wait for the first `next()`.
+        let v = self.eval(&clauses[0].iter)?;
+        let first = self.make_iter(v)?;
         // Deep-cloned ONCE, when the generator is created, where it used to be
         // deep-cloned again for every element the generator yielded. Making
         // `Expr::Comp` hold the `Rc` itself would remove this one too and is a
         // separate change.
-        Value::Gen(Rc::new(RefCell::new(crate::iter::GenState::new(
+        Ok(Value::Gen(Rc::new(RefCell::new(crate::iter::GenState::new(
             Rc::new(clauses.to_vec()),
             Rc::new(elt.clone()),
             self.chain.clone(),
-        ))))
+            self.gen_frame(),
+            first,
+        )))))
     }
 
     /// An empty scope-chain vector, from the pool if one is waiting.
@@ -1585,6 +1964,45 @@ fn assigned_names(body: &[Stmt], params: &Params) -> Names {
     out
 }
 
+/// Every name any `def` body in `body` assigns, at any depth — the only names
+/// a `NameError` could be CPython's free-variable one for.
+fn collect_fn_locals(body: &[Stmt], out: &mut Names) {
+    for s in body {
+        match s {
+            Stmt::Def { params, body, .. } => {
+                for n in &params.names {
+                    out.insert(n.clone());
+                }
+                collect_assigned(body, out);
+                collect_fn_locals(body, out);
+            }
+            Stmt::If { arms, els } => {
+                arms.iter().for_each(|(_, b)| collect_fn_locals(b, out));
+                collect_fn_locals(els, out);
+            }
+            Stmt::For { body, els, .. } | Stmt::While { body, els, .. } => {
+                collect_fn_locals(body, out);
+                collect_fn_locals(els, out);
+            }
+            Stmt::Try { body, handlers, els, finally } => {
+                collect_fn_locals(body, out);
+                handlers.iter().for_each(|h| collect_fn_locals(&h.body, out));
+                collect_fn_locals(els, out);
+                collect_fn_locals(finally, out);
+            }
+            Stmt::With { body, .. } => collect_fn_locals(body, out),
+            _ => {}
+        }
+    }
+}
+
+fn unbound_local(name: &str) -> LypningError {
+    LypningError::exc(
+        "UnboundLocalError",
+        format!("cannot access local variable '{name}' where it is not associated with a value"),
+    )
+}
+
 fn collect_assigned(body: &[Stmt], out: &mut Names) {
     fn tgt(t: &Target, out: &mut Names) {
         match t {
@@ -1600,6 +2018,8 @@ fn collect_assigned(body: &[Stmt], out: &mut Names) {
         match s {
             Stmt::Assign { targets, .. } => targets.iter().for_each(|t| tgt(t, out)),
             Stmt::AugAssign { target, .. } => tgt(target, out),
+            // `del x` makes `x` local too, so an earlier read is unbound.
+            Stmt::Del(targets) => targets.iter().for_each(|t| tgt(t, out)),
             Stmt::For {
                 target, body, els, ..
             } => {
@@ -1699,7 +2119,7 @@ pub fn exc_matches(clause: &str, kind: &str) -> bool {
             "OSError" | "IOError" | "EnvironmentError" | "FileNotFoundError" | "PermissionError"
                 | "FileExistsError" | "IsADirectoryError" | "NotADirectoryError"
         ),
-        "ValueError" => kind == "UnicodeDecodeError" || kind == "JSONDecodeError",
+        "ValueError" => matches!(kind, "UnicodeDecodeError" | "UnicodeEncodeError" | "JSONDecodeError"),
         "NameError" => kind == "UnboundLocalError",
         _ => false,
     }
@@ -1768,5 +2188,27 @@ pub fn dismantle_interp(it: Interp) {
     }
     for (_, v) in modules {
         crate::value::dismantle(v);
+    }
+}
+
+/// Does this comprehension target bind a name the frame declared `global`?
+fn binds_any(t: &Target, g: &FastSet<Rc<str>>) -> bool {
+    match t {
+        Target::Name(n) => g.contains(n),
+        Target::Tuple(v) => v.iter().any(|x| binds_any(x, g)),
+        Target::Star(x) => binds_any(x, g),
+        _ => false,
+    }
+}
+
+/// Take every name `t` binds out of a `global` table (see `Interp::comp_assign`).
+fn unbind(t: &Target, g: &mut FastSet<Rc<str>>) {
+    match t {
+        Target::Name(n) => {
+            g.remove(n);
+        }
+        Target::Tuple(v) => v.iter().for_each(|x| unbind(x, g)),
+        Target::Star(x) => unbind(x, g),
+        _ => {}
     }
 }

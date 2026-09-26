@@ -41,6 +41,85 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 - `.github/scripts/eval2_shape.py` and `eval2-shape.yml` print chunk prompt
   lengths, aggregates only. Recorded in `training/EVAL2.md` §4, 2026-09-26.
 
+**2026-09-26** — lypning-l answers `glob.glob()` unsorted, in CPython's own order ([#133](https://github.com/kristerhedfors/lypning/pull/133))
+
+- An eager `glob.glob(P[, recursive=])` is served in any position: a bare
+  `for` loop, `print`, `[0]`, `glob(a) + glob(b)`. `glob.rs` already yields in
+  `_iglob`'s order over `readdir`; GitHub Actions run 36230478729
+  (2026-09-26) measured musl `read_dir` against glibc CPython 3.9/3.11/3.14
+  with 0 mismatches on six Linux filesystems, and APFS was measured the same
+  day on macOS.
+- Still `glob-order`, statically and in every variant: `iglob` outside
+  `sorted`/`min`/`max`/`any`/`all`/`sum`/`in`, and `glob`/`iglob` used as a
+  value. New, at runtime in lypning-l: a call whose order shows, listing a
+  directory this run has written, renamed or removed something at or below.
+- `**` over a path that is not a directory (and `**/**`) refuses on a build
+  whose reference CPython is older than 3.11, which answers it differently.
+- The core loses the eager stop instead of gaining a row, so it gets
+  smaller. It now routes these programs to lypning-l, including two corpus
+  programs that also call `os.path.getmtime`, which lypning-l refuses: a
+  late spawn the core's walk cannot see.
+- lypning-l answers 73 more graded programs: 7,357 to 7,430 of 10,173 in
+  `lypning conformance --mixture both`, 2026-09-26, macOS arm64, graded
+  against CPython 3.14.5. MISMATCH 0, UNSAFE 0, dispatchers agree 10,173/10,173.
+
+**2026-09-26** — The coverage table on the live landing page ([#132](https://github.com/kristerhedfors/lypning/pull/132))
+
+- lypning.dev is GitHub Pages in legacy mode: it renders `README.md` from
+  `main`, not the `site/` build `pages.yml` deploys. So the Coverage section
+  #129 added to `site/index.md` never reached the live page. README §1 now
+  opens with the same dated table: conformance 2026-09-26, commit f6b0728,
+  14,816 loaded, 10,173 graded, 0 wrong answers on every engine.
+
+**2026-09-25** — A coverage round from the latest sessions' programs: `cap-ast`, `bytes.fromhex`, and five wrong answers the harvest exposed ([#129](https://github.com/kristerhedfors/lypning/pull/129))
+
+- The corpus is harvested from the sessions since 2026-09-07: 5,752 new
+  programs, 14,653 in total. The routers show most are blocked by
+  `subprocess` and project imports, which stay refusals.
+- `cap-ast` in lypning-l: `import ast` and `ast.literal_eval` over a `str`,
+  parsed at the token level with a screen that refuses anything `lex.rs` and
+  CPython could read differently. Every error is a refusal. `ast.parse` and
+  the rest route to CPython.
+- `cap-binascii`: `bytes.fromhex` and UTF-8 `decode(errors='replace')`. The
+  core routes `.fromhex()` to lypning-l.
+- Shared, the core included: `except ((A, B), C)`, `except A, B` and an
+  f-string reusing its own quote refuse instead of raising the parser's
+  SyntaxError. An exception attribute the value does not keep refuses
+  instead of AttributeError. An in-place operator mutates its dict, set or
+  list, and `dict |= iterable` refuses.
+- The frozen core stays in 9 musl blocks by shortening fourteen long
+  refusal details. Its read-only segment had 44 B of slack.
+- `lypning conformance --mixture both` reaches MISMATCH 0, UNSAFE 0 and
+  dispatcher agreement on this macOS host for the first time. Float `**`
+  calls the host libm's `pow` on macOS (two programs filed as "drift" were
+  this). A 3.14-built engine refuses the two errors whose wording 3.14
+  changed. Before 3.14, module-level annotations refuse. Listing
+  `os.environ` is run-specific in the grader.
+- Training: recipes for the 19 new refusal kinds, and [subset-spec.md](training/prompts/subset-spec.md)
+  regenerated. The `statistics` and `itertools` repair rules are withdrawn,
+  because lypning-l now serves both imports and gate B would score their
+  pairs as regressions. **Their pairs in the published banks still need
+  retiring by the training owner**; no bank was touched.
+- The Pages landing page has a dated **Coverage** section. [L-COVERAGE.md](docs/L-COVERAGE.md)
+  gains the `ast` and hex rows.
+
+**2026-09-25** — lypning-l: hold where the capability runs, one parse for every variant, refuse the staged moves the disk cannot see ([#128](https://github.com/kristerhedfors/lypning/pull/128))
+
+- The walk only arms a run. The hold starts where a capability the core
+  lacks runs, and a run whose capability never runs is answered as the core
+  answers it. `LYPNING_ROUTED` is gone.
+- Every compile-time SyntaxError the parser let through is the parser's own
+  in every variant, including a starred tuple closed by `;`.
+- `os.rename`/`os.replace` refuse unless both ends are files this run wrote.
+  `os.rmdir` over a staged entry, `os.remove`/`Path.unlink` of a directory
+  and `os.mkdir` under a staged file refuse too. Three of these used to lose
+  a file at exit 0. After a commit, where a refusal could only be exit 1, a
+  rename onto itself or into a missing directory is answered as CPython
+  answers it.
+- `TabError` and `IndentationError` refuse as `indent`.
+- Tests compare against the interpreter running the suite; the 3.14.5 bytes
+  are checked only on 3.14.
+
 **2026-09-25** — Finish a pilot from its saved SFT adapter, and select new checkpoints case-weighted ([#127](https://github.com/kristerhedfors/lypning/pull/127))
 
 - A `finish` stage (`launch.py finish`, `round02.yml` `stage: finish` with

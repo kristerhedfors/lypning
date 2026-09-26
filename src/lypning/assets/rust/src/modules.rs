@@ -1,6 +1,5 @@
-//! The module surface: `MODULES` below — and, on the variant built with the
-//! `cap-*` feature for it, `collections`, `pathlib`, `re`, `csv`, `glob` and
-//! `base64` and `hashlib`.
+//! The module surface: `MODULES` below — the core's eight, and on the variant
+//! built with a `cap-*` feature, the module that feature's `#[cfg]` row names.
 //!
 //! `math` is here rather than behind a `cap-*` because nothing in it is a
 //! capability: the served subset is IEEE-754 and integer arithmetic, and the
@@ -31,166 +30,73 @@ use std::rc::Rc;
 /// Modules lypning can serve. `route.rs` reads this to decide whether a program's
 /// imports are within reach before anything is executed.
 ///
-/// Spelled twice rather than appended to, so the smaller variant's table is the
-/// same bytes it always was: a capability that added an entry at runtime would
-/// still have compiled the branch that adds it. `route::CAPS` carries the same
-/// claim for the ROUTER, which has to answer for a sibling it is not.
-#[cfg(not(any(
-    feature = "cap-collections",
-    feature = "cap-pathlib",
-    feature = "cap-re",
-    feature = "cap-csv",
-    feature = "cap-glob",
-    feature = "cap-base64"
-)))]
-pub const MODULES: &[&str] = &["sys", "os", "os.path", "io", "json", "math", "posixpath", "random"];
-#[cfg(all(
-    feature = "cap-collections",
-    not(feature = "cap-pathlib"),
-    not(feature = "cap-re"),
-    not(feature = "cap-csv"),
-    not(feature = "cap-glob"),
-    not(feature = "cap-base64")
-))]
-pub const MODULES: &[&str] =
-    &["sys", "os", "os.path", "io", "json", "math", "posixpath", "random", "collections"];
-#[cfg(all(
-    feature = "cap-pathlib",
-    not(feature = "cap-collections"),
-    not(feature = "cap-re"),
-    not(feature = "cap-csv"),
-    not(feature = "cap-glob"),
-    not(feature = "cap-base64")
-))]
-pub const MODULES: &[&str] =
-    &["sys", "os", "os.path", "io", "json", "math", "posixpath", "random", "pathlib"];
-#[cfg(all(
-    feature = "cap-collections",
-    feature = "cap-pathlib",
-    not(feature = "cap-re"),
-    not(feature = "cap-csv"),
-    not(feature = "cap-glob"),
-    not(feature = "cap-base64")
-))]
+/// One array, with each capability's module an element behind its own
+/// `#[cfg]` — the attribute is stable on array elements, so a `cap-*` step
+/// APPENDS one line here and touches no other. The core compiles none of those
+/// elements, so its table is the same eight entries, the same bytes, it always
+/// was: nothing is added at runtime, and no branch that would add one exists in
+/// the smaller variant. `route::CAPS` carries the same claim for the ROUTER,
+/// which has to answer for a sibling it is not.
 pub const MODULES: &[&str] = &[
-    "sys", "os", "os.path", "io", "json", "math", "posixpath", "random", "collections", "pathlib",
-];
-#[cfg(all(
-    feature = "cap-collections",
-    feature = "cap-pathlib",
-    feature = "cap-re",
-    not(feature = "cap-csv"),
-    not(feature = "cap-glob"),
-    not(feature = "cap-base64")
-))]
-pub const MODULES: &[&str] = &[
-    "sys", "os", "os.path", "io", "json", "math", "posixpath", "random", "collections",
-    "pathlib", "re",
-];
-#[cfg(all(
-    feature = "cap-collections",
-    feature = "cap-pathlib",
-    feature = "cap-re",
-    feature = "cap-csv",
-    not(feature = "cap-glob"),
-    not(feature = "cap-base64")
-))]
-pub const MODULES: &[&str] = &[
-    "sys", "os", "os.path", "io", "json", "math", "posixpath", "random", "collections",
-    "pathlib", "re",
+    "sys",
+    "os",
+    "os.path",
+    "io",
+    "json",
+    "math",
+    "posixpath",
+    "random",
+    // Capability rows, in the order they were built. Append; never reorder.
+    #[cfg(feature = "cap-collections")]
+    "collections",
+    #[cfg(feature = "cap-pathlib")]
+    "pathlib",
+    #[cfg(feature = "cap-re")]
+    "re",
+    #[cfg(feature = "cap-csv")]
     "csv",
+    #[cfg(feature = "cap-glob")]
+    "glob",
+    #[cfg(feature = "cap-base64")]
+    "base64",
+    #[cfg(feature = "cap-hashlib")]
+    "hashlib",
+    #[cfg(feature = "cap-statistics")]
+    "statistics",
+    #[cfg(feature = "cap-itertools")]
+    "itertools",
+    #[cfg(feature = "cap-difflib")]
+    "difflib",
+    #[cfg(feature = "cap-textwrap")]
+    "textwrap",
+    #[cfg(feature = "cap-time")]
+    "time",
+    #[cfg(feature = "cap-binascii")]
+    "binascii",
+    #[cfg(feature = "cap-ast")]
+    "ast",
 ];
-#[cfg(all(
-    feature = "cap-collections",
-    feature = "cap-pathlib",
-    feature = "cap-re",
-    feature = "cap-csv",
-    feature = "cap-glob",
-    not(feature = "cap-base64"),
-    not(feature = "cap-hashlib")
-))]
-pub const MODULES: &[&str] = &[
-    "sys", "os", "os.path", "io", "json", "math", "posixpath", "random", "collections",
-    "pathlib", "re",
-    "csv", "glob",
-];
-#[cfg(all(
-    feature = "cap-collections",
-    feature = "cap-pathlib",
-    feature = "cap-re",
-    feature = "cap-csv",
-    feature = "cap-glob",
-    feature = "cap-base64",
-    not(feature = "cap-hashlib")
-))]
-pub const MODULES: &[&str] = &[
-    "sys", "os", "os.path", "io", "json", "math", "posixpath", "random", "collections",
-    "pathlib", "re",
-    "csv", "glob", "base64",
-];
-#[cfg(all(
-    feature = "cap-collections",
-    feature = "cap-pathlib",
-    feature = "cap-re",
-    feature = "cap-csv",
-    feature = "cap-glob",
-    feature = "cap-base64",
-    feature = "cap-hashlib"
-))]
-pub const MODULES: &[&str] = &[
-    "sys", "os", "os.path", "io", "json", "math", "posixpath", "random", "collections",
-    "pathlib", "re",
-    "csv", "glob", "base64", "hashlib",
-];
-// The rows above are the build-order CHAIN, not every subset: each capability
-// appends one row and stops the row before it. `cap-re`, `cap-csv`, `cap-glob`,
-// `cap-base64` and `cap-hashlib` are never built except as part of `variant-l`,
-// whose feature names the full set — which is what the five guards below say,
-// each naming the caps that precede it in the chain.
-#[cfg(all(feature = "cap-re", not(all(feature = "cap-collections", feature = "cap-pathlib"))))]
-compile_error!("cap-re is only built as part of variant-l (it names the full set)");
-#[cfg(all(
-    feature = "cap-csv",
-    not(all(feature = "cap-collections", feature = "cap-pathlib", feature = "cap-re"))
-))]
-compile_error!("cap-csv is only built as part of variant-l (it names the full set)");
-#[cfg(all(
-    feature = "cap-glob",
-    not(all(
-        feature = "cap-collections",
-        feature = "cap-pathlib",
-        feature = "cap-re",
-        feature = "cap-csv"
-    ))
-))]
-compile_error!("cap-glob is only built as part of variant-l (it names the full set)");
-#[cfg(all(
-    feature = "cap-base64",
-    not(all(
-        feature = "cap-collections",
-        feature = "cap-pathlib",
-        feature = "cap-re",
-        feature = "cap-csv",
-        feature = "cap-glob"
-    ))
-))]
-compile_error!("cap-base64 is only built as part of variant-l (it names the full set)");
-#[cfg(all(
-    feature = "cap-hashlib",
-    not(all(
-        feature = "cap-collections",
-        feature = "cap-pathlib",
-        feature = "cap-re",
-        feature = "cap-csv",
-        feature = "cap-glob",
-        feature = "cap-base64"
-    ))
-))]
-compile_error!("cap-hashlib is only built as part of variant-l (it names the full set)");
+// A `cap-*` is never built except as part of `variant-l`: `build.rs` refuses
+// any `CARGO_FEATURE_CAP_*` without `variant-l`, one rule that needs no list,
+// so a new capability adds nothing there either.
 
 pub fn import(path: &str) -> R<Value> {
     match MODULES.iter().find(|m| **m == path) {
-        Some(m) => Ok(Value::Module(m)),
+        // `posixpath` IS `os.path` — one object in `sys.modules` — and a
+        // module's name is its identity here (`==`, `is`, a dict key), so
+        // the two spellings must be one value or `os.path is posixpath` is
+        // False at exit 0.
+        Some(&"posixpath") => Ok(Value::Module("os.path")),
+        Some(m) => {
+            // See `io::hold`: the core refuses this import, so from here the
+            // program is one only a capability answers, and the run must stay
+            // reversible.
+            #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+            if crate::route::core_refuses_import(m) {
+                crate::io::hold();
+            }
+            Ok(Value::Module(m))
+        }
         None => Err(unsupported("module", &format!("import {path}"))),
     }
 }
@@ -246,7 +152,11 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
         ("sys", "stdin") => Value::Module("sys.stdin"),
         ("sys", "stdout") => Value::Module("sys.stdout"),
         ("sys", "stderr") => Value::Module("sys.stderr"),
-        ("sys", "platform") => Value::Str("linux".into()),
+        // What the host's CPython would say. Anything but these two refuses.
+        ("sys", "platform") => match PLATFORM {
+            Some(p) => Value::Str(p.into()),
+            None => return Err(unsupported("module-attr", "sys.platform on this host")),
+        },
         ("sys", "maxsize") => ival(i64::MAX),
         ("sys", "exit") => Value::Bound(Rc::new(m.clone()), "exit"),
         ("sys", "path") => {
@@ -320,6 +230,14 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
         ("random", "seed" | "random" | "randint" | "randrange" | "choice" | "getrandbits") => {
             Value::Bound(Rc::new(m.clone()), interned(name)?)
         }
+        // `sample` and `shuffle` on the hidden instance's stream. `Random` is
+        // NOT a value here: `eval.rs` resolves `random.Random(…)` at the call,
+        // so the class never reaches `isinstance`, `repr` or a subclass, and
+        // every other spelling of it refuses through the arm below.
+        #[cfg(feature = "cap-random")]
+        ("random", "sample") => Value::Bound(Rc::new(m.clone()), "sample"),
+        #[cfg(feature = "cap-random")]
+        ("random", "shuffle") => Value::Bound(Rc::new(m.clone()), "shuffle"),
         // The exactly-defined subset: five constants and thirteen functions,
         // every one of them IEEE-754 or integer arithmetic. Every other name —
         // `sin`, `log10`, `exp`, `fsum`, `comb` — refuses with the
@@ -388,6 +306,42 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
         // statically out of `route::MODULE_ATTRS`, in the CORE's walk.
         #[cfg(feature = "cap-hashlib")]
         ("hashlib", _) => return crate::hashlib::module_attr(name),
+        // `statistics.mean` / `median` / `median_low` / `median_high`. Every
+        // other name — `stdev`, `fmean`, `mode`, `StatisticsError` — refuses
+        // with the `module-attr` kind, which `route::MODULE_ATTRS` makes a
+        // STATIC block in the core's walk.
+        #[cfg(feature = "cap-statistics")]
+        ("statistics", _) => return crate::statistics::module_attr(name),
+        // `itertools.product` and `itertools.combinations`. Every other name —
+        // `chain`, `islice`, `permutations`, `count`, `groupby` — refuses with
+        // the `module-attr` kind, which the router blocks on statically out of
+        // `route::MODULE_ATTRS`, in the CORE's walk. `difflib` has no arm: its
+        // row there is EMPTY, so every `difflib.<name>` is the arm below.
+        #[cfg(feature = "cap-itertools")]
+        ("itertools", _) => return crate::itertools::module_attr(name),
+        // `textwrap.dedent` / `indent` / `wrap` / `fill` / `shorten`. Every
+        // other name — `TextWrapper`, `__file__` — refuses with the
+        // `module-attr` kind, which `route::MODULE_ATTRS` makes a STATIC block
+        // in the core's walk.
+        #[cfg(feature = "cap-textwrap")]
+        ("textwrap", _) => return crate::textwrap::module_attr(name),
+        // `time.time`, `time_ns`, `monotonic`, `monotonic_ns`, `perf_counter`,
+        // `perf_counter_ns`, `sleep`, `gmtime`, `strftime`. Every other name —
+        // `localtime`, `ctime`, `mktime`, `timezone`, `process_time` — refuses
+        // with the `module-attr` kind, blocked statically in the CORE's walk
+        // out of `route::MODULE_ATTRS`.
+        #[cfg(feature = "cap-time")]
+        ("time", _) => return crate::time::module_attr(name),
+        // The six served `binascii` functions. `Error`, `crc32` and the rest
+        // refuse as `module-attr`, which `route::MODULE_ATTRS` makes a STATIC
+        // block in the core's walk.
+        #[cfg(feature = "cap-binascii")]
+        ("binascii", _) => return crate::binascii::module_attr(name),
+        // `ast.literal_eval`, and nothing else: `parse`, `walk`, `dump` and
+        // the node classes refuse as `module-attr`, which `route::MODULE_ATTRS`
+        // makes a STATIC block in the core's walk.
+        #[cfg(feature = "cap-ast")]
+        ("ast", _) => return crate::pyast::module_attr(name),
         _ => {
             return Err(unsupported(
                 "module-attr",
@@ -491,6 +445,28 @@ pub fn call_module_method(
         ("base64", _) => return crate::base64::call(it, name, args, &kw),
         #[cfg(feature = "cap-hashlib")]
         ("hashlib", _) => return crate::hashlib::call(it, name, args, &kw),
+        #[cfg(feature = "cap-statistics")]
+        ("statistics", _) => return crate::statistics::call(it, name, args, &kw),
+        #[cfg(feature = "cap-itertools")]
+        ("itertools", _) => return crate::itertools::call(it, name, args, &kw),
+        #[cfg(feature = "cap-textwrap")]
+        ("textwrap", _) => return crate::textwrap::call(it, name, args, &kw),
+        #[cfg(feature = "cap-time")]
+        ("time", _) => return crate::time::call(it, name, args, &kw),
+        #[cfg(feature = "cap-random")]
+        ("random", "sample" | "shuffle") => {
+            crate::io::hold();
+            return crate::randobj::call(it, name, args, &kw);
+        }
+        #[cfg(feature = "cap-random")]
+        ("random", "Random") => {
+            crate::io::hold();
+            return crate::randobj::construct(it, args, &kw);
+        }
+        #[cfg(feature = "cap-binascii")]
+        ("binascii", _) => return crate::binascii::call(it, name, args, &kw),
+        #[cfg(feature = "cap-ast")]
+        ("ast", _) => return crate::pyast::call(it, name, args, &kw),
         ("random", _) => return crate::random::call(it, name, args, &kw),
         ("math", _) => return crate::math::call(it, name, args, &kw),
         // `Path.cwd()`. A classmethod on the type object, reached through
@@ -647,14 +623,7 @@ pub fn call_module_method(
             Value::None
         }
         ("os", "remove" | "unlink") => {
-            let p = s(0)?;
-            if !mio::path_exists(&p) {
-                return Err(LypningError::exc(
-                    "FileNotFoundError",
-                    format!("[Errno 2] No such file or directory: '{p}'"),
-                ));
-            }
-            mio::stage_delete(&p);
+            mio::remove_file(&s(0)?)?;
             Value::None
         }
         ("os", "rmdir") => {
@@ -666,18 +635,64 @@ pub fn call_module_method(
         }
         ("os", "rename" | "replace") => {
             let (a, b) = (s(0)?, s(1)?);
-            let content = match mio::effective_content(&a)? {
+            // A directory or a symbolic link, at either end, is refused and
+            // not served. The kernel MOVES those — a whole tree, or the link
+            // itself — where this arm copies one file's bytes into the
+            // barrier, and a moved tree cannot be staged: every path under it
+            // changes spelling, and `rewind` would have to move it back. The
+            // commit barrier stays exactly what it is; CPython answers,
+            // `ENOTEMPTY` and `EISDIR` included.
+            for p in [&a, &b] {
+                if std::fs::symlink_metadata(p).is_ok_and(|m| !m.is_file()) {
+                    return Err(unsupported("rename", "os.rename() of a directory or a link"));
+                }
+            }
+            let two = |kind: &'static str, errno: i32, msg: &str| {
+                LypningError::exc(kind, format!("[Errno {errno}] {msg}: '{a}' -> '{b}'"))
+            };
+            let on_disk = |p: &str| !mio::is_staged_deleted(p) && std::fs::symlink_metadata(p).is_ok();
+            let staged = mio::effective_content(&a)?;
+            if staged.is_none() && !on_disk(&a) {
+                return Err(two("FileNotFoundError", 2, "No such file or directory"));
+            }
+            let (dir_ok, dir_there) = match std::path::Path::new(&b).parent() {
+                Some(d) if !d.as_os_str().is_empty() => match std::fs::metadata(d) {
+                    Ok(m) => (m.is_dir(), true),
+                    Err(_) => (false, false),
+                },
+                _ => (true, true),
+            };
+            let same = mio::same_staged_path(&a, &b);
+            // This arm COPIES: it stages the bytes under the new name and a
+            // delete of the old one. That is a rename only between files this
+            // run made. A file already on disk at either end carries a mode,
+            // an owner and timestamps the kernel's rename keeps and a staged
+            // write does not — the copy of an executable lands as 0o644 — and
+            // one path under two spellings stages its own delete last and
+            // loses the file. A destination whose directory is missing is
+            // CPython's two-path `FileNotFoundError`, which the barrier would
+            // raise only at commit, after the source was gone. All four go to
+            // CPython while the run can still be taken back; once it has
+            // committed a refusal would be exit 1, so the two that lose a file
+            // are answered here as CPython answers them, and a file on disk is
+            // copied as it always was.
+            if !mio::is_committed() && (on_disk(&a) || on_disk(&b) || same || !dir_ok) {
+                return Err(unsupported("rename", "os.rename() of a file on disk"));
+            }
+            if !dir_ok {
+                return Err(if dir_there {
+                    two("NotADirectoryError", 20, "Not a directory")
+                } else {
+                    two("FileNotFoundError", 2, "No such file or directory")
+                });
+            }
+            if same {
+                return Ok(Value::None);
+            }
+            let content = match staged {
                 Some(c) => c,
                 None => {
-                    if mio::is_staged_deleted(&a) {
-                        return Err(LypningError::exc(
-                            "FileNotFoundError",
-                            format!("[Errno 2] No such file or directory: '{a}'"),
-                        ));
-                    }
-                    // `os.rename` here COPIES: it stages the bytes under the
-                    // new name and stages a delete of the old one. So it reads
-                    // whole files too, and a device would never finish.
+                    // A whole-file read, so a device would never finish.
                     mio::require_regular_file(&a)?;
                     std::fs::read(&a).map_err(|e| mio::os_error(&a, &e))?
                 }
@@ -878,3 +893,10 @@ pub(crate) fn normpath(p: &str) -> String {
         joined
     }
 }
+
+#[cfg(target_os = "macos")]
+const PLATFORM: Option<&str> = Some("darwin");
+#[cfg(target_os = "linux")]
+const PLATFORM: Option<&str> = Some("linux");
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+const PLATFORM: Option<&str> = None;

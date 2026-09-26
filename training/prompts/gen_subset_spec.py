@@ -32,7 +32,10 @@ SPEC = Path(__file__).resolve().parent / "subset-spec.md"
 
 _UNSUPPORTED_RE = re.compile(r'unsupported\(\s*"([a-z0-9-]+)"')
 _STRUCT_RE = re.compile(r'Unsupported\s*\{\s*kind:\s*"([a-z0-9-]+)"')
-_BLOCK_RE = re.compile(r'\bblock\(\s*"([a-z0-9-]+)"')
+# `.block(` and not a bare `block(`: `binascii::block(name, …)` is a free
+# function whose FIRST argument is a module attribute (`block("hexlify", …)`
+# in its tests), not a refusal kind.
+_BLOCK_RE = re.compile(r'\.block\(\s*"([a-z0-9-]+)"')
 _STOP_RE = re.compile(r'\bstop(?:_only|_base64)?\(\s*"([a-z0-9-]+)"')
 _STRING_RE = re.compile(r'"([^"]*)"')
 _MODULES_RE = re.compile(r"pub const MODULES: &\[&str\] =\s*&\[(?P<body>.*?)\];", re.S)
@@ -282,6 +285,44 @@ RECIPES: Dict[str, Tuple[str, str, str]] = {
     "unpack": (SYNTAX, "`*` inside a list, set or parenthesised display", "concatenate with `+` or `extend`"),
     "walrus": (SYNTAX, "`:=`", "assign on its own line"),
     "with": (HOST, "`with` over a value that is not a file", "use `with` only around `open()`"),
+    "annotation": (SYNTAX, "an annotation the engine cannot carry: a module-level annotation before Python 3.14 (evaluated there), `__annotations__`, an annotated name also declared `global`",
+                  "drop the annotation: write `x = value`"),
+    "ast": (NAMES, "an `ast` shape outside `ast.literal_eval(str)`: `ast.parse`, `walk`, `dump`, the node classes, or text `literal_eval` would reject",
+           "`ast.literal_eval(s)` on a plain literal such as a repr of a dict or list"),
+    "aug-assign": (VALUES, "`d |= x` where `d` is a dict and `x` is not one",
+                  "`d.update(x)`"),
+    "binascii": (NAMES, "a `binascii` call outside `hexlify unhexlify b2a_hex a2b_hex a2b_base64 b2a_base64`, input that would raise, or `bytes.fromhex` of anything but one well-formed str",
+                "those functions on well-formed input; `bytes.fromhex(s)` and `b.hex()`"),
+    "call": (VALUES, "a keyword given twice through `**`, or `**` over something that is not a dict",
+            "pass each keyword once, and `**` only a dict"),
+    "except": (SYNTAX, "an `except` clause other than a name or a flat parenthesised tuple of names (`except ((A, B), C)`, `except A, B`)",
+              "`except (A, B, C):`"),
+    "exception-note": (VALUES, "an error CPython annotates with a note, such as a dict update element that is not a pair",
+                      "pass pairs to `dict()` and `.update()`"),
+    "future": (SYNTAX, "a `from __future__` import outside the served ones, an alias, or `__future__` anywhere but the top",
+              "put `from __future__ import annotations` first, or leave it out"),
+    "global": (SYNTAX, "a function made inside a nested function that declares `global`",
+              "declare `global` only in top-level functions"),
+    "itertools": (NAMES, "an `itertools` shape the engine does not serve",
+                 "`chain`, `islice`, `product`, `permutations`, `combinations`, `groupby`, `accumulate` on lists"),
+    "name-error": (VALUES, "a `NameError` in a nested scope, whose message depends on assignments elsewhere",
+                  "define names before use; do not rely on the text of a NameError"),
+    "name-hint": (VALUES, "an uncaught error where CPython may add a `Did you mean` suggestion",
+                 "catch the errors you expect; do not rely on traceback text"),
+    "remove": (HOST, "`os.remove()` of a directory",
+              "`os.rmdir()` for an empty directory"),
+    "rename": (HOST, "`os.rename()`/`os.replace()` of a directory, a link, or a file that existed before the program ran",
+              "rename files the program itself wrote, or write the new file and remove the old one"),
+    "rmdir": (HOST, "`os.rmdir()` of a directory that still holds a file the program wrote or removed",
+             "remove the files first, then the directory, or leave the directory in place"),
+    "statistics": (NAMES, "a `statistics` shape the engine does not serve",
+                  "`mean`, `median`, `mode`, `stdev`, `pstdev`, `variance` on lists of numbers"),
+    "textwrap": (NAMES, "a `textwrap` shape the engine does not serve, such as `TextWrapper`",
+                "`textwrap.wrap`, `fill`, `dedent`, `indent`, `shorten` with plain arguments"),
+    "time": (NAMES, "a `time` shape the engine does not serve: `gmtime`, `strftime`, a `sleep` in a loop or longer than a second, a time function used as a value",
+            "call `time.time()` or `time.perf_counter()` directly"),
+    "type-attr": (VALUES, "an attribute of a type object such as `int.mro`",
+                 "do not introspect types"),
 }
 
 MODULE_NOTES: Dict[str, str] = {

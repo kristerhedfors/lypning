@@ -63,7 +63,9 @@ pub struct Lexer<'a> {
     /// Bracket nesting depth. Inside brackets, newlines and indentation are
     /// implicit continuations and produce no tokens at all.
     depth: i32,
-    indents: Vec<u32>,
+    /// Each open level as `(column, column with a tab counted as 1)`: two
+    /// readings of one indentation, which CPython requires to agree.
+    indents: Vec<(u32, u32)>,
     out: Vec<Token>,
 }
 
@@ -73,7 +75,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, LypningError> {
         pos: 0,
         line: 1,
         depth: 0,
-        indents: vec![0],
+        indents: vec![(0, 0)],
         out: Vec::new(),
     }
     .run()
@@ -163,11 +165,13 @@ impl<'a> Lexer<'a> {
     fn layout(&mut self) -> Result<bool, LypningError> {
         loop {
             let mut col: u32 = 0;
+            let mut alt: u32 = 0;
             let start = self.pos;
             loop {
                 match self.peek() {
                     b' ' => {
                         col += 1;
+                        alt += 1;
                         self.pos += 1;
                     }
                     // CPython's tokenizer expands tabs to the next multiple of
@@ -175,10 +179,12 @@ impl<'a> Lexer<'a> {
                     // so match the rule rather than counting a tab as one.
                     b'\t' => {
                         col = (col / 8 + 1) * 8;
+                        alt += 1;
                         self.pos += 1;
                     }
                     b'\x0c' => {
                         col = 0;
+                        alt = 0;
                         self.pos += 1;
                     }
                     _ => break,
@@ -207,20 +213,32 @@ impl<'a> Lexer<'a> {
                 }
                 _ => {}
             }
-            let cur = *self.indents.last().unwrap();
+            // CPython's `tok_get` reads the indentation twice — a tab to the
+            // next multiple of 8, and a tab as 1 — and a line whose two
+            // readings order it differently against the open level is a
+            // `TabError` (`if 1:` / TAB `x=1` / 8 spaces `y=2`). Counting only
+            // the first reading ran it.
+            let (cur, cur_alt) = *self.indents.last().unwrap();
             if col > cur {
+                if alt <= cur_alt {
+                    return Err(tab_error(self.line));
+                }
                 if !self.indent_opens_a_suite() {
                     return Err(self.unexpected_indent());
                 }
-                self.indents.push(col);
+                self.indents.push((col, alt));
                 self.push(Tok::Indent);
-            } else if col < cur {
-                while *self.indents.last().unwrap() > col {
+            } else {
+                while self.indents.last().unwrap().0 > col {
                     self.indents.pop();
                     self.push(Tok::Dedent);
                 }
-                if *self.indents.last().unwrap() != col {
-                    return Err(LypningError::syntax(self.line, "unindent does not match any outer indentation level"));
+                let (cur, cur_alt) = *self.indents.last().unwrap();
+                if cur != col {
+                    return Err(unindent_error(self.line));
+                }
+                if cur_alt != alt {
+                    return Err(tab_error(self.line));
                 }
             }
             return Ok(true);
@@ -283,13 +301,7 @@ impl<'a> Lexer<'a> {
     fn unexpected_indent(&self) -> LypningError {
         unsupported(
             "indent",
-            &format!(
-                "line {} is indented and no suite opened a block; `python -c` \
-                 dedents the command on 3.13+ but not before, so whether this is \
-                 an error at all — and which one — is the reference \
-                 interpreter's to say",
-                self.line
-            ),
+            &format!("line {} is indented where no block opened", self.line),
         )
     }
 
@@ -320,9 +332,13 @@ impl<'a> Lexer<'a> {
         // block — and every one of them was costing a spawn to be told by
         // CPython what lypning already knew.
         //
-        // Deliberately NOT extended to non-ASCII bytes: Python 3 identifiers
-        // may be Unicode, so `π = 1` is a valid program and refusing it is
-        // correct.
+        // Deliberately NOT extended to non-ASCII bytes, which are refused
+        // below: Python 3 identifiers may be Unicode (`π = 1` is a valid
+        // program), and which characters CPython admits — XID_Start and
+        // XID_Continue after NFKC, so `ｘ` IS `x` — takes tables this binary
+        // does not carry. The rest (`€`, a no-break or zero-width space) are
+        // CPython's SyntaxError. Either way the reference answers; the corpus
+        // has no non-ASCII identifier (mined 2026-09-25, 8,901 entries).
         if matches!(self.peek(), b'!' | b'$' | b'?' | b'`') {
             return Err(LypningError::syntax(self.line, "invalid syntax"));
         }
@@ -345,6 +361,12 @@ impl<'a> Lexer<'a> {
             let ds = self.pos;
             while self.peek().is_ascii_alphanumeric() || self.peek() == b'_' {
                 self.pos += 1;
+            }
+            // `0x_1` is legal: one underscore may follow the prefix.
+            let d = &self.src[ds..self.pos];
+            let d = d.strip_prefix(b"_").unwrap_or(d);
+            if d.is_empty() || bad_underscores(d) {
+                return Err(LypningError::syntax(self.line, "invalid number literal"));
             }
             let text: String = std::str::from_utf8(&self.src[ds..self.pos])
                 .unwrap_or("")
@@ -381,6 +403,9 @@ impl<'a> Lexer<'a> {
         }
         if (self.peek() | 0x20) == b'j' {
             return Err(unsupported("complex", "complex literal"));
+        }
+        if let Some(why) = bad_decimal(&self.src[start..self.pos], is_float) {
+            return Err(LypningError::syntax(self.line, why));
         }
         let text: String = std::str::from_utf8(&self.src[start..self.pos])
             .unwrap_or("")
@@ -439,6 +464,13 @@ impl<'a> Lexer<'a> {
             if raw || bytes || fstr || uni {
                 if fstr {
                     let text = self.raw_string_body()?;
+                    // A replacement field still open where the body ended met
+                    // the f-string's own quote inside it: `f"{d["k"]}"`, valid
+                    // from 3.12 (PEP 701) and a SyntaxError before. Which of
+                    // the two is the reference's to say.
+                    if fstring_field_open(text.as_bytes()) {
+                        return Err(unsupported("fstring", "nested quote"));
+                    }
                     self.push(Tok::FStr {
                         raw: text,
                         raw_prefix: raw,
@@ -504,6 +536,13 @@ impl<'a> Lexer<'a> {
     fn string(&mut self, raw: bool, bytes: bool, _f: bool) -> Result<(Vec<u8>, bool), LypningError> {
         let line = self.line;
         let body = self.raw_string_body()?;
+        // A compile-time error in CPython, raw or not: `b'٣'` never runs.
+        if bytes && !body.is_ascii() {
+            return Err(LypningError::syntax(
+                line,
+                "bytes can only contain ASCII literal characters",
+            ));
+        }
         let decoded = if raw {
             body.into_bytes()
         } else {
@@ -536,8 +575,24 @@ fn wide_literal(digits: &str, radix: u32) -> Result<crate::value::Int, LypningEr
     Err(unsupported("bigint", "integer literal beyond 64-bit range"))
 }
 
+/// Is a `{` replacement field still open at the end of an f-string body?
+/// `{{` and `}}` are literal braces.
+fn fstring_field_open(b: &[u8]) -> bool {
+    let (mut depth, mut i) = (0usize, 0);
+    while i < b.len() {
+        match (b[i], b.get(i + 1)) {
+            (b'{', Some(b'{')) | (b'}', Some(b'}')) if depth == 0 => i += 1,
+            (b'{', _) => depth += 1,
+            (b'}', _) => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        i += 1;
+    }
+    depth > 0
+}
+
 fn is_ident_start(c: u8) -> bool {
-    c == b'_' || c.is_ascii_alphabetic() || c >= 0x80
+    c == b'_' || c.is_ascii_alphabetic()
 }
 fn is_ident_cont(c: u8) -> bool {
     is_ident_start(c) || c.is_ascii_digit()
@@ -650,4 +705,43 @@ fn push_char(out: &mut Vec<u8>, v: u32, line: u32) -> Result<(), LypningError> {
         )),
         None => Err(LypningError::syntax(line, "invalid unicode escape")),
     }
+}
+
+/// CPython raises `TabError` here, and for a dedent that matches no level
+/// `IndentationError` — subclasses of `SyntaxError` whose names are the last
+/// stderr line, which this engine's `SyntaxError` cannot spell. Refused, as
+/// [`Lexer::unexpected_indent`] is: the reference interpreter raises its own.
+fn tab_error(_line: u32) -> LypningError {
+    unsupported("indent", "TabError")
+}
+
+fn unindent_error(_line: u32) -> LypningError {
+    unsupported("indent", "IndentationError")
+}
+
+/// A run of digits and underscores CPython rejects: an underscore that does
+/// not sit BETWEEN two digits — leading, trailing or doubled (`1_`, `1__0`).
+fn bad_underscores(run: &[u8]) -> bool {
+    run.first() == Some(&b'_') || run.last() == Some(&b'_') || run.windows(2).any(|w| w == b"__")
+}
+
+/// The `SyntaxError` CPython's tokenizer raises for a decimal literal this
+/// lexer reads anyway: a misplaced underscore in any digit run (the integer
+/// part, the fraction, the exponent), and a leading zero on a nonzero integer
+/// (`0777`, which is octal in Python 2 and nothing in Python 3). `00` and
+/// `0_0` are zero, and `09.5` is a float; all three are legal.
+fn bad_decimal(lit: &[u8], is_float: bool) -> Option<&'static str> {
+    let runs = lit.split(|c| matches!(c, b'.' | b'e' | b'E' | b'+' | b'-'));
+    for run in runs {
+        if bad_underscores(run) {
+            return Some("invalid decimal literal");
+        }
+    }
+    let digits: Vec<u8> = lit.iter().copied().filter(|c| *c != b'_').collect();
+    if !is_float && digits.len() > 1 && digits[0] == b'0' && digits.iter().any(|c| *c != b'0') {
+        return Some(
+            "leading zeros in decimal integer literals are not permitted; use an 0o prefix for octal integers",
+        );
+    }
+    None
 }

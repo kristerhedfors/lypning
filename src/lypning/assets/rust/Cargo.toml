@@ -50,7 +50,7 @@ variant-m = []
 # The 4 MB point. Names the smaller variant so cargo's feature union makes it a
 # superset by construction — the monotonicity the router assumes. It grows one
 # `cap-*` per step; `variant-m` is FROZEN and gains none of them.
-variant-l = ["variant-m", "cap-base64", "cap-bigint", "cap-collections", "cap-csv", "cap-glob", "cap-hashlib", "cap-pathlib", "cap-re"]
+variant-l = ["variant-m", "cap-ast", "cap-base64", "cap-bigint", "cap-binascii", "cap-collections", "cap-csv", "cap-difflib", "cap-future", "cap-glob", "cap-hashlib", "cap-itertools", "cap-pathlib", "cap-random", "cap-re", "cap-statistics", "cap-textwrap", "cap-time"]
 
 # `collections.Counter` and `collections.defaultdict` — 83 of the corpus
 # programs measured on 2026-09-04 import `collections`, and between them they
@@ -88,12 +88,11 @@ cap-re = []
 # `src/csv.rs` is the whole of it.
 cap-csv = []
 
-# `glob` — `glob.glob`, `glob.iglob`, `glob.escape` and `glob.has_magic`. The
-# match SET is computed exactly and the match ORDER is never observable,
-# because `route.rs` admits the call only where a walk can see that the order
-# cannot be seen (`sorted(...)`, `len(...)`, `in`, …) and blocks `glob-order`
-# statically everywhere else. 69 corpus programs (mined 2026-09-06) import it
-# and every one of them calls `glob.glob`. `src/glob.rs` is the whole of it.
+# `glob` — `glob.glob`, `glob.iglob`, `glob.escape` and `glob.has_magic`.
+# `glob.glob` answers in CPython's own yield order over `readdir`, in any
+# position; the lazy `iglob` only where `route.rs` sees its order cannot show
+# (`sorted(...)`, `in`, …). A visible order over a directory the run has
+# changed refuses `glob-order` at runtime. `src/glob.rs` is the whole of it.
 cap-glob = []
 
 # `base64.b64encode` / `b64decode` / `urlsafe_b64encode` / `urlsafe_b64decode`,
@@ -107,6 +106,16 @@ cap-glob = []
 # blocked on `import base64`. `src/base64.rs` is the whole of it.
 cap-base64 = []
 
+# `binascii.hexlify` / `b2a_hex` / `unhexlify` / `a2b_hex` / `a2b_base64` /
+# `b2a_base64`, bytes in and bytes out. The base64 pair CALLS `base64.rs`'s
+# decoder and encoder rather than copying them — hence the dependency — so
+# the 3.11/3.12 versus 3.13+ decode split is refused in one place. `Error`,
+# `crc32` and the uu/qp codecs are absent, so `route::MODULE_ATTRS` blocks
+# them in the CORE's walk; every `binascii.Error` an input would raise is a
+# refusal. 13 corpus programs (mined 2026-09-24) were blocked first on
+# `import binascii`. `src/binascii.rs` is the whole of it.
+cap-binascii = ["cap-base64"]
+
 # `hashlib.md5` / `sha1` / `sha256` / `sha512`, with `.update()`,
 # `.hexdigest()`, `.digest()`, `.name` and `.digest_size`. No new `Value`
 # variant: a hash object is `Value::IterObj` over a new `Iter::Hash`, the shape
@@ -116,6 +125,75 @@ cap-base64 = []
 # (mined 2026-09-06) are blocked first on `import hashlib`; 10 of them need
 # nothing else this variant lacks. `src/hashlib.rs` is the whole of it.
 cap-hashlib = []
+
+# `statistics.mean` / `median` / `median_low` / `median_high`. The medians are
+# the engine's own `sorted` plus its own `+` and `/`, so types, NaN refusal and
+# error texts are inherited; `mean` is an exact integer sum over ints and bools
+# and refuses a float, whose CPython answer is an exactly rounded rational. The
+# rest of the module is absent, so `route::MODULE_ATTRS` blocks it in the CORE's
+# walk. 34 corpus programs (census 2026-09-24) are blocked first on `import
+# statistics`. `src/statistics.rs` is the whole of it.
+cap-statistics = []
+
+# `itertools.product` and `itertools.combinations`, their inputs drained at
+# construction and their results produced lazily by an index counter — an
+# `Iter` arm inside `Value::IterObj`, never a new `Value` variant. Every other
+# name on the module is absent, so `route::MODULE_ATTRS` blocks it in the
+# CORE's walk. 37 corpus programs (census 2026-09-24) were blocked first on
+# `import itertools`. `src/itertools.rs` is the whole of it.
+cap-itertools = []
+
+# `import difflib` and NOTHING on it: `route::MODULE_ATTRS` carries an EMPTY
+# row, so every `difflib.<name>` is a static `module-attr` block in the core's
+# walk and only a program that imports the module without touching it is
+# admitted. No source file; `modules::MODULES` is the whole of it.
+cap-difflib = []
+
+# `textwrap.dedent`, `indent` (default predicate), `wrap`, `fill` and
+# `shorten`, ported statement for statement from CPython 3.14's
+# `Lib/textwrap.py`, with the `break_on_hyphens` regex as a hand-written
+# scanner. `TextWrapper` and every keyword outside `width`, `initial_indent`,
+# `subsequent_indent`, `break_long_words`, `break_on_hyphens` (and `shorten`'s
+# `placeholder`) are refused in the WALK. 44 corpus programs (census
+# 2026-09-24) were blocked first on `import textwrap`. `src/textwrap.rs` is the
+# whole of it.
+cap-textwrap = []
+
+# `import ast` and `ast.literal_eval(s)` over a `str`, by a token-level
+# recursive descent of its own (`parse.rs` folds `-<literal>`), behind a screen
+# that refuses every text `lex.rs` and CPython's tokenizer could read
+# differently. Every other name on the module — `ast.parse` above all, since
+# `parse.rs` accepts programs CPython's `ast.parse` rejects — is a
+# `module-attr` block in the CORE's walk. `src/pyast.rs` is the whole of it.
+cap-ast = []
+
+# `time.time` / `time_ns` / `monotonic` / `monotonic_ns` / `perf_counter` /
+# `perf_counter_ns` through `clock_gettime(2)` declared `extern "C"` (no crate),
+# `time.sleep` bounded by the walk to a literal of at most one second outside
+# any loop or function (a refusal re-runs the program on CPython, so a served
+# sleep may be paid twice), and the one fused `strftime(<literal>, gmtime())`
+# UTC stamp over `%Y %m %d %H %M %S %%`. Everything local-time is absent and
+# refused statically. 58 corpus programs (census 2026-09-24, 9,064 loaded) are
+# blocked first on `import time`. `src/time.rs` is the whole of it.
+cap-time = []
+
+# `from __future__ import …` — a pass over the parse, not a module: the head of
+# future imports is stripped when every name is one Python 3 makes mandatory
+# (and so a no-op) or `annotations`, whose effect — no annotation is ever
+# evaluated — the pass implements by clearing them. Every misuse CPython
+# answers with a `SyntaxError` refuses statically, as does the `_Feature` name
+# and `__annotations__`. 76 corpus programs (census 2026-09-24, 9,064 loaded)
+# stopped first on this import. `src/future.rs` is the whole of it, plus one
+# `#[cfg]` line at the end of `parse::parse()`.
+cap-future = []
+
+# `random.Random(int)` instances, `random.sample`, `random.shuffle`, and
+# `sys.version_info` as `[0]`, `[:2]`, `.major`/`.minor` or compared with a
+# tuple of at most two items. It serves no MODULE — `random` and `sys` are the
+# core's — so its routing half is `route::CAP_ATTRS`, carried by every variant,
+# and the instance is `Value::IterObj` over `Iter::Rng`, never a new `Value`
+# variant. `src/randobj.rs` is the whole of it.
+cap-random = []
 
 capi = []
 

@@ -101,7 +101,7 @@ fn float_sum_agreed(f: f64, c12: f64, c14: f64) -> R<f64> {
     } else {
         Err(unsupported(
             "float-sum",
-            "sum() over floats where CPython 3.11, 3.12 and 3.14 round differently (3.12+ compensates floats, 3.14 compensates ints in the float loop too); the answers differ",
+            "sum() over floats, which CPython versions round differently (3.12+ compensates floats, 3.14 compensates ints in the float loop too); the answers differ",
         ))
     }
 }
@@ -187,6 +187,44 @@ pub const EXCEPTIONS: &[&str] = &[
 /// program asks a caught exception for its class. `nt refusals --run` found
 /// them, in the population that does — 1,173 programs a model wrote.
 pub const MODULE_EXCEPTIONS: &[&str] = &["JSONDecodeError"];
+
+/// The ZERO of every run of Unicode decimal digits (category Nd), read off
+/// CPython 3.14.5's `unicodedata` (Unicode 16.0.0) on 2026-09-25: 75 runs of
+/// exactly ten, `0`..`9` in order, which is every non-ASCII decimal there is.
+const DECIMAL_ZEROS: [u32; 75] = [
+    0x660, 0x6f0, 0x7c0, 0x966, 0x9e6, 0xa66, 0xae6, 0xb66, 0xbe6, 0xc66, 0xce6, 0xd66, 0xde6,
+    0xe50, 0xed0, 0xf20, 0x1040, 0x1090, 0x17e0, 0x1810, 0x1946, 0x19d0, 0x1a80, 0x1a90, 0x1b50,
+    0x1bb0, 0x1c40, 0x1c50, 0xa620, 0xa8d0, 0xa900, 0xa9d0, 0xa9f0, 0xaa50, 0xabf0, 0xff10,
+    0x104a0, 0x10d30, 0x10d40, 0x11066, 0x110f0, 0x11136, 0x111d0, 0x112f0, 0x11450, 0x114d0,
+    0x11650, 0x116c0, 0x116d0, 0x116da, 0x11730, 0x118e0, 0x11950, 0x11bf0, 0x11c50, 0x11d50,
+    0x11da0, 0x11f50, 0x16130, 0x16a60, 0x16ac0, 0x16b50, 0x16d70, 0x1ccf0, 0x1d7ce, 0x1d7d8,
+    0x1d7e2, 0x1d7ec, 0x1d7f6, 0x1e140, 0x1e2f0, 0x1e4f0, 0x1e5f1, 0x1e950, 0x1fbf0,
+];
+
+/// CPython's `_PyUnicode_TransformDecimalAndSpaceToASCII`, which `int()` and
+/// `float()` of a str read through: a Unicode decimal digit is its ASCII
+/// digit, Unicode whitespace is a space, and any other non-ASCII character
+/// is `?`, which no literal accepts. `int('٣')` is 3 in CPython and was a
+/// ValueError here at exit 1. Error messages still quote the ORIGINAL text.
+fn ascii_digits(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.is_ascii() {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    s.chars()
+        .map(|c| {
+            let u = c as u32;
+            if c.is_ascii() {
+                c
+            } else if c.is_whitespace() {
+                ' '
+            } else if let Some(z) = DECIMAL_ZEROS.iter().find(|&&z| u >= z && u < z + 10) {
+                (b'0' + (u - z) as u8) as char
+            } else {
+                '?'
+            }
+        })
+        .collect()
+}
 
 pub fn is_exception_name(n: &str) -> bool {
     EXCEPTIONS.iter().any(|e| name_eq(e, n)) || MODULE_EXCEPTIONS.iter().any(|e| name_eq(e, n))
@@ -642,7 +680,7 @@ pub fn system_exit_msg(args: &Args) -> R<String> {
         // the arm below turns it into a message and an exit 1.
         Some(Value::Int(i)) if i.small().is_none() => Err(unsupported(
             "bigint",
-            "sys.exit() of an integer past 64 bits, which CPython cannot put in a status word either",
+            "sys.exit() of an integer past 64 bits",
         )),
         Some(v @ (Value::None | Value::Int(_) | Value::Bool(_))) => fmt::to_str(v),
         Some(Value::Str(s))
@@ -705,6 +743,23 @@ pub fn call_builtin(
         if name == "SystemExit" {
             return Ok(Value::Exc("SystemExit", system_exit_msg(args)?.into()));
         }
+        // CPython's constructor takes exactly five, and five this value cannot
+        // keep: `UnicodeDecodeError('x')` is a TypeError there.
+        if name == "UnicodeDecodeError" && args.len() != 5 {
+            return Err(unicode_decode_arity(args.len()));
+        }
+        // `[Errno N] …` is how an OS error the ENGINE raised spells itself, and
+        // `ops::errno_args` reads `args` back from it. One built here with that
+        // text has `args == (text,)` and no errno; refusing it keeps the
+        // spelling unambiguous.
+        if let Some(Value::Str(s)) = args.first() {
+            if s.starts_with("[Errno ") {
+                return Err(unsupported(
+                    "exception",
+                    &format!("{name}() of a message spelled like an OS error's"),
+                ));
+            }
+        }
         // WHAT THIS VALUE CAN CARRY, and therefore what it must refuse.
         //
         // `Value::Exc` is a class name and ONE `Rc<str>`. CPython's exception
@@ -759,12 +814,23 @@ pub fn call_builtin(
             // string, so the two disagreed and `repr()` then quoted the lookup
             // form a second time (`KeyError("'k'")`).
             Some(v) if name == "KeyError" => fmt::repr(v)?,
+            // The empty MESSAGE is taken: it is how `raise ValueError`, `next()`'s
+            // StopIteration and a bare `assert` — all argument-less, `args ==
+            // ()` — are spelled. `ValueError('')` has `args == ('',)` and
+            // `repr` `ValueError('')`, so it is the one string this value
+            // cannot carry, and it refuses for the reason `ValueError()` does.
+            Some(Value::Str(s)) if s.is_empty() => {
+                return Err(unsupported(
+                    "exception",
+                    &format!("{name}(''), which this value cannot tell from {name}()"),
+                ))
+            }
             Some(Value::Str(s)) => s.to_string(),
             Some(other) => {
                 return Err(unsupported(
                     "exception",
                     &format!(
-                        "{name}({}), whose argument is not a string and so cannot be read back                          from the message",
+                        "{name}({}), of a non-str argument                          from the message",
                         fmt::repr(other)?
                     ),
                 ))
@@ -937,14 +1003,47 @@ pub fn call_builtin(
             if base != 0 && !(2..=36).contains(&base) {
                 return Err(value_err("int() base must be >= 2 and <= 36, or 0"));
             }
+            if explicit_base && args.first().is_none() {
+                return Err(type_err("int() missing string argument"));
+            }
             if explicit_base && !matches!(args.first(), Some(Value::Str(_)) | Some(Value::Bytes(_)))
             {
                 return Err(type_err("int() can't convert non-string with explicit base"));
             }
-            match args.first() {
+            // `int(b'ff', 16)` is 255. The bytes arm used to recurse with
+            // `Args::one(str)`, which DROPPED a positional base: `int(b'ff',
+            // 16)` raised a base-10 ValueError and `int(hexlify(b'\x01\x02'),
+            // 16)` printed 102 at exit 0 where CPython prints 258. A bytes
+            // literal is now read as the same text, with the caller's base,
+            // and only the message differs: CPython names the BYTES repr.
+            // Only ASCII is text to CPython here — it never decodes, so a
+            // non-ASCII byte (`b'\xd9\xa1'`, an Arabic-Indic digit in
+            // UTF-8) is an invalid literal, not a digit.
+            let text;
+            let first = match args.first() {
+                Some(Value::Bytes(b)) => {
+                    if !b.is_ascii() {
+                        return Err(value_err(format!(
+                            "invalid literal for int() with base {base}: {}",
+                            int_bytes_repr(b)
+                        )));
+                    }
+                    text = Value::Str(decode_utf8(b)?.into());
+                    Some(&text)
+                }
+                o => o,
+            };
+            let lit = |s: &str| -> R<String> {
+                match args.first() {
+                    Some(Value::Bytes(b)) => Ok(int_bytes_repr(b)),
+                    _ => int_literal_repr(s),
+                }
+            };
+            match first {
                 None => ival(0),
                 Some(Value::Str(s)) => {
-                    let t = s.trim();
+                    let norm = ascii_digits(s);
+                    let t = norm.trim();
                     let (t, neg) = match t.strip_prefix('-') {
                         Some(r) => (r, true),
                         None => (t.strip_prefix('+').unwrap_or(t), false),
@@ -973,7 +1072,7 @@ pub fn call_builtin(
                             if digits.starts_with('0') && digits.chars().any(|c| c != '0') {
                                 return Err(value_err(format!(
                                     "invalid literal for int() with base 0: {}",
-                                    int_literal_repr(s)?
+                                    lit(s)?
                                 )));
                             }
                         }
@@ -987,10 +1086,17 @@ pub fn call_builtin(
                     } else {
                         t
                     };
-                    if !underscores_are_between_digits(t2, base as u32, t2.len() < t.len()) {
+                    // ONE sign, and only before the prefix. The sign has been
+                    // stripped above, so a second one here is malformed — and
+                    // `from_str_radix` would have read it as the sign: `int(
+                    // '--12')` printed 12 and `int('0x-1', 16)` printed -1 at
+                    // exit 0, where CPython raises ValueError for both.
+                    if t2.starts_with(['+', '-'])
+                        || !underscores_are_between_digits(t2, base as u32, t2.len() < t.len())
+                    {
                         return Err(value_err(format!(
                             "invalid literal for int() with base {reported}: {}",
-                            int_literal_repr(s)?
+                            lit(s)?
                         )));
                     }
                     let cleaned: String = t2.chars().filter(|c| *c != '_').collect();
@@ -1071,7 +1177,7 @@ pub fn call_builtin(
                         Err(_) => {
                             return Err(value_err(format!(
                                 "invalid literal for int() with base {reported}: {}",
-                                int_literal_repr(s)?
+                                lit(s)?
                             )))
                         }
                     }
@@ -1084,10 +1190,6 @@ pub fn call_builtin(
                 #[cfg(feature = "cap-re")]
                 Some(v @ (Value::Pattern(_) | Value::Match(_))) => {
                     return Err(crate::re::guard_one(v, "int() of").unwrap_err())
-                }
-                Some(Value::Bytes(b)) => {
-                    let s = decode_utf8(b)?;
-                    return call_builtin(it, "int", &mut Args::one(Value::Str(s.into())), kw);
                 }
                 Some(other) => {
                     return Err(type_err(format!(
@@ -1106,36 +1208,28 @@ pub fn call_builtin(
             Some(v @ (Value::Pattern(_) | Value::Match(_))) => {
                 return Err(crate::re::guard_one(v, "float() of").unwrap_err())
             }
-            Some(Value::Str(s)) => {
-                let t = s.trim();
-                let lower = t.to_ascii_lowercase();
-                match lower.as_str() {
-                    "inf" | "+inf" | "infinity" | "+infinity" => Value::Float(f64::INFINITY),
-                    "-inf" | "-infinity" => Value::Float(f64::NEG_INFINITY),
-                    "nan" | "+nan" | "-nan" => Value::Float(f64::NAN),
-                    // Same underscore rule as `int()`: between digits only, so
-                    // `float('1_')` is a ValueError and not 1.0. Checked on the
-                    // sign-stripped body, since `float('-1_0')` is fine.
-                    _ if !underscores_are_between_digits(
-                        t.strip_prefix(['-', '+']).unwrap_or(t),
-                        10,
-                        false,
-                    ) =>
-                    {
+            // `float('１２')` is 12.0: CPython reads every Unicode decimal digit
+            // (and Unicode whitespace) as its ASCII counterpart first.
+            Some(Value::Str(s)) => match parse_float(&ascii_digits(s)) {
+                Some(v) => Value::Float(v),
+                None => {
+                    return Err(value_err(format!(
+                        "could not convert string to float: {}",
+                        fmt::str_repr(s)?
+                    )))
+                }
+            },
+            // `float(b'1.5')`: CPython parses ASCII bytes as it parses a str,
+            // and reports a failure with the BYTES' repr.
+            Some(b @ Value::Bytes(x)) => {
+                match std::str::from_utf8(x).ok().filter(|t| t.is_ascii()).and_then(parse_float) {
+                    Some(v) => Value::Float(v),
+                    None => {
                         return Err(value_err(format!(
                             "could not convert string to float: {}",
-                            fmt::str_repr(s)?
+                            fmt::repr(b)?
                         )))
                     }
-                    _ => match t.replace('_', "").parse::<f64>() {
-                        Ok(v) => Value::Float(v),
-                        Err(_) => {
-                            return Err(value_err(format!(
-                                "could not convert string to float: {}",
-                                fmt::str_repr(s)?
-                            )))
-                        }
-                    },
                 }
             }
             // `float(2**100)` needs the round-to-nearest a wide integer does
@@ -1185,13 +1279,8 @@ pub fn call_builtin(
                         }
                     }
                     other => {
-                        for pair in it.iter_collect(other.clone())? {
-                            let kv = it.iter_collect(pair)?;
-                            if kv.len() != 2 {
-                                return Err(value_err(
-                                    "dictionary update sequence element has length != 2",
-                                ));
-                            }
+                        for (i, pair) in it.iter_collect(other.clone())?.into_iter().enumerate() {
+                            let kv = dict_pair(it, pair, i)?;
                             d.insert(kv[0].clone(), kv[1].clone())?;
                         }
                     }
@@ -1940,6 +2029,10 @@ pub fn call_builtin(
             if crate::hashlib::as_hasher(&v).is_some() {
                 return Err(crate::hashlib::not_iterable());
             }
+            #[cfg(feature = "cap-random")]
+            if crate::randobj::as_random(&v).is_some() {
+                return Err(unsupported("random", "iter() of a Random instance"));
+            }
             if let Value::IterObj(..) = v {
                 return Ok(v);
             }
@@ -2121,27 +2214,87 @@ pub fn call_builtin(
                 .get(1)
                 .cloned()
                 .ok_or_else(|| type_err("isinstance expected 2 arguments, got 1"))?;
+            // A class a capability holds as a MODULE ATTRIBUTE — `csv.DictReader`,
+            // `itertools.product` — is a `Value::Bound`, not the `Value::Builtin`
+            // the arms below compare, so it fell to `arg 2 must be a type, not
+            // type`: a TypeError at exit 1 where CPython answers True or False.
+            // The itertools classes are answered: their instances are
+            // `IterObj`s whose kind IS the class's tp_name, so the name compare
+            // below is exact. `csv.DictReader` still refuses.
+            let class = |c: &Value| -> Option<&'static str> {
+                match c {
+                    Value::Builtin(b) => Some(*b),
+                    #[cfg(feature = "cap-itertools")]
+                    Value::Bound(m, _) if matches!(**m, Value::Module("itertools")) => {
+                        match callable_kind(c) {
+                            Some(crate::value::Callable::Class(cls)) => Some(cls),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                }
+            };
+            #[cfg(feature = "cap-csv")]
+            {
+                let held = |c: &Value| {
+                    class(c).is_none()
+                        && matches!(c, Value::Bound(..))
+                        && matches!(callable_kind(c), Some(crate::value::Callable::Class(_)))
+                };
+                let hit = match &cls {
+                    Value::Tuple(t) => t.iter().any(held),
+                    c => held(c),
+                };
+                if hit {
+                    return Err(unsupported(
+                        "isinstance",
+                        "isinstance() against a class a capability module holds as an attribute",
+                    ));
+                }
+            }
+            // `isinstance(1, 3)`: the wording is 3.10's (unions); 3.9 has no
+            // union to name (measured on 3.9.6 and 3.11.15 through 3.14.5).
+            let not_a_type = || {
+                type_err(if REF_PY_MINOR >= 10 {
+                    "isinstance() arg 2 must be a type, a tuple of types, or a union"
+                } else {
+                    "isinstance() arg 2 must be a type or tuple of types"
+                })
+            };
+            // A tuple is tried LEFT TO RIGHT and stops at the first match, so
+            // `isinstance(1, (int, 3))` is True and `(str, 3)` the TypeError:
+            // the names up to the first non-class are what is compared, and
+            // the non-class raises only if none of them matched.
+            let mut bad = false;
             // `&'static str`, not `String`: these come out of `Value::Builtin`,
             // which already interns them, and building a `String` per class was
             // an allocation for a comparison.
             let names: Vec<&'static str> = match &cls {
-                Value::Tuple(t) => t
-                    .iter()
-                    .map(|c| match c {
-                        Value::Builtin(b) => Ok(*b),
-                        other => Err(type_err(format!(
-                            "isinstance() arg 2 must be a type, not {}",
-                            type_name(other)
-                        ))),
-                    })
-                    .collect::<R<Vec<_>>>()?,
-                Value::Builtin(b) => vec![*b],
-                other => {
-                    return Err(type_err(format!(
-                        "isinstance() arg 2 must be a type, not {}",
-                        type_name(other)
-                    )))
+                Value::Tuple(t) => {
+                    let mut out = Vec::new();
+                    for c in t.iter() {
+                        match class(c) {
+                            Some(n) => out.push(n),
+                            None => {
+                                // A nested tuple is legal in CPython and not
+                                // walked here.
+                                if matches!(c, Value::Tuple(_)) {
+                                    return Err(unsupported(
+                                        "isinstance",
+                                        "isinstance() against a nested tuple of classes",
+                                    ));
+                                }
+                                bad = true;
+                                break;
+                            }
+                        }
+                    }
+                    out
                 }
+                c => match class(c) {
+                    Some(n) => vec![n],
+                    None => return Err(not_a_type()),
+                },
             };
             // `isinstance(x, type)` asks whether x is a CLASS. lypning has no
             // class objects of its own and `Value::Builtin` is both `int` and
@@ -2162,7 +2315,7 @@ pub fn call_builtin(
             if matches!(v, Value::ReFlag(_)) && names.contains(&"int") {
                 return Ok(Value::Bool(true));
             }
-            Value::Bool(names.iter().any(|n| {
+            let hit = names.iter().any(|n| {
                 // An exception instance is matched through the SAME hierarchy
                 // table `except` uses, not by its type name. `type_name` of any
                 // `Exc` is the literal string "Exception", so comparing against
@@ -2183,7 +2336,11 @@ pub fn call_builtin(
                     // which is exactly the idiom that would have answered False
                     // at exit 0: `isinstance(c, dict)` is True in CPython.
                     || dict_subclass(n, t)
-            }))
+            });
+            if bad && !hit {
+                return Err(not_a_type());
+            }
+            Value::Bool(hit)
         }
         "open" => {
             // `file` is a keyword too — `open(file='f.txt', mode='w')` — and
@@ -2366,6 +2523,16 @@ pub fn call_builtin(
 /// literal where CPython gives 240, and 252 for a 210-x one where CPython still
 /// gives 240. Measured across n = 100, 200, 210, 220 and 5000 on this box's
 /// CPython. (py-b00b60452eac)
+/// The BYTES spelling of [`int_literal_repr`]: CPython cuts the buffer to 200
+/// bytes before taking its repr, then the `%.200R` cut applies on top.
+fn int_bytes_repr(b: &[u8]) -> String {
+    let r = fmt::bytes_repr(&b[..b.len().min(200)]);
+    match r.char_indices().nth(200) {
+        Some((cut, _)) => r[..cut].to_string(),
+        None => r,
+    }
+}
+
 fn int_literal_repr(s: &str) -> R<String> {
     let r = fmt::str_repr(s)?;
     Ok(match r.char_indices().nth(200) {
@@ -2657,4 +2824,73 @@ fn round_half_even(f: f64, ndigits: i64) -> R<f64> {
         return Ok((0.0f64).copysign(f) * scale);
     }
     Ok(r * scale)
+}
+
+/// `raise UnicodeDecodeError` / `UnicodeDecodeError('x')`: CPython's arity
+/// TypeError, word for word.
+pub fn unicode_decode_arity(n: usize) -> LypningError {
+    type_err(format!("function takes exactly 5 arguments ({n} given)"))
+}
+
+/// `float(str)`'s parse, shared with `float(bytes)`.
+fn parse_float(s: &str) -> Option<f64> {
+    let t = s.trim();
+    let lower = t.to_ascii_lowercase();
+    match lower.as_str() {
+        "inf" | "+inf" | "infinity" | "+infinity" => Some(f64::INFINITY),
+        "-inf" | "-infinity" => Some(f64::NEG_INFINITY),
+        "nan" | "+nan" => Some(f64::NAN),
+        // The sign bit survives: `math.copysign(1.0, float('-nan'))` is -1.0
+        // in CPython, and was 1.0 here.
+        "-nan" => Some(-f64::NAN),
+        // Same underscore rule as `int()`: between digits only, so
+        // `float('1_')` is a ValueError and not 1.0. Checked on the
+        // sign-stripped body, since `float('-1_0')` is fine.
+        _ if !underscores_are_between_digits(t.strip_prefix(['-', '+']).unwrap_or(t), 10, false) => {
+            None
+        }
+        _ => t.replace('_', "").parse::<f64>().ok(),
+    }
+}
+
+/// Element `i` of a `dict(seq)` / `d.update(seq)` sequence, as its two items,
+/// with `dict_merge`'s own errors (CPython 3.9-3.14, measured on 3.9.6,
+/// 3.11.15, 3.12.13, 3.13.13 and 3.14.5): `#i has length n; 2 is required`,
+/// and for an element that is not iterable at all `cannot convert ... #i to a
+/// sequence` — which 3.14 rewords to `object is not iterable` with that
+/// sentence as a NOTE, a traceback line no exception here carries: refused
+/// there.
+pub fn dict_pair(it: &mut Interp, pair: Value, i: usize) -> R<Vec<Value>> {
+    let kv = match &pair {
+        Value::List(_) | Value::Tuple(_) => it.iter_collect(pair)?,
+        _ => {
+            let mut iter = match it.make_iter(pair) {
+                Ok(x) => x,
+                Err(e) if matches!(e.kind(), ErrKind::Exc(x) if x.kind == "TypeError") => {
+                    if REF_PY_MINOR >= 14 {
+                        return Err(unsupported(
+                            "exception-note",
+                            "a dict update element that is not a sequence, which CPython 3.14 annotates",
+                        ));
+                    }
+                    return Err(type_err(format!(
+                        "cannot convert dictionary update sequence element #{i} to a sequence"
+                    )));
+                }
+                Err(e) => return Err(e),
+            };
+            let mut out = Vec::new();
+            while let Some(x) = it.iter_next(&mut iter)? {
+                out.push(x);
+            }
+            out
+        }
+    };
+    if kv.len() != 2 {
+        return Err(value_err(format!(
+            "dictionary update sequence element #{i} has length {}; 2 is required",
+            kv.len()
+        )));
+    }
+    Ok(kv)
 }

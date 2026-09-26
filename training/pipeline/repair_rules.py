@@ -33,16 +33,6 @@ import re
 # --------------------------------------------------------------------------
 
 PRELUDE = {
-    "median": (
-        "def _median(xs):\n"
-        "    s = sorted(xs)\n"
-        "    n = len(s)\n"
-        "    if n % 2:\n"
-        "        return s[n // 2]\n"
-        "    return (s[n // 2 - 1] + s[n // 2]) / 2\n"),
-    "mean": (
-        "def _mean(xs):\n"
-        "    return sum(xs) / len(xs)\n"),
     "reduce": (
         "def _reduce(f, xs, *rest):\n"
         "    it = list(xs)\n"
@@ -53,12 +43,6 @@ PRELUDE = {
         "    for x in it:\n"
         "        acc = f(acc, x)\n"
         "    return acc\n"),
-    "chain": (
-        "def _chain(*groups):\n"
-        "    out = []\n"
-        "    for g in groups:\n"
-        "        out.extend(list(g))\n"
-        "    return out\n"),
     # CPython's own heap algorithm, reimplemented in the subset. `nsmallest` is
     # a one-line substitution but `heappush`/`heappop` are a discipline, and a
     # program that balances two heaps to track a running median cannot be
@@ -262,8 +246,8 @@ def _drop_import(src, module):
         stripped = line.strip()
         if re.match(r"^from\s+%s\s+import\s" % re.escape(module), stripped):
             continue
-        # The multi-import case FIRST. `import statistics, sys` must lose only
-        # `statistics`: matching the plain form first would drop the whole line
+        # The multi-import case FIRST. `import heapq, sys` must lose only
+        # `heapq`: matching the plain form first would drop the whole line
         # and take `sys` with it, which fails verification later as a puzzling
         # cpython-mismatch rather than as the import bug it is.
         m = re.match(r"^import\s+(.+)$", stripped)
@@ -288,32 +272,11 @@ def _sub_calls(src, module, attr, replacement):
     return src
 
 
-def rule_statistics(src):
-    if "statistics" not in src:
-        return None
-    body, need = src, []
-    for attr, helper in (("median", "_median"), ("fmean", "_mean"), ("mean", "_mean")):
-        if re.search(r"\b(statistics\.%s|^from\s+statistics\s+import[^\n]*\b%s\b)" % (attr, attr),
-                     body, re.M):
-            body = _sub_calls(body, "statistics", attr, helper)
-            need.append("median" if helper == "_median" else "mean")
-    if not need:
-        return None
-    return "".join(PRELUDE[n] for n in dict.fromkeys(need)) + _drop_import(body, "statistics")
-
-
 def rule_functools(src):
     if "functools" not in src or "reduce" not in src:
         return None
     return PRELUDE["reduce"] + _drop_import(
         _sub_calls(src, "functools", "reduce", "_reduce"), "functools")
-
-
-def rule_itertools(src):
-    if "itertools" not in src or "chain" not in src:
-        return None
-    return PRELUDE["chain"] + _drop_import(
-        _sub_calls(src, "itertools", "chain", "_chain"), "itertools")
 
 
 def rule_operator(src):
@@ -704,8 +667,7 @@ def _withdrawn_rule_fraction_exact(src):
 
 
 RULES = [
-    ("statistics", rule_statistics), ("functools", rule_functools),
-    ("itertools", rule_itertools), ("operator", rule_operator),
+    ("functools", rule_functools), ("operator", rule_operator),
     ("copy", rule_copy), ("heapq", rule_heapq), ("bisect", rule_bisect),
     ("array", rule_array), ("string", rule_string_constants),
     ("decimal", rule_decimal),
@@ -714,6 +676,12 @@ RULES = [
     # refuses `class` outright (`class: class definition`), so the repair could
     # never be native. Fractions move to the CEILING list in synth_generate.py —
     # keeping the import is the right answer, which is what a control is for.
+    # `statistics` and `itertools` withdrawn 2026-09-26: lypning-l now serves
+    # both imports natively (PR #128), so each rule rewrote a module the engine
+    # serves, which gate B scores as a supported-import regression. The rules
+    # and their preludes (`median`, `mean`, `chain`) are deleted, not renamed.
+    # Their pairs in published banks are still to be retired by the training
+    # owner (training/ORCHESTRATION.md); nothing here touches a bank.
 ]
 
 #: The modules the rules rewrite, in RULES order. Two invariants hang on this

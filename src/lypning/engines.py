@@ -57,26 +57,52 @@ SPECTRUM = (LYPNING, LYPNING_L)
 #: :func:`chain_after_refusal`: a sibling built with the same set cannot answer
 #: at runtime what a smaller one could not, so it is not tried.
 #:
-#: ``cap-base64`` (``b64encode`` / ``b64decode`` / ``urlsafe_b64encode`` /
+#: ``cap-ast`` (``import ast`` and ``ast.literal_eval`` over a ``str``; every
+#: other name, ``ast.parse`` included, refuses as ``module-attr`` from the
+#: WALK), ``cap-base64`` (``b64encode`` / ``b64decode`` / ``urlsafe_b64encode`` /
 #: ``urlsafe_b64decode``; the rest of the module refuses as ``module-attr`` from
-#: the WALK), ``cap-collections`` (``collections.Counter`` / ``defaultdict``),
+#: the WALK), ``cap-binascii`` (``hexlify`` / ``b2a_hex`` / ``unhexlify`` /
+#: ``a2b_hex`` / ``a2b_base64`` / ``b2a_base64``; ``Error``, ``crc32`` and the
+#: rest refuse as ``module-attr`` from the WALK), ``cap-collections`` (``collections.Counter`` / ``defaultdict``),
 #: ``cap-csv`` (``csv.reader`` / ``csv.DictReader``; the writers are absent, so
-#: they refuse as ``module-attr`` from the WALK), ``cap-glob`` (``glob.glob``,
+#: they refuse as ``module-attr`` from the WALK), ``cap-future`` (``from
+#: __future__ import`` at the head of a program, a pass over the parse that
+#: never evaluates an annotation under ``annotations``; every other future use
+#: refuses before anything runs), ``cap-glob`` (``glob.glob``,
 #: whose every refusal is decided in the WALK by every variant, so the feature
 #: buys the LIST and nothing else), ``cap-hashlib`` (``hashlib.md5`` / ``sha1``
 #: / ``sha256`` / ``sha512``; every other name on the module refuses as
 #: ``module-attr`` from the WALK, out of ``route::MODULE_ATTRS``),
-#: ``cap-pathlib`` (``pathlib.Path``) and
-#: ``cap-re`` (the ``re`` matcher) are on the larger
-#: variant ONLY. The core is
+#: ``cap-itertools`` (``itertools.product`` / ``combinations``; every other name
+#: refuses as ``module-attr`` from the WALK, out of the same table),
+#: ``cap-difflib`` (``import difflib`` and nothing on it: its table row is
+#: EMPTY, so every ``difflib.<name>`` refuses from the WALK),
+#: ``cap-pathlib`` (``pathlib.Path``), ``cap-random`` (``random.Random(int)``,
+#: ``random.sample`` / ``random.shuffle``, and ``sys.version_info`` as ``[0]``,
+#: ``[:2]``, ``.major`` / ``.minor`` or compared with a tuple of at most two
+#: items; it serves no module, so its routing half is ``route::CAP_ATTRS``),
+#: ``cap-re`` (the ``re`` matcher),
+#: ``cap-statistics`` (``mean`` / ``median`` / ``median_low`` / ``median_high``;
+#: every other name refuses as ``module-attr`` from the WALK, out of
+#: ``route::MODULE_ATTRS``),
+#: ``cap-textwrap`` (``dedent`` / ``indent`` / ``wrap`` / ``fill`` /
+#: ``shorten``; ``TextWrapper`` and every unserved keyword refuse from the
+#: WALK) and
+#: ``cap-time`` (``time.time`` / ``monotonic`` / ``perf_counter`` and their
+#: ``_ns`` forms, a ``sleep`` the WALK bounds to one literal second outside any
+#: loop or function, and the one ``strftime(<literal>, gmtime())`` UTC stamp;
+#: everything local-time refuses as ``module-attr`` from the WALK) are on the
+#: larger variant ONLY. The core is
 #: frozen: it gains no capability feature, and a capability that appeared in both
 #: columns would buy the chain nothing — the whole point of the column is that
 #: the sets differ.
 VARIANT_CAPS: dict = {
     LYPNING: (),
     LYPNING_L: (
-        "cap-base64", "cap-bigint", "cap-collections", "cap-csv", "cap-glob",
-        "cap-hashlib", "cap-pathlib", "cap-re",
+        "cap-ast", "cap-base64", "cap-bigint", "cap-binascii", "cap-collections",
+        "cap-csv", "cap-difflib", "cap-future", "cap-glob", "cap-hashlib",
+        "cap-itertools", "cap-pathlib", "cap-random", "cap-re",
+        "cap-statistics", "cap-textwrap", "cap-time",
     ),
 }
 
@@ -901,12 +927,13 @@ ONLY_CPYTHON_REFUSALS = frozenset({
     "set-method",         # ...including hash(-1) == -2, reserved as an error sentinel
     "dict-view",          # keys/items are set-like, values compare by identity
     "exception-chaining",  # __context__/__cause__ do not exist one tier down
-    "glob-order",         # a glob() result whose order shows: os.scandir order, as unrepeatable as a set's
+    "glob-order",         # iglob outside an order-blind wrapper, glob as a value, or a shown order over a changed dir
     "repr-unicode",       # repr() escapes a character set nothing else reproduces
     "percent-format",     # the '0' flag, grouping, and their interaction with '-'
     "del",                # the ValueError text of a failed list.remove/index
     "json",               # hooks, and control characters inside a string
     "math",               # a domain error, a TypeError, a wrong count — message text CPython owns
+    "name-hint",          # an uncaught NameError on a module name: CPython's import hint needs its suggestion search
     "random",             # mp's generator is not MT19937; a seeded stream there is a plausible wrong number
 })
 

@@ -344,7 +344,9 @@ REFUSED = [
     B + "print(base64.standard_b64encode(b'hi'))",
     B + "print(base64.standard_b64decode(b'aGk='))",
     "from base64 import b32encode\nprint(b32encode(b'hi'))",
-    "import binascii\nprint(binascii.a2b_base64(b'aGk='))",
+    # `binascii` is `cap-binascii`'s now (`tests/test_binascii_grid.py`);
+    # what it does not serve still refuses
+    "import binascii\nprint(binascii.crc32(b'aGk='))",
     # the argument count
     B + "print(base64.b64encode())",
     B + "print(base64.b64decode())",
