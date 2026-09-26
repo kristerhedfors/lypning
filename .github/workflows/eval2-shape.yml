@@ -2,10 +2,9 @@ name: eval-2 chunk shape (aggregates only)
 
 # Free and read-only: the prompt-length shape of a finish's evaluation chunks,
 # from the private artifact repo. Lengths and counts; no case text.
+# Dispatch only: a push to round02/** would also run round02.yml's bootstrap,
+# which rebuilds the verifier Space (training/ENGINE_BUMP.md §6).
 on:
-  push:
-    branches: ["round02/**"]
-    paths: [".github/scripts/eval2_shape.py", ".github/workflows/eval2-shape.yml"]
   workflow_dispatch:
 
 permissions:

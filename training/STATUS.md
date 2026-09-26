@@ -11,6 +11,11 @@ under `runs/`, the reviews under `reviews/` and the round-02 smoke report.
 
 ## 0. Where we are, in one paragraph
 
+*2026-09-26: training is paused for engine coverage and resumes on the next
+engine — `training/START_NEXT_ROUND.md` (top section), then
+`training/ENGINE_BUMP.md`, then `training/RAMP.md`. The paragraph below is the
+state of 2026-09-18 and its dollar figure predates every later job.*
+
 **Five days and roughly $105 have bought four adapters and no informative
 result, positive or negative.** Every finding so far is about the instrument and
 none is about the model — which is the signature of measuring an effect smaller
@@ -420,8 +425,11 @@ answer it later received.
 
 ## 10. The live sequence: the S-ladder
 
-**This is the one home for what runs next**, added 2026-09-16 as step 8 of
-`ASSESSMENT.md` §6. Every other ordering in this tree is either history or
+**This is the one home for whether a round runs**, added 2026-09-16 as step 8 of
+`ASSESSMENT.md` §6. *Since 2026-09-26 the order of work is
+`training/START_NEXT_ROUND.md` → `training/ENGINE_BUMP.md` →
+`training/RAMP.md`, and `training/RAMP.md` owns how billed spend climbs and its
+per-rung ceilings; this section still decides whether a round may run.* Every other ordering in this tree is either history or
 mechanism, and each says which it is. One document was added beside it on
 2026-09-19: [`ROUND_READINESS.md`](ROUND_READINESS.md) owns **what is left**
 before a GPU is booked for the round being prepared — the carve, the publish,

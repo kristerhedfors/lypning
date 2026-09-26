@@ -11,7 +11,65 @@ Fable's training writeups; Fable runs approved training loops. Read
 [FABLE_REPORT_TEMPLATE.md](FABLE_REPORT_TEMPLATE.md) at every handoff, including
 blocked/no-run outcomes. New harvesting data never mutates your active bundle.
 
+## State on 2026-09-26 and how to resume
+
+**Training is paused; engine coverage of `lypning`/`lypning-l` continues in a
+parallel session, and training resumes afterwards on that next engine.** The
+user decided this on 2026-09-26, and added that spend must now climb gradually,
+rung by rung, because almost every paid training and eval step so far has
+crashed before its planned result.
+
+Where it stopped. Arm A seed 1111 (`PLAN.md` Step 4) completed SFT in HF job
+`6ab52a686b030d633f68e503` (Actions `36008052722`, 2026-09-24). Its finish, HF
+job `6ab6a20c6b030d633f691a95` (Actions `36161157776`, 2026-09-25, about 3h50m
+of submit-job wall), completed base-test (1,260 draws, 1 engine mismatch) and
+sft-test (1,260 draws, 0), then ran out of CUDA memory in the prefill of
+base-eval2 chunk index 26 (the 27th of 51; `RAMP.md` §3). No eval-2 arm has finished on any seed. The fix,
+PR #130 (`--eval-prefill-tokens`, prefill in parts), merged 2026-09-26 as
+`9b17b32`. The seed-1111 salvage below was then dispatched: finish Actions
+`36239792036`, HF job `6ab7b0b76b030d633f693e48` — read its result before
+anything else here. **It completed 2026-09-26**: eval-2 correct-and-native +5.30pp [+2.22, +8.88], correctness −0.12pp, gates A–C pass, pre-registered +3pp lower bound not met, one seed; the coverage worklist it produced is in `training/reports/2026-09-26-seed1111-finish-read.md` §3. Everything arm A trained and graded is bound
+to engine sha256 `3da77f03…` at verifier Space revision `eafca686…`, which the
+finish log (Actions `36161157776`) pinned and the bootstrap of Actions
+`36196784607` still read as the head at 2026-09-25T22:28Z.
+
+How to resume, in order:
+
+1. **Optional salvage of seed 1111, before any Space rebuild — under the
+   ramp.** It is an R8 rung straight after an R8 failure, on a `prefill_parts`
+   path that has never run on a GPU, so it is dispatched only after the
+   conditions in [`RAMP.md`](RAMP.md) §5 (an R0 unit case at the failing shape;
+   a billed longest-chunk slice or a written operator waiver; every
+   [`ENGINE_BUMP.md`](ENGINE_BUMP.md) §5 identity condition). After the user
+   merges #130, one finish redispatch runs all four arms again
+   (`round02_finish.sh` cannot skip the two completed test arms; about $5 of
+   the total):
+   `gh workflow run round02.yml --ref main -f stage=finish -f submit=SUBMIT -f seed=1111 -f finish_of=6ab52a686b030d633f68e503 -f sft_step=1050`.
+   It is projected near 520 of the 648-minute budget (PR #130 body, from the
+   failed job reaching chunk 26 in about 228 minutes), which is about $43 at
+   $5/h — an estimate, not a bill. It bills only on the user's explicit go. It
+   is possible **only while the Space head is still the pilot's revision and
+   main's `VERIFIER_MODULES` are byte-identical to the pilot's** (and
+   `QWEN_REV`, seed, draws and pool density unchanged): only `stage=finish`
+   holds the Space, so any other `round02.yml` dispatch, or any push to a
+   `round02/**` branch, from a commit whose engine differs rebuilds the Space,
+   and any merged edit to a verifier module moves `verifier_sha256`; either
+   makes this finish refuse for free in `finish_preflight.py`. If the user declines, record arm A on engine
+   `3da77f03…` as closed without eval-2 in `ORCHESTRATION.md`.
+2. **Move to the next engine** with [`ENGINE_BUMP.md`](ENGINE_BUMP.md): every
+   training artifact that is labelled by the engine (bundles, bank labels,
+   subset spec, stdlib labels, repair-rule pairs, SFT targets, the Space) and
+   how each is regenerated. A new engine is a new arm; old seeds never join it.
+3. **Climb the spend ramp** in [`RAMP.md`](RAMP.md), one rung per explicit user
+   go, starting from the free rung. It also holds the ledger of billed attempts.
+4. Then continue `PLAN.md` Step 4 on the new engine.
+
+Every section below this one is history, kept for its evidence; where it names
+a next action, this section supersedes it.
+
 ## Latest — 2026-09-22, evening: Step 2 has paid rungs; GPU held
+
+*Superseded on 2026-09-26 by the section above; kept as history.*
 
 Start at [`PLAN.md`](PLAN.md) and the independent review
 [`reviews/2026-09-22-claude-step2-s4-review.md`](reviews/2026-09-22-claude-step2-s4-review.md).

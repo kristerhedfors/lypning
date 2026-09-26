@@ -14,6 +14,23 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-26** — Pause training for engine coverage; an engine-bump checklist and a spend ramp ([#131](https://github.com/kristerhedfors/lypning/pull/131))
+
+- Training resumes on the next `lypning-l`, as a new arm:
+  `training/ENGINE_BUMP.md` maps every engine-labelled training artifact and
+  the order to rebuild it.
+- `training/RAMP.md` sets billed spend to climb one rung per explicit go, with
+  per-rung ceilings, and ledgers every paid failure since 2026-09-15.
+- The seed-1111 finish (HF job 6ab6a20c6b030d633f691a95, Actions 36161157776,
+  2026-09-25) becomes an optional salvage under the ramp's stop rule.
+- Seed 1111 completed (HF job 6ab7b0b76b030d633f693e48, 2026-09-26): eval-2
+  correct-and-native +5.30pp [+2.22, +8.88], correctness −0.12pp, gates A–C
+  pass, one seed. `.github/scripts/finish_readout.py` prints the aggregates and
+  the stdlib coverage worklist (`training/reports/2026-09-26-seed1111-finish-read.md`).
+- `training/START_NEXT_ROUND.md` gains the resume order. The round02-plan,
+  -preflight, -launch and -evidence skills warn that a `round02/**` push
+  rebuilds the verifier Space (Actions 36196784607, 2026-09-25).
+
 **2026-09-26** — Binding errors refuse everywhere; lypning-l serves `sys.version` and `unicodedata` ([#136](https://github.com/kristerhedfors/lypning/pull/136))
 
 - A call whose arguments do not bind — too many or missing arguments, an
