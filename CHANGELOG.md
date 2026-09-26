@@ -38,6 +38,11 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   this). A 3.14-built engine refuses the two errors whose wording 3.14
   changed. Before 3.14, module-level annotations refuse. Listing
   `os.environ` is run-specific in the grader.
+- Training: recipes for the 19 new refusal kinds, and `subset-spec.md`
+  regenerated. The `statistics` and `itertools` repair rules are withdrawn,
+  because lypning-l now serves both imports and gate B would score their
+  pairs as regressions. **Their pairs in the published banks still need
+  retiring by the training owner**; no bank was touched.
 - The Pages landing page has a dated **Coverage** section. [L-COVERAGE.md](docs/L-COVERAGE.md)
   gains the `ast` and hex rows.
 
