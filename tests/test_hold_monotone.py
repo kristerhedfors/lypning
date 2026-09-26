@@ -48,6 +48,8 @@ MENTIONS = [
     "import sys\nversion_info = 3\n",
     "import sys\nprint('version_info')\n",
     "# time statistics textwrap binascii\n",
+    "# ast.parse, ast.literal_eval, last, fast\n",
+    "last = [1]\nprint(last[-1], 'ast')\n",
 ]
 
 #: What a held run refuses and the core answers.
@@ -68,11 +70,13 @@ PROBES = [m + t for m in MENTIONS for t in TAILS] + [m + BIG for m in MENTIONS[:
 #: core routes them past itself and refuses where the capability runs, so the
 #: hold applies and the uncaught error refuses.
 HELD = [
+    "x = bytes.fromhex('41')\nundefined_name",
     "import itertools\nprint(1)\nprnt(1)",
     "def f():\n    pass\nimport time\nundefined_name",
     "import random\nprint(random.Random(5).randint(1, 3))\nundefined_name",
     "import sys\nprint(sys.version_info[0] >= 3)\nundefined_name",
     "from __future__ import annotations\nundefined_name",
+    "import ast\nprint(ast.literal_eval('[1]'))\nundefined_name",
 ]
 
 
@@ -104,6 +108,11 @@ ARMED = [
     "try:\n    print(1)\nexcept time.error:\n    pass",
     "try:\n    print(1)\nexcept textwrap.X:\n    pass",
     "try:\n    print(1)\nexcept binascii.Error:\n    pass",
+    "try:\n    print(1)\nexcept ast.AST:\n    pass",
+    "if False:\n    import ast\nprint(undefined_name)",
+    "if False:\n    import ast\n    ast.parse('x')\nprint('a' * 9000000)",
+    "ast = 'x'\nprint(ast.upper())",
+    "def f(ast): return ast.parse\nprint(f(str)('1'))",
     "time = 1\ntry:\n    print(1)\nexcept time.error:\n    pass",
     "try:\n    print(1)\nexcept ValueError:\n    pass\nexcept (glob.X, time.Y):\n    pass",
     # The final verification of 979b527: an import that never runs, and a

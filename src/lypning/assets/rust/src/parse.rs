@@ -194,6 +194,18 @@ impl Parser {
     fn peek_at(&self, n: usize) -> &Tok {
         &self.t[(self.i + n).min(self.t.len() - 1)].tok
     }
+    /// `from __future__ import annotations` makes every annotation lazy on
+    /// any version. Only lypning-l serves a `__future__` head; the core
+    /// refuses the import before anything runs, so it never asks.
+    #[cfg(feature = "cap-future")]
+    fn future_annotations(&self) -> bool {
+        crate::route::future_names(&self.t, "annotations") > 0
+    }
+    #[cfg(not(feature = "cap-future"))]
+    fn future_annotations(&self) -> bool {
+        false
+    }
+
     fn line(&self) -> u32 {
         self.t[self.i.min(self.t.len() - 1)].line
     }
@@ -495,8 +507,18 @@ impl Parser {
                 let mut kinds = Vec::new();
                 let mut name = None;
                 if !self.is_op(":") {
+                    // Served: a name, a dotted name, or a flat parenthesised
+                    // tuple of them. Any other expression is valid Python —
+                    // `except ((A, B), C)`, `except E + (X,)`, and 3.14's
+                    // unparenthesised `except A, B` (PEP 758) — whose answer is
+                    // CPython's, so it refuses rather than dying as this
+                    // parser's SyntaxError.
+                    let odd = |_: &Self| unsupported("except", "clause");
                     if self.eat_op("(") {
                         loop {
+                            if !matches!(self.peek(), Tok::Name(_)) {
+                                return Err(odd(self));
+                            }
                             kinds.push(self.dotted_name()?);
                             if !self.eat_op(",") {
                                 break;
@@ -505,9 +527,18 @@ impl Parser {
                                 break;
                             }
                         }
-                        self.expect_op(")")?;
+                        if !self.is_op(")") {
+                            return Err(odd(self));
+                        }
+                        self.bump();
                     } else {
+                        if !matches!(self.peek(), Tok::Name(_)) {
+                            return Err(odd(self));
+                        }
                         kinds.push(self.dotted_name()?);
+                    }
+                    if !self.is_op(":") && !self.is_kw("as") {
+                        return Err(odd(self));
                     }
                     if self.eat_kw("as") {
                         name = Some(self.ident()?);
@@ -902,6 +933,15 @@ impl Parser {
         if self.is_op(":") {
             // Annotated assignment: `x: int = 1`. The annotation itself is
             // parsed and dropped: a 3.14 reference evaluates none of them here.
+            // Before 3.14 one at module level is EVALUATED and stored, so
+            // `x: Undefined = 1` is a NameError there — unless the program
+            // imports `from __future__ import annotations`. Refused: telling a
+            // harmless annotation from one that raises costs code the frozen
+            // core's text segment does not have (42 B, measured on musl).
+            // Compiled away on a 3.14 reference.
+            if crate::err::REF_PY_MINOR < 14 && !self.scope.fun && !self.future_annotations() {
+                return Err(unsupported("annotation", "a module-level annotation"));
+            }
             self.bump();
             self.expr()?;
             let value = if self.eat_op("=") { Some(self.value_list()?) } else { None };
@@ -1624,6 +1664,12 @@ impl Parser {
                     "False" => {
                         self.bump();
                         return Ok(Expr::False);
+                    }
+                    // Before 3.14 the module's annotations are a real dict the
+                    // program can read; from 3.14 (PEP 649) they are lazy. A
+                    // compile-time constant, so a 3.14 build carries none of it.
+                    "__annotations__" if crate::err::REF_PY_MINOR < 14 => {
+                        return Err(unsupported("annotation", "__annotations__"));
                     }
                     _ => {}
                 }

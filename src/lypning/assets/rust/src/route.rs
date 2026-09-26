@@ -55,6 +55,7 @@ pub const SPECTRUM: &[Variant] = &[
         // so the binary's own answer, this table and `engines.VARIANT_CAPS` are
         // one list and not three that happen to agree.
         caps: &[
+            "cap-ast",
             "cap-base64",
             "cap-bigint",
             "cap-binascii",
@@ -199,10 +200,19 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// refusal it raises is the `random` kind, which is only-CPython. Its routing
 /// half is [`CAP_ATTRS`], the attributes it adds to those two modules; the row
 /// is here so the spectrum declares the feature like every other.
+///
+/// `cap-ast` serves the `ast` MODULE — `literal_eval` over a `str`, and only
+/// the names [`MODULE_ATTRS`] lists ([`AST_SERVED`]; `ast.parse` is NOT one,
+/// because `parse.rs` accepts programs CPython's `ast.parse` rejects) — and
+/// answers no runtime kind: every `ast:` refusal is an input whose answer
+/// CPython owns (a `ValueError` naming an AST node, a warning, an escape or a
+/// number `lex.rs` may misread), and there is no rung above lypning-l to carry
+/// it to.
 pub const CAPS: &[(&str, &[&str], &[&str])] = &[
+    ("cap-ast", &["ast"], &[]),
     ("cap-base64", &["base64"], &[]),
     ("cap-bigint", &[], &["bigint", "int-div-precision"]),
-    ("cap-binascii", &["binascii"], &[]),
+    ("cap-binascii", &["binascii"], &["fromhex"]),
     ("cap-collections", &["collections"], &[]),
     ("cap-csv", &["csv"], &[]),
     ("cap-difflib", &["difflib"], &[]),
@@ -263,6 +273,15 @@ pub const CAPS: &[(&str, &[&str], &[&str])] = &[
 /// by its own `the_route_table_names_exactly_what_is_served`.
 pub const MODULE_ATTRS: &[(&str, &[&str])] = &[
     ("__future__", FUTURE_SERVED),
+    // Held to `pyast.rs` by its own
+    // `the_route_table_names_exactly_what_is_served`. `parse`, `walk`,
+    // `dump`, `unparse`, the node classes and `NodeVisitor` are blocked HERE,
+    // in the core's walk, and never reach the variant. Deliberately NO
+    // pre-run stop in lypning-l's own walk, as `textwrap` has: an `ast.parse`
+    // that never runs (`if False:`) is the core's answer (invariant 10), and
+    // one that runs refuses where it is evaluated, in a run `import ast` has
+    // already held reversible ([`HINT_HELD_CAPS`]).
+    ("ast", AST_SERVED),
     ("base64", BASE64_SERVED),
     // Held to `binascii.rs` by its own
     // `the_route_table_names_exactly_what_is_served`. `Error`, `crc32`,
@@ -312,6 +331,11 @@ pub const MODULE_ATTRS: &[(&str, &[&str])] = &[
     // own walk to refuse, before its first statement.
     ("time", TIME_SERVED),
 ];
+
+/// The `ast` names lypning-l serves — `route.rs`'s own table, for the reason
+/// [`BINASCII_SERVED`] is: the binary that routes has no `pyast.rs`.
+/// `ast.parse` is deliberately absent — see `pyast.rs`.
+pub const AST_SERVED: &[&str] = &["literal_eval"];
 
 /// The `time` names lypning-l serves — `route.rs`'s own table, for the reason
 /// [`TEXTWRAP_SERVED`] is: the CORE walks every served `time` call too
@@ -1267,6 +1291,9 @@ struct Requirements {
     /// [`core_admits`], and the core never asks it.
     #[cfg(feature = "cap-random")]
     core_attr: bool,
+    /// `.fromhex` was spelled — `cap-binascii`'s, which the core lacks.
+    #[cfg(feature = "cap-binascii")]
+    fromhex: bool,
     imports: BTreeSet<String>,
     blocker: Option<(String, String)>,
     aliases: Vec<(String, String)>,
@@ -1503,7 +1530,9 @@ impl Requirements {
     /// [`known_method`] is compiled per variant. Every other kind a walk
     /// produces means the same thing in both, so `blocker` alone carries it.
     fn block_method(&mut self, name: &str) {
-        self.block("method", format!(".{name}()"));
+        // `bytes.fromhex` is `cap-binascii`'s, so its block names a kind that
+        // capability's row lists and the router sends the program there.
+        self.block(if name == "fromhex" { "fromhex" } else { "method" }, format!(".{name}()"));
         if self.method_stop.is_none() {
             self.method_stop = Some(name.to_string());
         }
@@ -2046,10 +2075,10 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                     // own walk (#48). The same holds for every module a
                     // capability of this branch added — `statistics`
                     // (`except statistics.StatisticsError`), `itertools`,
-                    // `difflib`, `textwrap`, `time`: none serves a class.
+                    // `difflib`, `textwrap`, `time`, `ast`: none serves a class.
                     // `except csv.Error` keeps the route it had before these
                     // rows existed.
-                    if let Some((m @ ("binascii" | "statistics" | "itertools" | "difflib" | "textwrap" | "time"), leaf)) =
+                    if let Some((m @ ("binascii" | "statistics" | "itertools" | "difflib" | "textwrap" | "time" | "ast"), leaf)) =
                         dotted.as_ref().map(|(m, l)| (m.as_str(), *l))
                     {
                         req.escalate(m, leaf);
@@ -2282,7 +2311,9 @@ fn cap_method(name: &str, imports: &[String]) -> bool {
 /// the example is the record of the defect, not a claim about today's tables.
 fn method_wide_stop(method: Option<String>, imports: &[String]) -> Option<(String, String)> {
     let name = method?;
-    if cap_method(&name, imports) {
+    // Its block names `cap-binascii`'s own kind, which routes it; no import
+    // has to vouch for the name.
+    if cap_method(&name, imports) || name == "fromhex" {
         return None;
     }
     Some(("method".to_string(), format!(".{name}()")))
@@ -3676,6 +3707,7 @@ pub fn static_stop_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
 /// suggestion, which no variant computes (`err::forgot_import`).
 #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
 const HINT_HELD_CAPS: &[&str] = &[
+    "cap-ast",
     "cap-binascii",
     "cap-difflib",
     "cap-future",
@@ -3711,6 +3743,10 @@ fn core_lacks(req: &Requirements, future_head: bool) -> Vec<&'static str> {
     #[cfg(feature = "cap-random")]
     if req.core_attr {
         out.push("cap-random");
+    }
+    #[cfg(feature = "cap-binascii")]
+    if req.fromhex {
+        out.push("cap-binascii");
     }
     if future_head {
         out.push("cap-future");
@@ -4242,6 +4278,12 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                 // went to CPython, refused by the method name of the very
                 // function the module was served to run.
                 return;
+            }
+            // `bytes.fromhex` is `cap-binascii`'s, a capability the core
+            // lacks: the run is armed for it as for an import (`core_lacks`).
+            #[cfg(feature = "cap-binascii")]
+            if n.as_ref() == "fromhex" {
+                req.fromhex = true;
             }
             if !known_method(n)
                 && !pathlib_method(req, n)

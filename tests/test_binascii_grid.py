@@ -64,12 +64,28 @@ SERVED = [
     B + "for s in [b'aGk=!!!', b'aGk=====', b'aGk=\\n']:\n"
         "    print(repr(s), repr(binascii.a2b_base64(s)))\n",
     "import json, binascii\nprint(json.dumps(binascii.hexlify(b'\\x01').decode()))",
+    # `bytes.fromhex` (a classmethod, off the type or an instance) and UTF-8
+    # `decode(errors='replace')`: the sweep.json idiom of the 2026-09-25 harvest
+    "print(bytes.fromhex(' 0a ff\\t01\\n'), bytes.fromhex('0A'), bytes.fromhex('0a\\x0b0b'), "
+    "bytes.fromhex(''), b''.fromhex('41'))",
+    'def H(h):\n    return bytes.fromhex(h).decode("utf-8", "replace")\n'
+    "print(H('68c3a96c6c6fe2'), H('e282ac'), H('ed9fbf'), H('eda080'), H('f0908080'), "
+    "H('f48fbfbf'), H('f4908080'), H('c0af41eda080f09f98'))",
+    "print(b'a\\xffb\\xf4\\x90\\x80\\x80'.decode('utf-8', errors='replace'), "
+    "b'\\xe2\\x82x'.decode(errors='replace'), b'\\xc3'.decode('utf8', 'replace') == '\\ufffd')",
 ]
 
 #: CPython answers these with a message this engine does not write, or with a
 #: surface it does not have. Exit 90 and an EMPTY stdout, both — decided in the
 #: WALK, so the refusal lands before anything runs.
 REFUSED = [
+    "print(bytes.fromhex('0 a'))",                                 # ValueError
+    "print(bytes.fromhex('4'))",                                   # ValueError
+    "print(bytes.fromhex(b'0a'))",                                 # 3.14 only
+    "print(b'a\\xff'.decode('ascii', 'replace'))",               # another codec
+    "print(bytes.fromhex('ff').decode(errors='replace', foo=1))",  # TypeError
+    "print(bytes.fromhex('6f6b').decode('utf-8', 'replace', bogus=0))",
+    "print(bytes.fromhex('6f6b').decode(error='replace'))",
     B + 'print(binascii.hexlify("ab"))',                          # TypeError
     B + 'print(binascii.hexlify(b"\\x01\\xff\\x02", b":"))',       # sep
     B + 'print(binascii.hexlify(b"\\x01\\xff\\x02", "-", 2))',     # sep, bytes_per_sep
@@ -129,6 +145,7 @@ ANSWERED_UNREACHED = [
 #: Routed by the CORE: into lypning-l on the import, and past it when the
 #: program names what no rung serves.
 ROUTED_TO_LYPNING_L = [
+    "print(bytes.fromhex('41').decode('utf-8', 'replace'))",
     B + "print(binascii.hexlify(b'a'))",
     "from binascii import a2b_base64\nprint(a2b_base64(b'aGk='))",
     "import base64, binascii\nprint(base64.b64encode(binascii.unhexlify('00ff')))",

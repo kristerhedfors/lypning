@@ -50,7 +50,7 @@ variant-m = []
 # The 4 MB point. Names the smaller variant so cargo's feature union makes it a
 # superset by construction — the monotonicity the router assumes. It grows one
 # `cap-*` per step; `variant-m` is FROZEN and gains none of them.
-variant-l = ["variant-m", "cap-base64", "cap-bigint", "cap-binascii", "cap-collections", "cap-csv", "cap-difflib", "cap-future", "cap-glob", "cap-hashlib", "cap-itertools", "cap-pathlib", "cap-random", "cap-re", "cap-statistics", "cap-textwrap", "cap-time"]
+variant-l = ["variant-m", "cap-ast", "cap-base64", "cap-bigint", "cap-binascii", "cap-collections", "cap-csv", "cap-difflib", "cap-future", "cap-glob", "cap-hashlib", "cap-itertools", "cap-pathlib", "cap-random", "cap-re", "cap-statistics", "cap-textwrap", "cap-time"]
 
 # `collections.Counter` and `collections.defaultdict` — 83 of the corpus
 # programs measured on 2026-09-04 import `collections`, and between them they
@@ -159,6 +159,14 @@ cap-difflib = []
 # 2026-09-24) were blocked first on `import textwrap`. `src/textwrap.rs` is the
 # whole of it.
 cap-textwrap = []
+
+# `import ast` and `ast.literal_eval(s)` over a `str`, by a token-level
+# recursive descent of its own (`parse.rs` folds `-<literal>`), behind a screen
+# that refuses every text `lex.rs` and CPython's tokenizer could read
+# differently. Every other name on the module — `ast.parse` above all, since
+# `parse.rs` accepts programs CPython's `ast.parse` rejects — is a
+# `module-attr` block in the CORE's walk. `src/pyast.rs` is the whole of it.
+cap-ast = []
 
 # `time.time` / `time_ns` / `monotonic` / `monotonic_ns` / `perf_counter` /
 # `perf_counter_ns` through `clock_gettime(2)` declared `extern "C"` (no crate),

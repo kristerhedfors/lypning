@@ -301,13 +301,7 @@ impl<'a> Lexer<'a> {
     fn unexpected_indent(&self) -> LypningError {
         unsupported(
             "indent",
-            &format!(
-                "line {} is indented and no suite opened a block; `python -c` \
-                 dedents the command on 3.13+ but not before, so whether this is \
-                 an error at all — and which one — is the reference \
-                 interpreter's to say",
-                self.line
-            ),
+            &format!("line {} is indented where no block opened", self.line),
         )
     }
 
@@ -470,6 +464,13 @@ impl<'a> Lexer<'a> {
             if raw || bytes || fstr || uni {
                 if fstr {
                     let text = self.raw_string_body()?;
+                    // A replacement field still open where the body ended met
+                    // the f-string's own quote inside it: `f"{d["k"]}"`, valid
+                    // from 3.12 (PEP 701) and a SyntaxError before. Which of
+                    // the two is the reference's to say.
+                    if fstring_field_open(text.as_bytes()) {
+                        return Err(unsupported("fstring", "nested quote"));
+                    }
                     self.push(Tok::FStr {
                         raw: text,
                         raw_prefix: raw,
@@ -572,6 +573,22 @@ fn wide_literal(digits: &str, radix: u32) -> Result<crate::value::Int, LypningEr
     }
     #[cfg(not(feature = "cap-bigint"))]
     Err(unsupported("bigint", "integer literal beyond 64-bit range"))
+}
+
+/// Is a `{` replacement field still open at the end of an f-string body?
+/// `{{` and `}}` are literal braces.
+fn fstring_field_open(b: &[u8]) -> bool {
+    let (mut depth, mut i) = (0usize, 0);
+    while i < b.len() {
+        match (b[i], b.get(i + 1)) {
+            (b'{', Some(b'{')) | (b'}', Some(b'}')) if depth == 0 => i += 1,
+            (b'{', _) => depth += 1,
+            (b'}', _) => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        i += 1;
+    }
+    depth > 0
 }
 
 fn is_ident_start(c: u8) -> bool {
@@ -695,11 +712,11 @@ fn push_char(out: &mut Vec<u8>, v: u32, line: u32) -> Result<(), LypningError> {
 /// stderr line, which this engine's `SyntaxError` cannot spell. Refused, as
 /// [`Lexer::unexpected_indent`] is: the reference interpreter raises its own.
 fn tab_error(_line: u32) -> LypningError {
-    unsupported("indent", "a tab and space mix, which is CPython's TabError to raise")
+    unsupported("indent", "TabError")
 }
 
 fn unindent_error(_line: u32) -> LypningError {
-    unsupported("indent", "a dedent to no outer level, which is CPython's IndentationError to raise")
+    unsupported("indent", "IndentationError")
 }
 
 /// A run of digits and underscores CPython rejects: an underscore that does

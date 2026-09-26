@@ -14,6 +14,38 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-25** — A coverage round from the latest sessions' programs: `cap-ast`, `bytes.fromhex`, and five wrong answers the harvest exposed ([#129](https://github.com/kristerhedfors/lypning/pull/129))
+
+- The corpus is harvested from the sessions since 2026-09-07: 5,752 new
+  programs, 14,653 in total. The routers show most are blocked by
+  `subprocess` and project imports, which stay refusals.
+- `cap-ast` in lypning-l: `import ast` and `ast.literal_eval` over a `str`,
+  parsed at the token level with a screen that refuses anything `lex.rs` and
+  CPython could read differently. Every error is a refusal. `ast.parse` and
+  the rest route to CPython.
+- `cap-binascii`: `bytes.fromhex` and UTF-8 `decode(errors='replace')`. The
+  core routes `.fromhex()` to lypning-l.
+- Shared, the core included: `except ((A, B), C)`, `except A, B` and an
+  f-string reusing its own quote refuse instead of raising the parser's
+  SyntaxError. An exception attribute the value does not keep refuses
+  instead of AttributeError. An in-place operator mutates its dict, set or
+  list, and `dict |= iterable` refuses.
+- The frozen core stays in 9 musl blocks by shortening fourteen long
+  refusal details. Its read-only segment had 44 B of slack.
+- `lypning conformance --mixture both` reaches MISMATCH 0, UNSAFE 0 and
+  dispatcher agreement on this macOS host for the first time. Float `**`
+  calls the host libm's `pow` on macOS (two programs filed as "drift" were
+  this). A 3.14-built engine refuses the two errors whose wording 3.14
+  changed. Before 3.14, module-level annotations refuse. Listing
+  `os.environ` is run-specific in the grader.
+- Training: recipes for the 19 new refusal kinds, and [subset-spec.md](training/prompts/subset-spec.md)
+  regenerated. The `statistics` and `itertools` repair rules are withdrawn,
+  because lypning-l now serves both imports and gate B would score their
+  pairs as regressions. **Their pairs in the published banks still need
+  retiring by the training owner**; no bank was touched.
+- The Pages landing page has a dated **Coverage** section. [L-COVERAGE.md](docs/L-COVERAGE.md)
+  gains the `ast` and hex rows.
+
 **2026-09-25** — lypning-l: hold where the capability runs, one parse for every variant, refuse the staged moves the disk cannot see ([#128](https://github.com/kristerhedfors/lypning/pull/128))
 
 - The walk only arms a run. The hold starts where a capability the core

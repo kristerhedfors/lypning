@@ -26,6 +26,67 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-09-26 · iteration 84 — coverage from the latest sessions' own programs, and MISMATCH 0 on every arm
+
+Focus: coverage. The corpus was harvested from the sessions since 2026-09-07
+first, and the baseline was measured on the enlarged corpus, so before and
+after share one denominator: the run loaded 14,816 programs and graded 10,173
+of them (macOS arm64 host build, graded against CPython 3.14.5).
+
+| | before (harvest only) | after (2026-09-26, commit f6b0728) |
+|---|---|---|
+| lypning-l MATCH / UNSUPPORTED / MISMATCH | 7,324 / 2,840 / 9 | 7,357 / 2,816 / 0 |
+| lypning MATCH / MISMATCH | 4,581 / 9 | 4,583 / 0 |
+| all arms MISMATCH | 34 | **0** |
+| UNSAFE | 7 | 0 |
+| dispatchers agree | 10,171 / 10,173 | 10,173 / 10,173 |
+| monotone violations | 0 | 0 |
+| core, musl (scratch probe, 3.11 build) | 1,175,760 B, 9 blocks | 1,175,760 B, 9 blocks |
+
+The first run on this host at MISMATCH 0 on every arm. What cleared the
+standing rows:
+
+- **Two were not drift.** `py-53786ee8ed26` and `py-ab7286f43b7a` had been
+  filed as "3.14 float repr drift" since 2026-09-17. A docs review re-ran them.
+  CPython 3.9, 3.11 and 3.14 on this Mac all print one value, and the engine
+  printed one ulp lower. `pow.rs` reproduces Linux glibc's FMA `pow`, which is
+  what CI grades against, and a Mac's CPython calls Apple's libm. A macOS build
+  now calls the host `pow`.
+- **Three were 3.14's new error wording** (the dict-key and `%c` TypeErrors).
+  The one site that raises each cannot tell its contexts apart, so a
+  3.14-built engine refuses there and CPython words it.
+- **Two were the instrument.** The `lypning run` arm pins its sibling binaries
+  through its own environment variables. A program listing `os.environ` saw
+  them, so the whole environment is now run-specific.
+
+**What the new programs are blocked by.** `lypning-l route` over the 1,999
+new programs it cannot serve: `subprocess` (377), `sys.path` (342; the
+project imports behind it are next), `pipeline`/`lypning`/`yaml`/`huggingface_hub`
+imports, then `ast` (127). Six design agents, each with an adversarial
+critic, estimated what each candidate would free. Most estimates were single
+digits, because the second blocker is nearly always an import no Rust rung can
+have.
+
+**What landed:**
+- `cap-ast` (`literal_eval` only): lypning-l MATCH moved by 33 across the
+  round.
+- `cap-binascii`: `bytes.fromhex` + UTF-8 `decode(errors='replace')`.
+- Five wrong answers in shared code, which the harvest exposed:
+  `except ((A, B), C)`, an unkept exception attribute, the nested-quote
+  f-string, and in-place operators that rebound instead of mutating (`b = a;
+  a |= {...}` left `b` stale).
+
+**Refused, with the reason:** `ast.parse` as a syntax check. parse.rs
+accepts programs CPython's `ast.parse` rejects (one-line suites without a
+separator, a number glued to a name), so "parses here" is not "parses there".
+
+**The byte lesson.** Probing the musl layout on a scratch branch showed that
+the core's read-only headroom is bounded by the RW segment's file offset, not
+the page boundary. RELRO pins that offset, and at ddacc76 it left **44 B**.
+This round's shared fixes cost 752 B there. It was paid for by shortening
+fourteen refusal details. Their explanations stay in the code comments.
+Headroom after the round: 188 B read-only, 122 B text.
+
 ## 2026-09-15 · iteration 83 — the ledger's seven un-replayed witnesses, swept by hand
 
 Host: Linux x86_64, 4 CPUs, `x86_64-unknown-linux-musl` build, reference

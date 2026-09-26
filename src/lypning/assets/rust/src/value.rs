@@ -259,6 +259,25 @@ pub struct BoundId {
     name: &'static str,
 }
 
+/// [`hkey`] for a dict key or a set element. From 3.14 CPython names where the
+/// value was used — `cannot use 'tuple' as a dict key (unhashable type:
+/// 'list')`, the OUTER type first — and `hash()` keeps the bare message, so
+/// the container supplies the context. A compile-time constant before 3.14.
+#[inline(always)]
+pub fn hkey_in(v: &Value, place: &str) -> R<HKey> {
+    if crate::err::REF_PY_MINOR < 14 {
+        return hkey(v);
+    }
+    hkey(v).map_err(|e| {
+        let m = crate::eval::err_msg(&e);
+        if m.starts_with("unhashable type") {
+            type_err(format!("cannot use '{}' as a {place} ({m})", type_name(v)))
+        } else {
+            e
+        }
+    })
+}
+
 pub fn hkey(v: &Value) -> R<HKey> {
     // The recursion guard is taken on the ONE arm that descends, below, and not
     // here. It is a thread_local read-modify-write in and another out, plus an
@@ -443,14 +462,14 @@ impl Dict {
         self.entries.len() - self.holes
     }
     pub fn get(&self, k: &Value) -> R<Option<Value>> {
-        let h = hkey(k)?;
+        let h = hkey_in(k, "dict key")?;
         Ok(self.index.get(&h).map(|i| self.entries[*i].1.clone()))
     }
     pub fn contains(&self, k: &Value) -> R<bool> {
-        Ok(self.index.contains_key(&hkey(k)?))
+        Ok(self.index.contains_key(&hkey_in(k, "dict key")?))
     }
     pub fn insert(&mut self, k: Value, v: Value) -> R<()> {
-        let h = hkey(&k)?;
+        let h = hkey_in(&k, "dict key")?;
         match self.index.get(&h) {
             // Python keeps the ORIGINAL key object and position on overwrite.
             Some(i) => self.entries[*i].1 = v,
@@ -463,7 +482,7 @@ impl Dict {
         Ok(())
     }
     pub fn remove(&mut self, k: &Value) -> R<Option<Value>> {
-        let h = hkey(k)?;
+        let h = hkey_in(k, "dict key")?;
         match self.index.remove(&h) {
             Some(i) => {
                 let old = std::mem::replace(&mut self.entries[i].1, Value::None);
@@ -512,10 +531,10 @@ impl Set {
         self.items.len()
     }
     pub fn contains(&self, v: &Value) -> R<bool> {
-        Ok(self.index.contains_key(&hkey(v)?))
+        Ok(self.index.contains_key(&hkey_in(v, "set element")?))
     }
     pub fn add(&mut self, v: Value) -> R<()> {
-        let h = hkey(&v)?;
+        let h = hkey_in(&v, "set element")?;
         if !self.index.contains_key(&h) {
             self.index.insert(h, self.items.len());
             self.items.push(v);
@@ -523,7 +542,7 @@ impl Set {
         Ok(())
     }
     pub fn discard(&mut self, v: &Value) -> R<bool> {
-        let h = hkey(v)?;
+        let h = hkey_in(v, "set element")?;
         match self.index.remove(&h) {
             Some(i) => {
                 self.items.remove(i);
@@ -1588,7 +1607,7 @@ fn bound_key(recv: &Value, name: &'static str) -> R<HKey> {
             return Err(unsupported(
                 "identity",
                 &format!(
-                    "a bound method of a {} as a dict or set key, whose receiver's identity CPython answers from interning",
+                    "a bound method of a {} as a dict or set key, a key by identity",
                     type_name(recv)
                 ),
             ))

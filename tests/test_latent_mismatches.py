@@ -223,6 +223,13 @@ ANSWERED = [
     ("print(float(b'1'), float(b' 2.5 '), float(b'-inf'), float(b'1_0'))", "1.0 2.5 -inf 10.0\n", 0),
     ("try:\n    float(b'\\xff')\nexcept ValueError as e:\n    print(e)",
      "could not convert string to float: b'\\xff'\n", 0),
+    # --- 2026-09-25 harvest: an in-place operator MUTATES a mutable container,
+    # so another name bound to it sees the change (py-8fa45dec068a's shape) ----
+    ("a = {}\nb = a\na |= {'k': 1}\nprint(b, a is b)", "{'k': 1} True\n", 0),
+    ("s = {1, 2, 3}\nt = s\ns -= {1}\ns &= {2, 3}\ns ^= {3, 4}\ns |= {9}\nprint(sorted(t), s is t)",
+     "[2, 4, 9] True\n", 0),
+    ("l = [1]\nm = l\nl *= 2\nprint(m, m is l)", "[1, 1] True\n", 0),
+    ("a = {1: 2}\nb = a\na |= a\ns = {1}\ns |= s\nprint(b, s)", "{1: 2} {1}\n", 0),
     # --- round 2: annotations are lazy on 3.14 -------------------------------
     ("def f(a: print('ann'), *b: print('b'), **k: Undefined) -> print('r'):\n    pass\nprint('ok')",
      "ok\n", 0),
@@ -290,6 +297,21 @@ REFUSED = [
     # last stderr line, which the engine's SyntaxError printed instead
     "if 1:\n\tx=1\n        y=2\nprint(1)",
     "if 1:\n    x=1\n  y=2\nprint(1)",
+    # an except clause that is not a name or a flat tuple of names: valid
+    # Python the parser called a SyntaxError (py-c4b2d35e4022), and 3.14's
+    # unparenthesised `except A, B` (PEP 758)
+    "try:\n    raise KeyError(1)\nexcept ((KeyError, ValueError), TypeError):\n    print('c')",
+    "try:\n    raise ValueError('x')\nexcept (ValueError, (KeyError,)):\n    print(1)",
+    # an attribute a flat exception value does not keep: AttributeError at the
+    # program's own exit 1 where CPython answers (py-b24ca4b953ce)
+    "import json\ntry:\n    json.loads('x')\nexcept json.JSONDecodeError as e:\n    print('json', e.msg, e.pos)",
+    "try:\n    raise ValueError('a')\nexcept ValueError as e:\n    print(e.with_traceback(None) is e)",
+    "try:\n    open(\"no/x: 'y\")\nexcept OSError as e:\n    print(e.filename)",
+    # an f-string field that reuses the f-string's own quote: 3.12+ (PEP 701)
+    "d = {'k': 1}\nprint(f\"{d[\"k\"]}\")",
+    # `dict |= iterable` is dict.update(); the binary `|` takes only a dict
+    "x = {}\nx |= [(1, 2)]\nprint(x)",
+    "x = {}\nx |= [1]",
     "a=[1,2]\nprint([*a,])",
     "[a, *b] = [1,2,3]\nprint(a, b)",
     # an exception whose `args` the flat (kind, message) value cannot carry
@@ -456,3 +478,27 @@ def test_sys_platform_is_the_hosts(engine: str, binary: Path) -> None:
         pytest.skip("sys.platform refuses on %s" % sys.platform)
     got = _run([str(binary)], "import sys\nprint(sys.platform)")
     assert (got.stdout, got.returncode) == (sys.platform + "\n", 0), got.stderr
+
+
+#: Annotations are evaluated and stored at module level before 3.14 and lazy
+#: from 3.14 (PEP 649). An engine built against a reference before 3.14
+#: refuses these; one built against 3.14 answers them. Either way it never
+#: answers differently from the reference (py-89dc25c534dc, py-df146431ddfa,
+#: py-e91023747147 — CI's 3.11 leg of the 2026-09-25 harvest).
+ANNOTATIONS = [
+    "x: Undefined = 1\nprint(x)",
+    "x: int = 1\nprint(__annotations__)",
+    "print(__annotations__)",
+    "def f():\n    y: Undefined = 1\n    return y\nprint(f())",
+]
+
+
+@pytest.mark.parametrize("engine,binary", BUILT)
+@pytest.mark.parametrize("program", ANNOTATIONS, ids=range(len(ANNOTATIONS)))
+def test_annotations_are_the_references_or_refused(engine: str, binary: Path, program: str) -> None:
+    got = _run([str(binary)], program)
+    if got.returncode == engines.UNSUPPORTED_EXIT:
+        assert _refusal_problem(engine, got) is None, got.stderr
+        return
+    ref = _run([sys.executable], program)
+    assert (got.stdout, got.returncode) == (ref.stdout, ref.returncode), (program, got.stderr)

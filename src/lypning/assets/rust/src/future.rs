@@ -280,6 +280,11 @@ mod tests {
         "def f(a, /, /): pass\n",
         "def f(*a, /): pass\n",
         "a, b += 1\n",
+    ];
+
+    /// CPython's `TabError`: a `SyntaxError` subclass whose name the engine
+    /// cannot spell, so it refuses (`indent`) in every variant and head.
+    const TAB_MIXES: &[&str] = &[
         "if 1:\n\tx = 1\n        y = 2\n",
         "if 1:\n        x = 1\n\ty = 2\n",
     ];
@@ -291,6 +296,9 @@ mod tests {
         for head in ["", "from __future__ import annotations\n", "import itertools\n", "if 0:\n    import time\n"] {
             for body in REJECTED {
                 assert_eq!(kind(&format!("{head}{body}")), "SyntaxError", "{head:?} {body:?}");
+            }
+            for body in TAB_MIXES {
+                assert_eq!(kind(&format!("{head}{body}")), "indent", "{head:?} {body:?}");
             }
             for body in ["__debug__ = 1\n", "def f(__debug__): pass\n", "print(__debug__)\n"] {
                 assert_eq!(kind(&format!("{head}{body}")), "builtin", "{body:?}");

@@ -802,3 +802,26 @@ def test_a_result_without_raw_bytes_still_grades():
     old = eng.Result(eng.LYPNING, "/bin/engine", 0, "hello\n", "", 1)
     assert old.stdout_bytes == b"hello\n"
     assert _classify(old).verdict == MATCH
+
+
+#: The environment as a whole is the caller's: the `lypning run` arm pins its
+#: sibling binaries through variables of its own, so a program that counts or
+#: lists `os.environ` saw two more there than the reference did
+#: (py-a77a5cc628f3, py-eeab4d018dce).
+@pytest.mark.parametrize("program", [
+    "import os; print(repr(os.environ.get('LC_CTYPE')), len(os.environ))",
+    "import os\nfor k in sorted(os.environ): print(k)",
+    "import os; print(dict(os.environ))",
+    "import os; print(list(os.environ.items())[:3])",
+])
+def test_the_whole_environment_is_run_specific(program):
+    assert conformance.is_run_specific(corpus.Entry(id="py-e", program=program))
+
+
+@pytest.mark.parametrize("program", [
+    "import os; print(os.environ['HOME'])",
+    "import os; print(os.environ.get('X'))",
+    "import os\nos.environ['A'] = '1'\nprint(os.environ['A'])",
+])
+def test_one_named_variable_is_still_graded(program):
+    assert not conformance.is_run_specific(corpus.Entry(id="py-e", program=program))

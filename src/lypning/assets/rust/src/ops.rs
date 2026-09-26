@@ -1024,7 +1024,15 @@ impl Interp {
                 // OSError-family exceptions carry `.errno`/`.strerror`/
                 // `.filename`, and the message we build always has the shape
                 // `[Errno N] text: 'path'`, so read them back from it.
+                // Only on the OSError family: `ValueError().errno` is
+                // CPython's AttributeError, and it answered None. And a
+                // filename is read back only when it cannot be ambiguous — a
+                // path holding a quote or a second `: '` split at the wrong
+                // place.
                 "errno" | "strerror" | "filename" => {
+                    if !crate::eval::exc_matches("OSError", kind) {
+                        return Err(unsupported("exception", name));
+                    }
                     if let Some(rest) = msg.strip_prefix("[Errno ") {
                         if let Some(close) = rest.find(']') {
                             let n: i64 = rest[..close].parse().unwrap_or(0);
@@ -1033,6 +1041,9 @@ impl Interp {
                                 Some(i) => (&tail[..i], tail[i + 3..].trim_end_matches('\'')),
                                 None => (tail, ""),
                             };
+                            if name != "errno" && (file.contains('\'') || text.contains(": '")) {
+                                return Err(unsupported("exception", name));
+                            }
                             return Ok(match name {
                                 "errno" => ival(n),
                                 "strerror" => Value::Str(text.into()),
@@ -1041,6 +1052,15 @@ impl Interp {
                         }
                     }
                     return Ok(Value::None);
+                }
+                // What some exception class carries and this flat (kind,
+                // message) value does not keep — `.msg`/`.pos` of a
+                // JSONDecodeError, `.name` of a NameError, `.with_traceback`,
+                // `.add_note`. AttributeError would be the program's own exit 1
+                // where CPython may answer; any other name is CPython's
+                // AttributeError too, and stays one.
+                _ if in_words("msg pos doc lineno colno name obj path with_traceback add_note text offset", name) => {
+                    return Err(unsupported("exception", name))
                 }
                 _ => {}
             }
@@ -1488,7 +1508,7 @@ fn num_binop(op: BinOp, a: Num, b: Num, both_bool: bool) -> R<Value> {
                 // nan at exit 0 where CPython answers 1.4142135623730951j.
                 return Err(unsupported(
                     "complex",
-                    "a negative float raised to a fractional power (Python returns a complex number)",
+                    "a negative float to a fractional power",
                 ));
             }
             let r = crate::pow::pow(x, y);
@@ -1639,7 +1659,7 @@ fn identity(a: &Value, b: &Value) -> R<bool> {
         if x.is_nan() || y.is_nan() {
             return Err(unsupported(
                 "nan-identity",
-                "`is` over a NaN, which is not equal to itself, so CPython decides it by object identity",
+                "`is` over a NaN",
             ));
         }
     }
@@ -1653,7 +1673,7 @@ fn identity(a: &Value, b: &Value) -> R<bool> {
     if let (Value::DictView(..), Value::DictView(..)) = (a, b) {
         return Err(unsupported(
             "dict-view",
-            "`is` between two dict views, whose identity here is the dict's rather than the view's",
+            "`is` between two dict views",
         ));
     }
     Ok(false)
@@ -2482,6 +2502,15 @@ fn percent_one(v: &Value, spec: &str, pct: &IntPrec) -> R<String> {
                 let as_str = format!("{}s", &spec[..spec.len() - 1]);
                 return fmt::format_value_pct(v, &as_str);
             }
+            // 3.14 words it `%c requires an int or a unicode character, not
+            // …`, with a tail naming what it got.
+            _ if crate::err::REF_PY_MINOR >= 14 => {
+                let got = match v {
+                    Value::Str(s) => format!("a string of length {}", s.chars().count()),
+                    other => crate::value::type_name(other).to_string(),
+                };
+                return Err(type_err(format!("%c requires an int or a unicode character, not {got}")));
+            }
             _ => return Err(type_err("%c requires int or char")),
         }
     }
@@ -2593,6 +2622,12 @@ pub fn errno_args<'a>(kind: &str, msg: &'a str) -> R<Option<(i64, &'a str)>> {
         Some(p) if known => Ok(Some(p)),
         _ => Err(unsupported("exception", &format!("{kind}.args of an OS error"))),
     }
+}
+
+/// Is `w` one of the space-separated words? A scan over one string is a
+/// fraction of the code a `match` over as many literals compiles to.
+fn in_words(words: &str, w: &str) -> bool {
+    words.split(' ').any(|x| x == w)
 }
 
 /// The three exceptions whose `args` are the codec's constructor arguments.
