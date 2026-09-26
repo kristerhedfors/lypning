@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-26** — Binding errors refuse everywhere; lypning-l serves `sys.version` and `unicodedata` (PR pending)
+**2026-09-26** — Binding errors refuse everywhere; lypning-l serves `sys.version` and `unicodedata` ([#136](https://github.com/kristerhedfors/lypning/pull/136))
 
 - A call whose arguments do not bind — too many or missing arguments, an
   unexpected or repeated keyword, a positional-only name by keyword — and
