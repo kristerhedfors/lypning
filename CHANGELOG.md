@@ -14,6 +14,30 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-26** — Binding errors refuse everywhere; lypning-l serves `sys.version` and `unicodedata` ([#136](https://github.com/kristerhedfors/lypning/pull/136))
+
+- A call whose arguments do not bind — too many or missing arguments, an
+  unexpected or repeated keyword, a positional-only name by keyword — and
+  `*` over a non-iterable refuse as `call` in every variant, as do
+  `json.loads()`/`dumps()`/`load()`/`dump()` with no argument. CPython words
+  them by version (qualified names from 3.10, every missing argument
+  counted, `Did you mean` on 3.14); the binder's one wording was wrong on
+  every minor. The wording code is deleted.
+- lypning-l serves `sys.version` from a separate build-time probe, only
+  while the CPython it would fall through to is the probed file (realpath,
+  length, mtime, and the same for its libpython); anything else refuses.
+- lypning-l serves `unicodedata` — `unidata_version`, `category`,
+  `combining`, `decomposition`, `normalize`, `is_normalized` — from the
+  reference CPython's own tables, dumped at build time; folded into
+  `cap-re`. While it is imported, `chr()` of a surrogate and Unicode-property
+  questions about non-ASCII text refuse when the reference's Unicode is not
+  Rust's.
+- The core on musl stays 1,175,760 B, 9 blocks (CI runs of 2026-09-26 on
+  the 3.11 reference): binding refusals −752 B `.text` and −352 B
+  `.rodata`, `sys.version` +32 B `.rodata`, `unicodedata` +32 B `.rodata`,
+  leaving 762 B before the code segment's page and 444 B before the RELRO
+  page. lypning-l on musl grows 65,760 B for `unicodedata`, still 12 blocks.
+
 **2026-09-26** — lypning-l serves decorators and keyword-only parameters ([#135](https://github.com/kristerhedfors/lypning/pull/135))
 
 - Under `cap-future`: `@<expr>` lines before a `def` (evaluated top to bottom

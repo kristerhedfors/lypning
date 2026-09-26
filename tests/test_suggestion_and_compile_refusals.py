@@ -75,8 +75,10 @@ BEFORE_IT_RUNS = [
     'prnt(1)\nimport time',
     'if False:\n    import time\nprnt(1)',
     'import os\ndef f():\n    import time\nprnt(1)',
-    'def g(alpha): pass\ng(alpah=1)\nimport time',
-    'if False:\n    import time\ndef g(alpha): pass\ng(alpah=1)',
+    # A binding error (`g(alpah=1)`) was a row here; it refuses in every
+    # variant now (`err::bind_refused`), so an attribute error stands in.
+    "'abc'.uper()\nimport time",
+    "if False:\n    import time\n'abc'.uper()",
 ]
 
 #: SyntaxErrors CPython's compiler raises, which the parser raises too, with a

@@ -82,8 +82,11 @@ SPECTRUM = (LYPNING, LYPNING_L)
 #: ``cap-pathlib`` (``pathlib.Path``), ``cap-random`` (``random.Random(int)``,
 #: ``random.sample`` / ``random.shuffle``, and ``sys.version_info`` as ``[0]``,
 #: ``[:2]``, ``.major`` / ``.minor`` or compared with a tuple of at most two
-#: items; it serves no module, so its routing half is ``route::CAP_ATTRS``),
-#: ``cap-re`` (the ``re`` matcher),
+#: items, and ``sys.version`` baked from the reference and served only while
+#: the CPython it falls through to is that very file; it serves no module, so
+#: its routing half is ``route::CAP_ATTRS``),
+#: ``cap-re`` (the ``re`` matcher, and ``unicodedata`` from the reference
+#: CPython's own tables, dumped at build time),
 #: ``cap-statistics`` (``mean`` / ``median`` / ``median_low`` / ``median_high``;
 #: every other name refuses as ``module-attr`` from the WALK, out of
 #: ``route::MODULE_ATTRS``),

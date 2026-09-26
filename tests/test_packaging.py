@@ -91,6 +91,11 @@ def test_the_wheel_carries_the_reference_behavior_probe() -> None:
     """Cargo embeds the probe at compile time, including in a wheel build."""
     patterns = _project()["tool"]["setuptools"]["package-data"]["lypning"]
     assert "assets/rust/reference_probe.py" in patterns
+    # ...and the separate `sys.version` bake, which `include_str!` embeds in
+    # every build whether or not it carries `cap-random`.
+    assert "assets/rust/sys_probe.py" in patterns
+    # ...and the `unicodedata` table dump, embedded the same way.
+    assert "assets/rust/ucd_dump.py" in patterns
 
 
 @needs_toml

@@ -111,6 +111,11 @@ pub mod randobj;
 /// here: it is [`repat`], which every variant carries.
 #[cfg(feature = "cap-re")]
 pub mod re;
+/// `unicodedata`, from the reference CPython's own tables (`build.rs` dumps
+/// them) — folded into the `cap-re` capability, whose `route::CAPS` row lists
+/// the module.
+#[cfg(feature = "cap-re")]
+pub mod ucd;
 /// The `re` pattern parser, in EVERY variant, because the binary that routes is
 /// the cheapest one and a blocker only `lypning-l` can compute is inert on the
 /// path the dispatcher uses (issue #48). Not the capability: nothing here runs

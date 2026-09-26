@@ -57,29 +57,6 @@ CASES = [
         "print(isinstance(1, (str, float)), isinstance(None, int))\n",
     ),
     (
-        # The "too many positional arguments" message varies three ways and all
-        # three were wrong: the count reported was where the binder stopped
-        # rather than how many were given; a function with defaults must say
-        # `from R to N`; and `argument`/`was` are singular in different cases
-        # (`takes 1 positional argument`, but `takes from 0 to 1 positional
-        # arguments`). It reaches stdout only through `print(e)`, which is why
-        # the conformance corpus never caught it.
-        "arity-typeerror-wording",
-        "def f0():\n    pass\n"
-        "def f1(a):\n    pass\n"
-        "def f2(a, b):\n    pass\n"
-        "def d1(a=1):\n    pass\n"
-        "def d2(a, b=1):\n    pass\n"
-        "def d3(a=1, b=2, c=3):\n    pass\n"
-        "cases = [(f0, [1]), (f1, [1, 2]), (f1, [1, 2, 3]), (f2, [1, 2, 3]),\n"
-        "         (d1, [1, 2]), (d2, [1, 2, 3]), (d2, [1, 2, 3, 4]), (d3, [1, 2, 3, 4])]\n"
-        "for fn, a in cases:\n"
-        "    try:\n"
-        "        fn(*a)\n"
-        "    except TypeError as e:\n"
-        "        print(repr(str(e)))\n",
-    ),
-    (
         # Arguments live in the caller's stack frame up to `args::INLINE` and
         # spill to a Vec past it (`assets/rust/src/args.rs`). That boundary is
         # invisible from Python and must stay invisible: this walks every arity
@@ -542,6 +519,43 @@ def test_lypning_agrees_with_cpython(case_id, program, lypning_bin):
 
 
 # --- the other half of agreement: refuse, rather than answer differently -----
+
+#: A call whose arguments do not bind. The "too many positional arguments"
+#: message was pinned here as a row lypning words to the letter, and it did —
+#: for a module-level function on one minor. CPython names the function by its
+#: qualified name from 3.10 (`o.<locals>.g()`), counts every missing argument
+#: at once, says `positional-only arguments passed as keyword arguments`, and
+#: adds `Did you mean` on 3.14, and no one wording is right on every minor. So
+#: every binding error refuses (`err::bind_refused`), in every variant, and the
+#: row moved here: it would otherwise have turned into a silent skip above.
+BINDING_ERRORS = [
+    (
+        "arity-typeerror-wording",
+        "def f0():\n    pass\n"
+        "def f1(a):\n    pass\n"
+        "def f2(a, b):\n    pass\n"
+        "def d1(a=1):\n    pass\n"
+        "def d2(a, b=1):\n    pass\n"
+        "def d3(a=1, b=2, c=3):\n    pass\n"
+        "cases = [(f0, [1]), (f1, [1, 2]), (f1, [1, 2, 3]), (f2, [1, 2, 3]),\n"
+        "         (d1, [1, 2]), (d2, [1, 2, 3]), (d2, [1, 2, 3, 4]), (d3, [1, 2, 3, 4])]\n"
+        "for fn, a in cases:\n"
+        "    try:\n"
+        "        fn(*a)\n"
+        "    except TypeError as e:\n"
+        "        print(repr(str(e)))\n",
+    ),
+]
+
+
+@pytest.mark.parametrize("case_id,program", BINDING_ERRORS, ids=[c[0] for c in BINDING_ERRORS])
+def test_a_binding_error_refuses(case_id, program, lypning_bin):
+    r = engines.run(engines.LYPNING, program, binary=lypning_bin)
+    assert r.returncode == UNSUPPORTED_EXIT, (r.returncode, r.stdout, r.stderr)
+    assert r.stdout == "", "the commit barrier let output escape before a refusal"
+    assert r.stderr.strip() == "%s: unsupported: call: a binding error, which CPython words by version" % (
+        engines.LYPNING), r.stderr
+
 
 #: A method CPython's type HAS and lypning does not. Every one of these routed
 #: to the Rust core — `route.rs` asks only whether the name is a method of ANY

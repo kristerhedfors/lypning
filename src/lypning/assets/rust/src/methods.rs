@@ -741,6 +741,10 @@ fn str_method(
     }
     reject_kw("str", name, &kw)?;
     check_arity("str", name, args, &kw)?;
+    #[cfg(feature = "cap-re")]
+    if crate::ucd::drift_method(name, args) {
+        crate::ucd::drift_guard(s)?;
+    }
     Ok(match name {
         // `std`'s `to_uppercase` / `to_lowercase` already carry a vectorised
         // ASCII fast path and size the output exactly. Measured on this

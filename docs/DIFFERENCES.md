@@ -111,10 +111,10 @@ lacks has **run** is *held*: every uncaught `NameError`, `AttributeError` and
 unexpected-keyword `TypeError` is `name-hint` too, and the run refuses rather
 than commit past 8 MiB of output or `os.rmdir` a directory it did not make, so
 that refusal stays possible (`io.rs:hold`). The capabilities are `itertools`,
-`difflib`, `time`, `statistics`, `textwrap`, `binascii` and `struct` (held when
-imported),
+`difflib`, `time`, `statistics`, `textwrap`, `binascii`, `struct` and
+`unicodedata` (held when imported),
 a served `from __future__` head (held from the first statement), and
-`cap-random`'s `random.Random`/`sample`/`shuffle` and `sys.version_info` (held
+`cap-random`'s `random.Random`/`sample`/`shuffle`, `sys.version_info` and `sys.version` (held
 when evaluated) — the points at which the core, running the same program,
 refuses. Those programs went to CPython before the capability existed. The
 spectrum router's own verdict, computed inside `lypning-l` before the first
@@ -214,8 +214,8 @@ either binary):
 | `cap-hashlib` | the `hashlib` module — four constructors | `hashlib.rs` |
 | `cap-itertools` | the `itertools` module — `product`, `combinations` | `itertools.rs` |
 | `cap-pathlib` | the `pathlib` module — `Path` | `pathlib.rs` |
-| `cap-random` | no module: `random.Random(int)`, `random.sample`, `random.shuffle`, and `sys.version_info` as `[0]`, `[:2]`, `.major`/`.minor` or against a tuple of at most two items | `randobj.rs` |
-| `cap-re` | the `re` module and its matcher | `re.rs` |
+| `cap-random` | no module: `random.Random(int)`, `random.sample`, `random.shuffle`, `sys.version_info` as `[0]`, `[:2]`, `.major`/`.minor` or against a tuple of at most two items, and `sys.version` while the fallback CPython is the file the build probed | `randobj.rs` |
+| `cap-re` | the `re` module and its matcher, and `unicodedata` (`unidata_version`, `category`, `combining`, `decomposition`, `normalize`, `is_normalized`) from the reference CPython's own tables, dumped at build time | `re.rs`, `ucd.rs` |
 | `cap-statistics` | the `statistics` module — four functions of it | `statistics.rs` |
 | `cap-textwrap` | the `textwrap` module — five functions of it | `textwrap.rs` |
 | `cap-time` | the `time` module — the clocks, a bounded `sleep`, one UTC stamp | `time.rs` |
@@ -296,10 +296,13 @@ lypning-l serves decorators on a `def` and keyword-only parameters under
 such a program there when every import is served. The decorator expressions
 run top to bottom before the defaults, apply bottom to top, and bind the name
 once. Since the core refuses the program before its first statement, the run
-is held from that statement: an uncaught error refuses as `name-hint`, a
-binding `TypeError` or `*` over a non-iterable as `call` (CPython names the
-function by a qualified name that differs by minor), and a function used as a
-set element or dict key as `iterator-identity`. After the first `@` or
+is held from that statement: an uncaught error refuses as `name-hint`, and a
+function used as a set element or dict key as `iterator-identity`. A binding
+`TypeError` — too many or missing arguments, an unexpected keyword, a value
+given twice, a positional-only name by keyword — and `*` over a non-iterable
+refuse as `call` in EVERY variant, held or not: CPython names the function by
+a qualified name from 3.10, counts every missing argument, and adds `Did you
+mean` on 3.14, so no one wording is right on every minor. After the first `@` or
 keyword-only name, a compile-time error refuses with that kind rather than
 printing a `SyntaxError` the core never reached. A decorated `class`, `async
 def` or generator still refuses, as do `@staticmethod`, `@classmethod` and

@@ -232,7 +232,9 @@ REFUSED = [R + x for x in [
     "print(sys.version_info + (1,))",
     "print(sys.version_info is sys.version_info)",
     "print(sys.version_info == sys.version_info)",
-    "print(sys.version)",
+    # `sys.version` itself is served now, from a fingerprinted bake:
+    # tests/test_sys_version_grid.py. `hexversion` carries the micro and is not.
+    "print(sys.hexversion)",
     "print('%d.%d.%d' % sys.version_info[:3])",
     "print(__import__('sys').version_info[:2])",
 ]]
@@ -269,7 +271,7 @@ ROUTE_TO_CPYTHON = [
     S + "print(sys.version_info >= (3, 8, 1))",
     S + "v = sys.version_info",
     S + "from sys import version_info",
-    S + "print(sys.version_info[0], sys.version)",
+    S + "print(sys.version_info[0], sys.hexversion)",
 ]
 
 

@@ -225,6 +225,13 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// CPython owns (a `ValueError` naming an AST node, a warning, an escape or a
 /// number `lex.rs` may misread), and there is no rung above lypning-l to carry
 /// it to.
+///
+/// `cap-re` also serves `unicodedata` (`ucd.rs`), folded into its row the way
+/// `struct` is into `cap-binascii`: a row of its own would cost the frozen
+/// core a tuple, a slice and a `SPECTRUM` name, where a second module name
+/// costs one pointer. It has no [`MODULE_ATTRS`] row; an unserved name is a
+/// `module-attr` block in lypning-l's own walk, and the run is held by name
+/// ([`core_refuses_import`], [`hint_held`]).
 pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-ast", &["ast"], &[]),
     ("cap-base64", &["base64"], &[]),
@@ -239,7 +246,7 @@ pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-itertools", &["itertools"], &[]),
     ("cap-pathlib", &["pathlib"], &[]),
     ("cap-random", &[], &[]),
-    ("cap-re", &["re"], &[]),
+    ("cap-re", &["re", "unicodedata"], &[]),
     ("cap-statistics", &["statistics"], &[]),
     ("cap-textwrap", &["textwrap"], &[]),
     ("cap-time", &["time"], &[]),
@@ -572,15 +579,19 @@ fn future_route_stop(src: &str, body: &[Stmt], req: &mut Requirements) {
 /// be refused one statement in.
 pub const CAP_ATTRS: &[(&str, &str, &[&str], &[&str])] = &[
     ("cap-random", "random", &["sample", "shuffle"], &["Random"]),
-    ("cap-random", "sys", &[], &["version_info"]),
+    ("cap-random", "sys", &["version"], &["version_info"]),
 ];
 
 /// Does `v` serve `module.name` out of [`CAP_ATTRS`] — `shaped` when the walk
 /// blessed the shape it was spelled in? `sys.version_info` is answered only by
-/// a build whose reference version was MEASURED ([`crate::err::REF_PY_KNOWN`]).
+/// a build whose reference version was MEASURED ([`crate::err::REF_PY_KNOWN`]),
+/// and `sys.version` only by one whose probe RAN on that reference
+/// ([`crate::err::REF_PY_EXACT`]), since lypning-l refuses it on any other —
+/// a clause that folds away on such a build, which is every one `lypning
+/// build` makes with a reachable CPython.
 #[inline(never)]
 fn cap_attr(v: &Variant, module: &str, name: &str, shaped: bool) -> bool {
-    (module != "sys" || crate::err::REF_PY_KNOWN)
+    (module != "sys" || (crate::err::REF_PY_KNOWN && (crate::err::REF_PY_EXACT || name != "version")))
         && CAP_ATTRS.iter().any(|(c, m, any, shape)| {
             *m == module && v.caps.contains(c) && (any.contains(&name) || (shaped && shape.contains(&name)))
         })
@@ -3890,7 +3901,13 @@ fn has_future_head(src: &str) -> bool {
 /// program is answered as the core answers it.
 #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
 pub fn hint_held(body: &[Stmt], src: &str) -> bool {
-    core_lacks(&walk_for_hold(body, src), has_future_head(src))
+    let req = walk_for_hold(body, src);
+    // Armed by NAME, as [`core_refuses_import`] holds it.
+    #[cfg(feature = "cap-re")]
+    if req.imports.iter().any(|m| m == "unicodedata") {
+        return true;
+    }
+    core_lacks(&req, has_future_head(src))
         .iter()
         .any(|c| HINT_HELD_CAPS.contains(c))
 }
@@ -3932,6 +3949,13 @@ pub fn core_refuses_attr(module: &str, name: &str) -> bool {
 /// which the core, running the same program, refuses (`io::hold`)?
 #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time", feature = "cap-future"))]
 pub fn core_refuses_import(module: &str) -> bool {
+    // `unicodedata` rides `cap-re`, which is not in [`HINT_HELD_CAPS`] (an
+    // `re` program the core routed on was answered by lypning-l before), so
+    // it is held by NAME: its programs went to CPython before this served it.
+    #[cfg(feature = "cap-re")]
+    if module == "unicodedata" {
+        return true;
+    }
     CAPS.iter().any(|(c, mods, _)| {
         HINT_HELD_CAPS.contains(c) && !SPECTRUM[0].caps.contains(c) && mods.contains(&module)
     })
