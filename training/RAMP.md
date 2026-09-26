@@ -218,7 +218,7 @@ never tied to job ids; the per-job rows below supersede them.
 | 2026-09-24 | HF 6ab4a05a52d0dbd7f1d8909d (Actions 35953660170) | SFT step-350 eval | pool hosts idled out at 600 s | ~$11 est. | #123, #124 | R2 (TODO); R6 |
 | 2026-09-24 | HF 6ab4d66d6b030d633f68d8d7 (Actions 35971691550) | SFT eval | same, after a longer retry budget | ~$24 est. | #124 | R2 (TODO); R6 |
 | 2026-09-24 | HF 6ab52a686b030d633f68e503 (Actions 36008052722) | SFT done; base-test | abort-on-any engine mismatch | > $22 est.; job end not recorded | #126 counts it, 1% bound | R1 (the grade showed the rate first) |
-| 2026-09-25 | HF 6ab6a20c6b030d633f691a95 (Actions 36161157776) | base-eval2 chunk index 26 (section 3) | CUDA OOM, 111,104-token prefill | ~$19 est. (submit wall 3h50m) | #130 (open) | R1 `eval2-shape`; R4/R5 (TODO) |
+| 2026-09-25 | HF 6ab6a20c6b030d633f691a95 (Actions 36161157776) | base-eval2 chunk index 26 (section 3) | CUDA OOM, 111,104-token prefill | ~$19 est. (submit wall 3h50m) | #130 (merged 2026-09-26; rerun complete) | R1 `eval2-shape`; R4/R5 (TODO) |
 
 Sources: `training/reports/2026-09-15-fable-round02-smoke.md`,
 `training/reports/2026-09-16-fable-round02-pilot.md`,
@@ -246,6 +246,7 @@ estimates above.
 | 2026-09-23 | R4 | HF 6ab4582d6b030d633f68c90e (Actions 35930577878) | the 27B at `QWEN_REV`; peak 120.7 GB; SFT timings |
 | 2026-09-24 | R7 | HF 6ab52a686b030d633f68e503 (Actions 36008052722) | arm A SFT to 1,050 steps, adapters 0/350/700/1,050 on the Hub |
 | 2026-09-25 | R8, partly | HF 6ab6a20c6b030d633f691a95 (Actions 36161157776) | base-test and sft-test, 1,260 draws each; no eval-2 arm |
+| 2026-09-26 | R8 | HF 6ab7b0b76b030d633f693e48 (Actions 36239792036) | the first complete replicate: all four arms, eval-2 at k = 16; the 111,104-token chunk ran in parts (`training/reports/2026-09-26-seed1111-finish-read.md`) |
 
 ## 7. Spend log for the next climb
 
@@ -255,7 +256,7 @@ completed after (actual). The climb starts at R0 on the next engine; a waiver
 
 | Date | Rung | Actions run | HF job | Ceiling approved | Wall | Cost | Running total | Result |
 |---|---|---|---|---|---|---|---|---|
-| 2026-09-26 | R8 salvage (seed-1111 finish at step 1,050), §5 item 2 **waived** by the operator ("run the eval now, we need that data to course correct training", then "merge and go") | 36239792036 | 6ab7b0b76b030d633f693e48 | 720m, $60 (h200 $5/h); projection ~520 min, ~$43 | pending | pending | pending | pending |
+| 2026-09-26 | R8 salvage (seed-1111 finish at step 1,050), §5 item 2 **waived** by the operator ("run the eval now, we need that data to course correct training", then "merge and go") | 36239792036 | 6ab7b0b76b030d633f693e48 | 720m, $60 (h200 $5/h); projection ~520 min, ~$43 | ~7.5 h (scheduled 11:47Z, complete ~19:15Z) | ~$37 est. | ~$37 est. | **complete**: all four arms; prefill split 3 chunks (434 → 6/6/4, 209 and 212 → 8/8); read in `training/reports/2026-09-26-seed1111-finish-read.md` |
 
 ## 8. Operating constraints
 

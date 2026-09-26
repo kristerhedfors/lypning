@@ -131,7 +131,7 @@ marked paid; stop at the first that fails.
    `verify_references.py` in the pinned image, pass `bank-gates.yml`, publish
    under a **new** `BANK_PATH`. Never re-cut or overwrite a frozen bank:
    `banks/v3-20260920b` stays arm A's.
-10. **Measure headroom** with `bank-ceiling.yml` (free; its last run
+10. **Measure headroom** — the seed-1111 finish showed coverage and SFT draw on one pool (917 base correct-fallback draws, 7.1% of eval-2; `training/reports/2026-09-26-seed1111-finish-read.md` §4), so the base on the new engine is the number the next arm is sized against — with `bank-ceiling.yml` (free; its last run
     `35427139796` on 2026-09-19 failed, so re-validate it first). If the ceiling
     leaves less than the +3pp MDE, stop: no adapter can fire the rule.
 11. **Targets at the new engine (paid).** Old targets cannot train here. Either

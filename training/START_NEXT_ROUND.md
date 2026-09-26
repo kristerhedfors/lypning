@@ -28,7 +28,7 @@ base-eval2 chunk index 26 (the 27th of 51; `RAMP.md` §3). No eval-2 arm has fin
 PR #130 (`--eval-prefill-tokens`, prefill in parts), merged 2026-09-26 as
 `9b17b32`. The seed-1111 salvage below was then dispatched: finish Actions
 `36239792036`, HF job `6ab7b0b76b030d633f693e48` — read its result before
-anything else here. Everything arm A trained and graded is bound
+anything else here. **It completed 2026-09-26**: eval-2 correct-and-native +5.30pp [+2.22, +8.88], correctness −0.12pp, gates A–C pass, pre-registered +3pp lower bound not met, one seed; the coverage worklist it produced is in `training/reports/2026-09-26-seed1111-finish-read.md` §3. Everything arm A trained and graded is bound
 to engine sha256 `3da77f03…` at verifier Space revision `eafca686…`, which the
 finish log (Actions `36161157776`) pinned and the bootstrap of Actions
 `36196784607` still read as the head at 2026-09-25T22:28Z.
