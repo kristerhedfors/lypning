@@ -70,6 +70,38 @@
   "route": "cpython\tmodule-attr: hashlib.algorithms_guaranteed"
  },
  {
+  "program": "import itertools; print(list(itertools.product(\"ab\", repeat=2)))",
+  "route": "lypning-l\tmodule: import itertools",
+  "note": "Since cap-itertools the core routes product and combinations into lypning-l; every other name on the module is cpython out of route::MODULE_ATTRS — the next row."
+ },
+ {
+  "program": "import itertools; print(list(itertools.chain(\"a\", \"b\")))",
+  "route": "cpython\tmodule-attr: itertools.chain"
+ },
+ {
+  "program": "import re, itertools; print(re.escape(\"a\"), list(itertools.islice(\"ab\", 1)))",
+  "route": "cpython\tmodule: import re",
+  "note": "The first blocker is re's and stays the --plan row; islice is served by no rung, so the walk records it as the spectrum's stop and the route is cpython."
+ },
+ {
+  "program": "import difflib; print(1)",
+  "route": "lypning-l\tmodule: import difflib",
+  "note": "cap-difflib serves the import and nothing on it: its route::MODULE_ATTRS row is empty — the next row."
+ },
+ {
+  "program": "import difflib; print(difflib.SequenceMatcher(None, \"a\", \"b\").ratio())",
+  "route": "cpython\tmodule-attr: difflib.SequenceMatcher"
+ },
+ {
+  "program": "import textwrap; print(textwrap.fill(\"a b c\", 3))",
+  "route": "lypning-l\tmodule: import textwrap",
+  "note": "Since cap-textwrap the core routes dedent, fill, indent, shorten and wrap into lypning-l. TextWrapper is not served and stays cpython, out of route::MODULE_ATTRS — the next row."
+ },
+ {
+  "program": "import textwrap; print(textwrap.TextWrapper(width=3).fill(\"a b c\"))",
+  "route": "cpython\tmodule-attr: textwrap.TextWrapper"
+ },
+ {
   "program": "class A: pass",
   "route": "cpython\tclass: class definition"
  },

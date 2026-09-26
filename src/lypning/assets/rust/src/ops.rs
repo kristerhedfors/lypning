@@ -99,6 +99,27 @@ impl Interp {
                 return Ok(v);
             }
         }
+        // Sequence repetition, as `PyNumber_Multiply` decides it: the LEFT
+        // operand is the sequence if it is one, else the right, and a count
+        // with no `__index__` is `can't multiply sequence by non-int of type
+        // 'T'` naming the count. The arms below read the count through
+        // `int_val`, whose "cannot be interpreted as an integer" is CPython's
+        // wording for a different call (`'x' * 1.5`, `[1] * 'x'`, `'x' *
+        // zip()`; measured on 3.9.6, 3.11.15 and 3.14.5).
+        if let Mul = op {
+            let seq = |v: &Value| {
+                matches!(v, Value::Str(_) | Value::Bytes(_) | Value::List(_) | Value::Tuple(_))
+            };
+            let n = if seq(a) { Some(b) } else if seq(b) { Some(a) } else { None };
+            if let Some(n) = n {
+                if !matches!(n, Value::Int(_) | Value::Bool(_)) {
+                    return Err(type_err(format!(
+                        "can't multiply sequence by non-int of type '{}'",
+                        type_name(n)
+                    )));
+                }
+            }
+        }
         Ok(match (op, a, b) {
             (Add, Value::Str(x), Value::Str(y)) => Value::Str(format!("{x}{y}").into()),
             (Add, Value::Bytes(x), Value::Bytes(y)) => {
@@ -212,6 +233,22 @@ impl Interp {
                     "percent-format",
                     "bytes % args (PEP 461 formatting)",
                 ))
+            }
+            // bytes has no `nb_add`: CPython falls to its `sq_concat`, whose
+            // message is not the generic one. `b'a' + 'x'` is "can't concat
+            // str to bytes". No right operand here has an `__radd__`.
+            (Add, Value::Bytes(_), r) => {
+                return Err(type_err(format!("can't concat {} to bytes", type_name(r))))
+            }
+            // str, list and tuple have `sq_concat` too, and say so in their own
+            // words: `'a' + b'x'` is "can only concatenate str (not "bytes")
+            // to str".
+            (Add, l @ (Value::Str(_) | Value::List(_) | Value::Tuple(_)), r) => {
+                let t = type_name(l);
+                return Err(type_err(format!(
+                    "can only concatenate {t} (not \"{}\") to {t}",
+                    type_name(r)
+                )));
             }
             _ => {
                 return Err(type_err(format!(
@@ -474,8 +511,11 @@ impl Interp {
                 false
             }
             other => {
+                // 3.14 says what `in` actually looks for (measured on 3.14.5;
+                // 3.9-3.13 keep `is not iterable`).
+                let what = if REF_PY_MINOR >= 14 { "a container or iterable" } else { "iterable" };
                 return Err(type_err(format!(
-                    "argument of type '{}' is not iterable",
+                    "argument of type '{}' is not {what}",
                     type_name(other)
                 )))
             }
@@ -508,11 +548,11 @@ impl Interp {
             }
             Value::List(l) => {
                 let b = l.borrow();
-                let i = norm_index(crate::eval::int_val(idx)?, b.len(), "list")?;
+                let i = norm_index(idx_val(idx, "list")?, b.len(), "list")?;
                 b[i].clone()
             }
             Value::Tuple(t) => {
-                let i = norm_index(crate::eval::int_val(idx)?, t.len(), "tuple")?;
+                let i = norm_index(idx_val(idx, "tuple")?, t.len(), "tuple")?;
                 t[i].clone()
             }
             Value::Str(s) => {
@@ -522,11 +562,11 @@ impl Interp {
                 // collects the whole string into a `Vec<char>` to reach one of
                 // them, which is O(n) in the string for an O(1) question.
                 if s.is_ascii() {
-                    let i = norm_index(crate::eval::int_val(idx)?, s.len(), "string")?;
+                    let i = norm_index(idx_val(idx, "string")?, s.len(), "string")?;
                     Value::Str(crate::value::substr(&s[i..i + 1]))
                 } else {
                     let chars: Vec<char> = s.chars().collect();
-                    let i = norm_index(crate::eval::int_val(idx)?, chars.len(), "string")?;
+                    let i = norm_index(idx_val(idx, "string")?, chars.len(), "string")?;
                     Value::Str(crate::value::char_str(chars[i]))
                 }
             }
@@ -534,7 +574,7 @@ impl Interp {
                 // The receiver is `bytes`, and CPython names the type in the
                 // message: "index out of range" for bytes, not "bytearray index
                 // out of range" — which named a type this subset does not even have.
-                let i = norm_index(crate::eval::int_val(idx)?, b.len(), "")?;
+                let i = norm_index(idx_val(idx, "byte")?, b.len(), "")?;
                 ival(b[i] as i64)
             }
             Value::Range(a, bb, st) => {
@@ -552,7 +592,7 @@ impl Interp {
                     ));
                 }
                 // CPython says "range object index out of range" here, not "range".
-                let i = norm_index(crate::eval::int_val(idx)?, n as usize, "range object")?;
+                let i = norm_index(idx_val(idx, "range")?, n as usize, "range object")?;
                 ival(a + (i as i64) * st)
             }
             other => return Err(not_subscriptable(other)),
@@ -575,7 +615,7 @@ impl Interp {
                 // A STORE names the operation: `list assignment index out of range`,
                 // where a read says `list index out of range`. Both stores said
                 // the read's words. Measured on 3.10 through 3.13, 2026-09-15.
-                let i = norm_index(crate::eval::int_val(&idx)?, n, "list assignment")?;
+                let i = norm_index(idx_val(&idx, "list")?, n, "list assignment")?;
                 l.borrow_mut()[i] = v;
             }
             other => {
@@ -776,7 +816,14 @@ impl Interp {
     }
 
     pub fn get_attr(&mut self, base: &Value, name: &str) -> R<Value> {
-        if let Value::Module(_) = base {
+        if let Value::Module(m) = base {
+            // `random.sample` and friends: the core refuses them right here,
+            // so from here the run is one only a capability answers.
+            #[cfg(feature = "cap-random")]
+            if crate::route::core_refuses_attr(m, name) {
+                crate::io::hold();
+            }
+            let _ = m;
             return crate::modules::get_attr(base, name);
         }
         // `.name`, `.value`, `.bit_length()`, `.real`: CPython answers every
@@ -826,6 +873,12 @@ impl Interp {
         #[cfg(feature = "cap-hashlib")]
         if let Some(cell) = crate::hashlib::as_hasher(base) {
             return crate::hashlib::attr(base, &cell, name);
+        }
+        // A `random.Random` instance: its eight methods, and a refusal for the
+        // rest of CPython's surface (`gauss`, `choices`, `getstate`, …).
+        #[cfg(feature = "cap-random")]
+        if crate::randobj::as_random(base).is_some() {
+            return crate::randobj::attr(base, name);
         }
         // `Path.cwd` — a classmethod on the type object.
         #[cfg(feature = "cap-pathlib")]
@@ -906,6 +959,29 @@ impl Interp {
             }
         }
         if let Value::Exc(kind, msg) = base {
+            // A UnicodeDecodeError's `args` is its five constructor arguments,
+            // and `.start`/`.end`/`.reason`/`.object`/`.encoding` read them;
+            // this value keeps only the message, so every one refuses.
+            if is_unicode_error(kind) && !name.starts_with("__") {
+                return Err(unsupported(
+                    "exception",
+                    &format!("{kind}.{name}, whose constructor arguments this value does not keep"),
+                ));
+            }
+            if name == "args" {
+                if crate::err::opaque_assert(kind, msg) {
+                    return Err(unsupported(
+                        "exception",
+                        "AssertionError.args of an assert whose message was not a non-empty str",
+                    ));
+                }
+                if let Some((n, text)) = errno_args(kind, msg)? {
+                    return Ok(Value::Tuple(Rc::new(vec![ival(n), Value::Str(text.into())])));
+                }
+            }
+            if name == "filename2" {
+                return Err(unsupported("exception", "OSError.filename2"));
+            }
             match name {
                 // `SystemExit.code` is the exit status, typed — the message is
                 // its `str()`, and the constructor kept the two reversible.
@@ -934,11 +1010,29 @@ impl Interp {
                         "KeyError.args, whose key this value keeps only as its repr",
                     ))
                 }
+                // An EMPTY message is an exception raised with no arguments —
+                // `raise ValueError`, `next()`'s StopIteration, a bare
+                // `assert` — whose `args` is `()`. It answered `('',)`. The
+                // constructor refuses `ValueError('')`, the one spelling that
+                // would also store an empty message, so this is exact.
+                "args" if msg.is_empty() => return Ok(Value::Tuple(Rc::new(Vec::new()))),
                 "args" => return Ok(Value::Tuple(Rc::new(vec![Value::Str(msg.clone())]))),
+                // `StopIteration.value` is `args[0]`, or None with no args.
+                "value" if *kind == "StopIteration" => {
+                    return Ok(if msg.is_empty() { Value::None } else { Value::Str(msg.clone()) })
+                }
                 // OSError-family exceptions carry `.errno`/`.strerror`/
                 // `.filename`, and the message we build always has the shape
                 // `[Errno N] text: 'path'`, so read them back from it.
+                // Only on the OSError family: `ValueError().errno` is
+                // CPython's AttributeError, and it answered None. And a
+                // filename is read back only when it cannot be ambiguous — a
+                // path holding a quote or a second `: '` split at the wrong
+                // place.
                 "errno" | "strerror" | "filename" => {
+                    if !crate::eval::exc_matches("OSError", kind) {
+                        return Err(unsupported("exception", name));
+                    }
                     if let Some(rest) = msg.strip_prefix("[Errno ") {
                         if let Some(close) = rest.find(']') {
                             let n: i64 = rest[..close].parse().unwrap_or(0);
@@ -947,6 +1041,9 @@ impl Interp {
                                 Some(i) => (&tail[..i], tail[i + 3..].trim_end_matches('\'')),
                                 None => (tail, ""),
                             };
+                            if name != "errno" && (file.contains('\'') || text.contains(": '")) {
+                                return Err(unsupported("exception", name));
+                            }
                             return Ok(match name {
                                 "errno" => ival(n),
                                 "strerror" => Value::Str(text.into()),
@@ -956,8 +1053,26 @@ impl Interp {
                     }
                     return Ok(Value::None);
                 }
+                // What some exception class carries and this flat (kind,
+                // message) value does not keep — `.msg`/`.pos` of a
+                // JSONDecodeError, `.name` of a NameError, `.with_traceback`,
+                // `.add_note`. AttributeError would be the program's own exit 1
+                // where CPython may answer; any other name is CPython's
+                // AttributeError too, and stays one.
+                _ if in_words("msg pos doc lineno colno name obj path with_traceback add_note text offset", name) => {
+                    return Err(unsupported("exception", name))
+                }
                 _ => {}
             }
+        }
+        // A generator object HAS `close`, `send`, `throw`, `gi_running`,
+        // `gi_frame`, … and none of them is implemented over a genexp that is
+        // an iterator and nothing more. `g.close()` answered AttributeError at
+        // exit 1 — the program's own exit — where CPython returns None. Every
+        // attribute refuses, including the ones CPython would also reject:
+        // over-broad costs a spawn, a miss costs a wrong exit.
+        if matches!(base, Value::Gen(_)) {
+            return Err(unsupported("generator", &format!("generator.{name}")));
         }
         if crate::methods::missing_method(base, name) {
             return Err(missing_method_err(base, name));
@@ -1062,6 +1177,23 @@ impl Interp {
         // message differently, and `value::attr_error` is the renderer that
         // knows which (`value::Callable`).
         Err(crate::value::attr_error(base, name))
+    }
+}
+
+/// A sequence index that is not an integer: the SEQUENCE's TypeError, never
+/// `int_val`'s `cannot be interpreted as an integer` (`[1]['a']`, measured on
+/// 3.9.6, 3.11.15, 3.12.13, 3.13.13 and 3.14.5). A str says it differently,
+/// and named the type only from 3.11 on.
+fn idx_val(idx: &Value, seq: &str) -> R<i64> {
+    match crate::eval::int_val(idx) {
+        Err(e) if matches!(e.kind(), ErrKind::Exc(_)) => Err(type_err(match seq {
+            "string" if REF_PY_MINOR >= 11 => {
+                format!("string indices must be integers, not '{}'", type_name(idx))
+            }
+            "string" => "string indices must be integers".to_string(),
+            _ => format!("{seq} indices must be integers or slices, not {}", type_name(idx)),
+        })),
+        r => r,
     }
 }
 
@@ -1376,7 +1508,7 @@ fn num_binop(op: BinOp, a: Num, b: Num, both_bool: bool) -> R<Value> {
                 // nan at exit 0 where CPython answers 1.4142135623730951j.
                 return Err(unsupported(
                     "complex",
-                    "a negative float raised to a fractional power (Python returns a complex number)",
+                    "a negative float to a fractional power",
                 ));
             }
             let r = crate::pow::pow(x, y);
@@ -1527,7 +1659,7 @@ fn identity(a: &Value, b: &Value) -> R<bool> {
         if x.is_nan() || y.is_nan() {
             return Err(unsupported(
                 "nan-identity",
-                "`is` over a NaN, which is not equal to itself, so CPython decides it by object identity",
+                "`is` over a NaN",
             ));
         }
     }
@@ -1541,7 +1673,7 @@ fn identity(a: &Value, b: &Value) -> R<bool> {
     if let (Value::DictView(..), Value::DictView(..)) = (a, b) {
         return Err(unsupported(
             "dict-view",
-            "`is` between two dict views, whose identity here is the dict's rather than the view's",
+            "`is` between two dict views",
         ));
     }
     Ok(false)
@@ -1707,6 +1839,13 @@ fn order_as(sym: &str, a: &Value, b: &Value) -> R<Ordering> {
         // CPython computes into exceptions — sorted(), min() and max() over any
         // list containing one.
         return Ok(x.partial_cmp(&y).unwrap_or(Ordering::Equal));
+    }
+    // Two SETS order by subset, a partial order: `sorted`, `min` and `max`
+    // over them answer whatever timsort's comparison sequence happens to
+    // leave, and a sequence comparison asks `<` of one element pair. Neither
+    // is an `Ordering`; both were TypeError at exit 1 where CPython answers.
+    if let (Value::Set(_), Value::Set(_)) = (a, b) {
+        return Err(unsupported("set-order", "sets ordered by sorted()/min()/max() or inside a sequence"));
     }
     Ok(match (a, b) {
         (Value::Str(x), Value::Str(y)) => x.as_bytes().cmp(y.as_bytes()),
@@ -2363,6 +2502,15 @@ fn percent_one(v: &Value, spec: &str, pct: &IntPrec) -> R<String> {
                 let as_str = format!("{}s", &spec[..spec.len() - 1]);
                 return fmt::format_value_pct(v, &as_str);
             }
+            // 3.14 words it `%c requires an int or a unicode character, not
+            // …`, with a tail naming what it got.
+            _ if crate::err::REF_PY_MINOR >= 14 => {
+                let got = match v {
+                    Value::Str(s) => format!("a string of length {}", s.chars().count()),
+                    other => crate::value::type_name(other).to_string(),
+                };
+                return Err(type_err(format!("%c requires an int or a unicode character, not {got}")));
+            }
             _ => return Err(type_err("%c requires int or char")),
         }
     }
@@ -2452,4 +2600,37 @@ fn check_alloc(unit: usize, n: usize, limit: usize, what: &str) -> R<usize> {
         ));
     }
     Ok(n)
+}
+
+/// An `OSError` the ENGINE raised carries `(errno, strerror)` as its `args`,
+/// and its `repr` is `FileNotFoundError(2, 'No such file or directory')`; the
+/// message is `[Errno 2] No such file or directory: 'path'`. They answered
+/// `("[Errno 2] …: 'path'",)`. The constructor refuses a message of that shape
+/// (`builtins.rs`), so one here is always the engine's. `None` for any other
+/// exception; a refusal for the plain `OSError` fallback, whose text is not
+/// CPython's `strerror`.
+pub fn errno_args<'a>(kind: &str, msg: &'a str) -> R<Option<(i64, &'a str)>> {
+    let Some(rest) = msg.strip_prefix("[Errno ") else { return Ok(None) };
+    let known = matches!(
+        kind,
+        "FileNotFoundError" | "PermissionError" | "FileExistsError" | "NotADirectoryError"
+    );
+    let parsed = rest.split_once("] ").and_then(|(n, tail)| {
+        Some((n.parse::<i64>().ok()?, tail.split_once(": '").map_or(tail, |(t, _)| t)))
+    });
+    match parsed {
+        Some(p) if known => Ok(Some(p)),
+        _ => Err(unsupported("exception", &format!("{kind}.args of an OS error"))),
+    }
+}
+
+/// Is `w` one of the space-separated words? A scan over one string is a
+/// fraction of the code a `match` over as many literals compiles to.
+fn in_words(words: &str, w: &str) -> bool {
+    words.split(' ').any(|x| x == w)
+}
+
+/// The three exceptions whose `args` are the codec's constructor arguments.
+pub fn is_unicode_error(kind: &str) -> bool {
+    matches!(kind, "UnicodeDecodeError" | "UnicodeEncodeError" | "UnicodeTranslateError")
 }

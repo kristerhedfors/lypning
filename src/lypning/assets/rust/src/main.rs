@@ -182,6 +182,13 @@ fn execute_inner(src: &str, report_refusal: bool, kind: &mut String, detail: &mu
     if let Err(e) = route::base64_static_check(&body, src) {
         return finish(Err(e), report_refusal, kind, detail);
     }
+    // Every program a capability of this branch admitted went to CPython
+    // before, and got its `Did you mean`; see `route::hint_held`, which ARMS
+    // exactly the programs the core's own walk routes past the core. The hold
+    // itself starts where the capability runs (`io::hold`), which for a
+    // served `__future__` head is before the first statement.
+    #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+    route::arm_hold(&body, src);
     let mut interp = eval::Interp::new();
     let r = interp.run(&body);
     finish(r, report_refusal, kind, detail)
@@ -253,6 +260,9 @@ fn finish(r: Result<(), LypningError>, report_refusal: bool, kind: &mut String, 
             UNSUPPORTED_EXIT
         }
         Err(e) => {
+            if let Some(r) = lypning::err::forgot_import(&e).filter(|_| !io::is_committed()) {
+                return finish(Err(r), report_refusal, kind, detail);
+            }
             let _ = io::commit();
             let _ = writeln!(std::io::stderr(), "Traceback (most recent call last):");
             let _ = writeln!(std::io::stderr(), "{e}");

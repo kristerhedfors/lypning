@@ -170,6 +170,13 @@ _RUN_SPECIFIC = tuple(re.compile(p) for p in (
     r"\btempfile\s*\.\s*(?:mkdtemp|mkstemp|NamedTemporaryFile|TemporaryDirectory|gettempdir)\b",
     # The address in a default repr, and the identity it comes from.
     r"\bid\s*\(",
+    # The environment as a WHOLE — its length, its keys, a copy — is whatever
+    # the caller handed this run. The `lypning run` arm pins its sibling
+    # binaries through two variables of its own, so `len(os.environ)` counted
+    # two more there than for the reference (py-a77a5cc628f3, py-eeab4d018dce,
+    # 2026-09-25). One named key, `os.environ['HOME']` or `.get('X')`, is
+    # still graded.
+    r"\bos\s*\.\s*environ\b(?!\s*(?:\[|\.\s*get\b))",
 ))
 
 # The one class that must be matched against the program TEXT, quotes and all,

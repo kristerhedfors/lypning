@@ -536,12 +536,19 @@ def test_a_matcher_call_routes_to_the_variant_that_has_the_matcher(lypning_bin):
     assert eng.chain_after_refusal(eng.LYPNING, r.kind, r.imports, r.verdicts) == [eng.LYPNING_L,
                                                                                   eng.CPYTHON]
     # A second module the sibling does NOT serve still rules it out. It used to
-    # be `glob`, then `csv`; both are served now, so the spelling has to be a
-    # module no row of `route::CAPS` claims — `itertools` is one, and the
-    # assertion is about the RULE, not about which module is currently on the
-    # far side of it.
-    r2 = _route("import re, itertools\nprint(re.sub('a', 'b', 'a'), list(itertools.count()))")
+    # be `glob`, then `csv`, then `itertools`; all three are served now, so the
+    # spelling has to be a module no row of `route::CAPS` claims — `functools`
+    # is one, and the assertion is about the RULE, not about which module is
+    # currently on the far side of it.
+    r2 = _route("import re, functools\nprint(re.sub('a', 'b', 'a'), functools.reduce)")
     assert r2.engine == eng.CPYTHON, r2
+    # …and a second module the sibling serves only IN PART rules it out too,
+    # when the attribute is outside the part. The first blocker is `re`'s, so
+    # the `--plan` row stays `module: import re`; `itertools.count` is served by
+    # no rung, and that is recorded as the spectrum's stop rather than dropped.
+    r3 = _route("import re, itertools\nprint(re.sub('a', 'b', 'a'), list(itertools.count()))")
+    assert r3.engine == eng.CPYTHON, r3
+    assert (r3.kind, r3.detail) == ("module", "import re"), r3
 
 
 def test_a_pattern_no_rung_can_compile_is_the_cores_verdict_too(lypning_bin):

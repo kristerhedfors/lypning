@@ -241,6 +241,8 @@ def _served() -> dict:
         "re": set(_named(RUST / "re.rs", "PATTERN_METHODS"))
         | set(_named(RUST / "re.rs", "MATCH_METHODS"))
         | set(_get_attr_arms(RUST / "re.rs")),
+        # A `random.Random(int)` instance's whole attribute surface.
+        "random": set(_named(RUST / "randobj.rs", "METHODS")),
     }
 
 
@@ -252,11 +254,11 @@ def test_the_routing_table_has_a_row_for_every_capability_that_bears_methods():
     assert (
         set(_cap_methods())
         == set(_served())
-        == {"collections", "hashlib", "pathlib", "re"}
+        == {"collections", "hashlib", "pathlib", "random", "re"}
     )
 
 
-@pytest.mark.parametrize("module", ["collections", "hashlib", "pathlib", "re"])
+@pytest.mark.parametrize("module", ["collections", "hashlib", "pathlib", "random", "re"])
 def test_the_routing_row_is_exactly_what_that_capability_serves(module):
     row = _cap_methods()[module]
     served = _served()[module]

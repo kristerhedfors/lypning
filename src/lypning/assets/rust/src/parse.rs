@@ -19,6 +19,29 @@ pub struct Parser {
     /// the whole parse rather than per chain: chains compose, and it is the
     /// longest PATH through the tree that the evaluator and the drop both walk.
     chain_ops: u32,
+    /// What CPython's symbol table would know about annotations in the scope
+    /// being parsed. See [`AnnScope`]; a def swaps its own in and back out.
+    scope: AnnScope,
+    /// `for`/`while` bodies enclosing this point in the current function:
+    /// `break` and `continue` outside one are CPython's compile-time
+    /// `SyntaxError`, and were run here until they were reached.
+    loops: u32,
+}
+
+/// The two facts about a scope an annotated assignment needs, gathered while
+/// it parses because the tree forgets them: `x: int` without a value binds
+/// nothing and yet makes `x` LOCAL to its function, and a name annotated
+/// there cannot also be `global` — a SyntaxError decided before anything runs.
+#[derive(Default)]
+struct AnnScope {
+    globals: Vec<Rc<str>>,
+    annotated: Vec<Rc<str>>,
+    /// This scope is a function body, not the module.
+    fun: bool,
+    /// The names a bare `x: int` in this function body declares: each local
+    /// is never bound by it, and a nested scope reading it must fail rather
+    /// than find a global.
+    bare: Vec<Rc<str>>,
 }
 
 /// The nesting a program is allowed, and it is a measurement rather than a
@@ -56,30 +79,133 @@ pub const MAX_PARSE_DEPTH: u32 = 64;
 /// gets its answer from CPython.
 pub const MAX_CHAIN_OPS: u32 = 1000;
 
+/// Every compile-time `SyntaxError` CPython raises is one here too, raised
+/// by the lexer or this parser before anything runs — in every variant, so
+/// the core and its supersets agree by construction — and the router sends
+/// it to CPython as `syntax`, whose message the caller reads. A construct
+/// accepted here that CPython's compiler rejects is not lax: it RUNS, and
+/// answers a program CPython never starts (`def f(a, a)`, `0777`, `break` at
+/// module level, `*a = [1]`, a tab/space mix CPython calls a `TabError`).
 pub fn parse(src: &str) -> R<Vec<Stmt>> {
     let mut p = Parser {
         t: tokenize(src)?,
         i: 0,
         depth: 0,
         chain_ops: 0,
+        scope: AnnScope::default(),
+        loops: 0,
     };
-    let mut body = Vec::new();
-    while !p.at_eof() {
-        if p.eat_newline() {
-            continue;
-        }
-        body.extend(p.statement()?);
+    // `__debug__` is a constant this engine has no value for, and CPython
+    // rejects every binding of it at compile time; either way the answer is
+    // the reference's, and before anything runs.
+    if p.t.iter().any(|t| matches!(&t.tok, Tok::Name(n) if n == "__debug__")) {
+        return Err(unsupported("builtin", "__debug__"));
+    }
+    let body = p.module();
+    // `from __future__ import …` is a compiler directive, decided over the
+    // whole parse before anything runs; `future.rs` is the whole of it. It is
+    // handed the RESULT, error and all, because `barry_as_FLUFL` changes the
+    // grammar and must refuse whether or not this parser read what follows.
+    #[cfg(feature = "cap-future")]
+    let body = crate::future::pass(body, &p.t);
+    let _ = src;
+    let body = body?;
+    // After the pass, which clears the annotations a head defers: CPython's
+    // symbol table does not count those as uses either.
+    if let Some(g) = p.t.iter().find(|t| matches!(&t.tok, Tok::Name(n) if n == "global")) {
+        globals_in(&body, &[]).map_err(|m| LypningError::syntax(g.line, &m))?;
     }
     Ok(body)
 }
 
+/// Does a nested scope in these function-body tokens spell one of `bare`? A
+/// `lambda` reaches to the end of its logical line, a `def` to the end of its
+/// block (or of its line, for a one-line body), and an f-string holding a
+/// `lambda` is its own token. Over-reaching — a `;` after a lambda — only
+/// refuses more.
+fn bare_read_nested(toks: &[Token], bare: &[Rc<str>]) -> bool {
+    let spells = |t: &Token| match &t.tok {
+        Tok::Name(n) => bare.iter().any(|b| b.as_ref() == n),
+        Tok::FStr { raw, .. } => bare.iter().any(|b| raw.contains(b.as_ref())),
+        _ => false,
+    };
+    let line_end = |k: usize| toks[k..].iter().position(|t| matches!(t.tok, Tok::Newline)).map_or(toks.len(), |j| k + j);
+    for k in 0..toks.len() {
+        let end = match &toks[k].tok {
+            Tok::Name(n) if n == "lambda" => line_end(k),
+            Tok::Name(n) if n == "def" => {
+                let j = line_end(k);
+                if matches!(toks.get(j + 1).map(|t| &t.tok), Some(Tok::Indent)) {
+                    let mut depth = 0i32;
+                    let mut e = toks.len();
+                    for (i, t) in toks.iter().enumerate().skip(j + 1) {
+                        match t.tok {
+                            Tok::Indent => depth += 1,
+                            Tok::Dedent => depth -= 1,
+                            _ => {}
+                        }
+                        if depth == 0 {
+                            e = i + 1;
+                            break;
+                        }
+                    }
+                    e
+                } else {
+                    j
+                }
+            }
+            Tok::FStr { raw, .. } if raw.contains("lambda") => k + 1,
+            _ => continue,
+        };
+        if toks[k..end].iter().any(spells) {
+            return true;
+        }
+    }
+    false
+}
+
 impl Parser {
+    /// A compile-time `SyntaxError`, at the current line.
+    fn reject(&self, why: &str) -> LypningError {
+        LypningError::syntax(self.line(), why)
+    }
+
+    /// `body` parsed as a loop body: `break` and `continue` are legal in it.
+    fn loop_block(&mut self) -> R<Vec<Stmt>> {
+        self.loops += 1;
+        let b = self.block();
+        self.loops -= 1;
+        b
+    }
+
+    fn module(&mut self) -> R<Vec<Stmt>> {
+        let mut body = Vec::new();
+        while !self.at_eof() {
+            if self.eat_newline() {
+                continue;
+            }
+            body.extend(self.statement()?);
+        }
+        Ok(body)
+    }
     fn peek(&self) -> &Tok {
         &self.t[self.i.min(self.t.len() - 1)].tok
     }
     fn peek_at(&self, n: usize) -> &Tok {
         &self.t[(self.i + n).min(self.t.len() - 1)].tok
     }
+    /// `from __future__ import annotations` makes every annotation lazy on
+    /// any version. Only lypning-l serves a `__future__` head; the core
+    /// refuses the import before anything runs, so it never asks.
+    #[cfg(feature = "cap-future")]
+    fn future_annotations(&self) -> bool {
+        crate::route::future_names(&self.t, "annotations") > 0
+    }
+    #[cfg(not(feature = "cap-future"))]
+    fn future_annotations(&self) -> bool {
+        false
+    }
+
     fn line(&self) -> u32 {
         self.t[self.i.min(self.t.len() - 1)].line
     }
@@ -271,7 +397,7 @@ impl Parser {
         }
         if self.eat_kw("while") {
             let cond = self.expr()?;
-            let body = self.block()?;
+            let body = self.loop_block()?;
             let els = if self.eat_kw("else") {
                 self.block()?
             } else {
@@ -282,8 +408,8 @@ impl Parser {
         if self.eat_kw("for") {
             let target = self.target_list("in")?;
             self.expect_kw("in")?;
-            let iter = self.expr_list()?;
-            let body = self.block()?;
+            let iter = self.value_list()?;
+            let body = self.loop_block()?;
             let els = if self.eat_kw("else") {
                 self.block()?
             } else {
@@ -305,7 +431,32 @@ impl Parser {
                 let ret = self.expr()?;
                 params.anns.push(ret);
             }
-            let body = self.block()?;
+            let start = self.i;
+            let outer = std::mem::replace(
+                &mut self.scope,
+                AnnScope {
+                    fun: true,
+                    ..AnnScope::default()
+                },
+            );
+            let loops = std::mem::replace(&mut self.loops, 0);
+            let body = self.block();
+            self.loops = loops;
+            let body = body?;
+            let inner = std::mem::replace(&mut self.scope, outer);
+            // A bare `x: int` makes `x` local and leaves it unbound, so a
+            // lambda or nested def reading it raises NameError in CPython —
+            // but this evaluator resolves a free name through the global it
+            // finds, at any point in the function. Refused rather than
+            // resolved, and only where a nested scope COULD read it: a bare
+            // name spelled inside the tokens of a `lambda` (to the end of its
+            // logical line) or a nested `def` (to the end of its block). The
+            // tokens are the one place a lambda inside an f-string field is
+            // still visible, and an f-string's raw text counts as a spelling.
+            let read = !inner.bare.is_empty() && bare_read_nested(&self.t[start..self.i], &inner.bare);
+            if read {
+                return Err(unsupported("annotation", "a nested scope beside a bare annotated local"));
+            }
             if contains_yield(&body) {
                 return Err(unsupported("generator", "yield in a function body"));
             }
@@ -346,6 +497,9 @@ impl Parser {
             let body = self.block()?;
             let mut handlers = Vec::new();
             while self.is_kw("except") {
+                if handlers.last().is_some_and(|h: &Handler| h.kinds.is_empty()) {
+                    return Err(self.reject("default 'except:' must be last"));
+                }
                 self.bump();
                 if self.is_op("*") {
                     return Err(unsupported("except-star", "except* group"));
@@ -353,8 +507,18 @@ impl Parser {
                 let mut kinds = Vec::new();
                 let mut name = None;
                 if !self.is_op(":") {
+                    // Served: a name, a dotted name, or a flat parenthesised
+                    // tuple of them. Any other expression is valid Python —
+                    // `except ((A, B), C)`, `except E + (X,)`, and 3.14's
+                    // unparenthesised `except A, B` (PEP 758) — whose answer is
+                    // CPython's, so it refuses rather than dying as this
+                    // parser's SyntaxError.
+                    let odd = |_: &Self| unsupported("except", "clause");
                     if self.eat_op("(") {
                         loop {
+                            if !matches!(self.peek(), Tok::Name(_)) {
+                                return Err(odd(self));
+                            }
                             kinds.push(self.dotted_name()?);
                             if !self.eat_op(",") {
                                 break;
@@ -363,9 +527,18 @@ impl Parser {
                                 break;
                             }
                         }
-                        self.expect_op(")")?;
+                        if !self.is_op(")") {
+                            return Err(odd(self));
+                        }
+                        self.bump();
                     } else {
+                        if !matches!(self.peek(), Tok::Name(_)) {
+                            return Err(odd(self));
+                        }
                         kinds.push(self.dotted_name()?);
+                    }
+                    if !self.is_op(":") && !self.is_kw("as") {
+                        return Err(odd(self));
                     }
                     if self.eat_kw("as") {
                         name = Some(self.ident()?);
@@ -492,7 +665,29 @@ impl Parser {
             if self.is_op(terminator) {
                 break;
             }
+            // `**k` is last, and `*` comes once: CPython's two SyntaxErrors,
+            // word for word. Both were accepted at exit 0.
+            if p.dstar.is_some() {
+                return Err(LypningError::syntax(
+                    self.line(),
+                    "arguments cannot follow var-keyword argument",
+                ));
+            }
+            if p.star.is_some() && self.is_op("*") {
+                return Err(LypningError::syntax(self.line(), "* argument may appear only once"));
+            }
             if self.eat_op("/") {
+                // CPython's three, word for word; each was accepted and the
+                // marker ignored.
+                if p.names.is_empty() {
+                    return Err(self.reject("at least one argument must precede /"));
+                }
+                if p.posonly > 0 {
+                    return Err(self.reject("/ may appear only once"));
+                }
+                if p.star.is_some() {
+                    return Err(self.reject("/ must be ahead of *"));
+                }
                 // Positional-only marker. The names before it may not be given
                 // by keyword, which is `posonly`; before that field existed the
                 // marker was accepted and IGNORED, so `def f(x, /, y)` called
@@ -512,10 +707,12 @@ impl Parser {
                 p.star = Some(p.names.len());
                 p.names.push(self.ident()?);
                 p.defaults.push(None);
+                self.star_annotation(lambda, &mut p, "var-positional")?;
             } else if self.eat_op("**") {
                 p.dstar = Some(p.names.len());
                 p.names.push(self.ident()?);
                 p.defaults.push(None);
+                self.star_annotation(lambda, &mut p, "var-keyword")?;
             } else {
                 // A NAME AFTER `*args` IS KEYWORD-ONLY, exactly as one after a
                 // bare `*` is, and the bare form is refused four lines up. This
@@ -555,7 +752,35 @@ impl Parser {
                 break;
             }
         }
+        let n = p.names.len();
+        if (0..n).any(|i| p.names[..i].contains(&p.names[i])) {
+            return Err(self.reject("duplicate argument in function definition"));
+        }
+        let end = p.star.or(p.dstar).unwrap_or(n);
+        if (1..end).any(|j| p.defaults[j].is_none() && p.defaults[j - 1].is_some()) {
+            return Err(self.reject("parameter without a default follows parameter with a default"));
+        }
         Ok(p)
+    }
+
+    /// `def f(*a: int, **k: str)` — the annotation on a star parameter, which
+    /// is recorded with the others in source order. It was `expected ')',
+    /// found ':'`, a SyntaxError at exit 1 on valid Python. `*a: *Ts` (a
+    /// starred annotation) stays refused.
+    fn star_annotation(&mut self, lambda: bool, p: &mut Params, what: &str) -> R<()> {
+        if !lambda && self.eat_op(":") {
+            if self.is_op("*") {
+                return Err(unsupported("unpack", "starred annotation on *args"));
+            }
+            p.anns.push(self.expr()?);
+        }
+        if self.is_op("=") {
+            return Err(LypningError::syntax(
+                self.line(),
+                &format!("{what} argument cannot have default value"),
+            ));
+        }
+        Ok(())
     }
 
     fn simple(&mut self) -> R<Stmt> {
@@ -563,9 +788,15 @@ impl Parser {
             return Ok(Stmt::Pass);
         }
         if self.eat_kw("break") {
+            if self.loops == 0 {
+                return Err(self.reject("'break' outside loop"));
+            }
             return Ok(Stmt::Break);
         }
         if self.eat_kw("continue") {
+            if self.loops == 0 {
+                return Err(self.reject("'continue' not properly in loop"));
+            }
             return Ok(Stmt::Continue);
         }
         if self.is_kw("nonlocal") {
@@ -576,13 +807,20 @@ impl Parser {
             while self.eat_op(",") {
                 names.push(self.ident()?);
             }
+            if names.iter().any(|n| self.scope.annotated.contains(n)) {
+                return Err(annotated_global());
+            }
+            self.scope.globals.extend(names.iter().cloned());
             return Ok(Stmt::Global(names));
         }
         if self.eat_kw("return") {
+            if !self.scope.fun {
+                return Err(self.reject("'return' outside function"));
+            }
             if matches!(self.peek(), Tok::Newline | Tok::Eof) || self.is_op(";") {
                 return Ok(Stmt::Return(None));
             }
-            return Ok(Stmt::Return(Some(self.expr_list()?)));
+            return Ok(Stmt::Return(Some(self.value_list()?)));
         }
         if self.eat_kw("raise") {
             if matches!(self.peek(), Tok::Newline | Tok::Eof) || self.is_op(";") {
@@ -661,6 +899,7 @@ impl Parser {
         }
 
         // Expression, assignment or augmented assignment.
+        let paren = self.is_op("(");
         let first = self.expr_list()?;
         const AUG: &[(&str, BinOp)] = &[
             ("+=", BinOp::Add),
@@ -679,8 +918,11 @@ impl Parser {
         ];
         for (op, b) in AUG {
             if self.is_op(op) {
+                if matches!(first, Expr::Tuple(_) | Expr::List(_) | Expr::Starred(_)) {
+                    return Err(self.reject("illegal expression for augmented assignment"));
+                }
                 self.bump();
-                let value = self.expr_list()?;
+                let value = self.value_list()?;
                 return Ok(Stmt::AugAssign {
                     target: self.target_from_expr(first)?,
                     op: *b,
@@ -689,17 +931,81 @@ impl Parser {
             }
         }
         if self.is_op(":") {
-            // Annotated assignment: `x: int = 1`
+            // Annotated assignment: `x: int = 1`. The annotation itself is
+            // parsed and dropped: a 3.14 reference evaluates none of them here.
+            // Before 3.14 one at module level is EVALUATED and stored, so
+            // `x: Undefined = 1` is a NameError there — unless the program
+            // imports `from __future__ import annotations`. Refused: telling a
+            // harmless annotation from one that raises costs code the frozen
+            // core's text segment does not have (42 B, measured on musl).
+            // Compiled away on a 3.14 reference.
+            if crate::err::REF_PY_MINOR < 14 && !self.scope.fun && !self.future_annotations() {
+                return Err(unsupported("annotation", "a module-level annotation"));
+            }
             self.bump();
             self.expr()?;
-            if self.eat_op("=") {
-                let value = self.expr_list()?;
-                return Ok(Stmt::Assign {
-                    targets: vec![self.target_from_expr(first)?],
-                    value,
-                });
-            }
-            return Ok(Stmt::Pass);
+            let value = if self.eat_op("=") { Some(self.value_list()?) } else { None };
+            let msg = match &first {
+                // A bare NAME is "simple"; `(x)` is not, and neither binds nor
+                // declares anything without a value.
+                Expr::Name(n) if !paren => {
+                    let n = n.clone();
+                    let sc = &mut self.scope;
+                    let fun = sc.fun;
+                    if fun && sc.globals.contains(&n) {
+                        return Err(annotated_global());
+                    }
+                    sc.annotated.push(n.clone());
+                    if fun && value.is_none() {
+                        sc.bare.push(n.clone());
+                    }
+                    return Ok(match value {
+                        Some(value) => Stmt::Assign {
+                            targets: vec![Target::Name(n)],
+                            value,
+                        },
+                        // Binds nothing, but `x` is now local to the function:
+                        // an assignment that never runs is how the evaluator's
+                        // `collect_assigned` and the router both learn that.
+                        // `x = x` rather than a literal, so the router records
+                        // no value for `x` that it never held.
+                        None if fun => Stmt::If {
+                            arms: vec![(
+                                Expr::False,
+                                vec![Stmt::Assign {
+                                    targets: vec![Target::Name(n.clone())],
+                                    value: Expr::Name(n),
+                                }],
+                            )],
+                            els: Vec::new(),
+                        },
+                        None => Stmt::Pass,
+                    });
+                }
+                Expr::Name(_) | Expr::Attr(..) | Expr::Index(..) | Expr::Slice { .. } => {
+                    return Ok(match value {
+                        Some(value) => Stmt::Assign {
+                            targets: vec![self.target_from_expr(first)?],
+                            value,
+                        },
+                        // No value still evaluates the object and the
+                        // subscript, left to right, and stores nothing. A
+                        // slice would evaluate its bounds too — rare enough
+                        // to refuse rather than pay for.
+                        None => Stmt::Expr(match first {
+                            Expr::Attr(b, _) => *b,
+                            Expr::Index(b, i) => Expr::Tuple(vec![*b, *i]),
+                            Expr::Name(_) => Expr::None,
+                            _ => return Err(unsupported("annotation", "an annotated slice with no value")),
+                        }),
+                    });
+                }
+                Expr::Starred(_) if !paren => "invalid syntax",
+                Expr::Tuple(_) => "only single target (not tuple) can be annotated",
+                Expr::List(_) => "only single target (not list) can be annotated",
+                _ => "illegal target for annotation",
+            };
+            return Err(LypningError::syntax(self.line(), msg));
         }
         if self.is_op("=") {
             let mut targets = vec![self.target_from_expr(first)?];
@@ -709,7 +1015,7 @@ impl Parser {
                 if self.is_op("=") {
                     targets.push(self.target_from_expr(e)?);
                 } else {
-                    value = Some(e);
+                    value = Some(no_star(e)?);
                 }
             }
             return Ok(Stmt::Assign {
@@ -717,7 +1023,12 @@ impl Parser {
                 value: value.unwrap(),
             });
         }
-        Ok(Stmt::Expr(first))
+        Ok(Stmt::Expr(no_star(first)?))
+    }
+
+    /// An expression list in a VALUE position, where `*a, 2` is legal Python.
+    fn value_list(&mut self) -> R<Expr> {
+        no_star(self.expr_list()?)
     }
 
     fn clone_expr(&mut self) -> R<Expr> {
@@ -764,6 +1075,10 @@ impl Parser {
                 break;
             }
         }
+        let alone = items.len() == 1 && !saw_comma;
+        if let Some(m) = stars(items.iter().filter(|t| matches!(t, Target::Star(_))).count(), alone) {
+            return Err(self.reject(m));
+        }
         Ok(if items.len() == 1 && !saw_comma {
             items.pop().unwrap()
         } else {
@@ -774,11 +1089,19 @@ impl Parser {
     fn target_from_expr(&self, e: Expr) -> R<Target> {
         Ok(match e {
             Expr::Name(name) => Target::Name(name),
-            Expr::Starred(inner) => Target::Star(Box::new(self.target_from_expr(*inner)?)),
+            // Only an element of a tuple or list target may be starred
+            // (below); `*a = [1]` alone is CPython's SyntaxError.
+            Expr::Starred(_) => return Err(self.reject(LONE_STAR)),
             Expr::Tuple(v) | Expr::List(v) => {
+                if let Some(m) = stars(v.iter().filter(|x| matches!(x, Expr::Starred(_))).count(), false) {
+                    return Err(self.reject(m));
+                }
                 let mut out = Vec::with_capacity(v.len());
                 for x in v {
-                    out.push(self.target_from_expr(x)?);
+                    out.push(match x {
+                        Expr::Starred(inner) => Target::Star(Box::new(self.target_from_expr(*inner)?)),
+                        x => self.target_from_expr(x)?,
+                    });
                 }
                 Target::Tuple(out)
             }
@@ -810,10 +1133,15 @@ impl Parser {
         // left operand.
         if self.is_op("*") {
             self.bump();
-            let e = self.expr()?;
-            let mut items = vec![Expr::Starred(Box::new(e))];
+            let e = Expr::Starred(Box::new(self.expr()?));
+            // `*a` with no comma is not a tuple: `*a = [1]` is CPython's
+            // SyntaxError where `*a, = [1]` is an unpacking.
+            if !self.is_op(",") {
+                return Ok(e);
+            }
+            let mut items = vec![e];
             while self.eat_op(",") {
-                if matches!(self.peek(), Tok::Newline | Tok::Eof) || self.is_op("=") {
+                if self.ends_expr_list() {
                     break;
                 }
                 items.push(self.star_element()?);
@@ -826,19 +1154,36 @@ impl Parser {
         }
         let mut items = vec![first];
         while self.eat_op(",") {
-            if matches!(self.peek(), Tok::Newline | Tok::Eof)
-                || self.is_op("=")
-                || self.is_op(")")
-                || self.is_op("]")
-                || self.is_op("}")
-                || self.is_op(";")
-                || self.is_op(":")
-            {
+            if self.ends_expr_list() {
                 break;
             }
             items.push(self.star_element()?);
         }
         Ok(Expr::Tuple(items))
+    }
+
+    /// After a trailing comma, the tokens that close an expression list. One
+    /// check for both branches of `expr_list`: the starred one once stopped
+    /// only at newline and `=`, so `t=*a,;print(t)` died as a SyntaxError.
+    fn ends_expr_list(&self) -> bool {
+        matches!(self.peek(), Tok::Newline | Tok::Eof)
+            || self.is_op("=")
+            || self.is_op(")")
+            || self.is_op("]")
+            || self.is_op("}")
+            || self.is_op(";")
+            || self.is_op(":")
+    }
+
+    /// An element after the first in a `(…)`, `[…]` or `{…}` display. The
+    /// FIRST element's `*` is refused in `atom_inner`; a later one — `[0, *a]`,
+    /// `'%s %s' % (0, *a)` — fell through to `expr()` and died as `invalid
+    /// syntax: unexpected '*'` at exit 1 on valid Python.
+    fn display_elem(&mut self) -> R<Expr> {
+        if self.is_op("*") {
+            return Err(unsupported("unpack", "* in a display"));
+        }
+        self.expr()
     }
 
     fn star_element(&mut self) -> R<Expr> {
@@ -1111,11 +1456,29 @@ impl Parser {
         let mut star = Vec::new();
         let mut kwargs = Vec::new();
         let mut dstar = Vec::new();
+        let mut dstar_at = Vec::new();
+        let mut bare_gen = false;
         loop {
             if self.is_op(")") {
                 break;
             }
+            // CPython's order rules, decided before anything runs: nothing
+            // positional after `**`, no plain positional after a keyword.
+            if !self.is_op("**") && !(matches!(self.peek(), Tok::Name(n) if !is_keyword(n))
+                && matches!(self.peek_at(1), Tok::Op("=")))
+            {
+                if !dstar.is_empty() {
+                    return Err(self.reject(if self.is_op("*") {
+                        "iterable argument unpacking follows keyword argument unpacking"
+                    } else {
+                        "positional argument follows keyword argument unpacking"
+                    }));
+                } else if !kwargs.is_empty() && !self.is_op("*") {
+                    return Err(self.reject("positional argument follows keyword argument"));
+                }
+            }
             if self.eat_op("**") {
+                dstar_at.push(kwargs.len());
                 dstar.push(self.expr()?);
             } else if self.eat_op("*") {
                 star.push(args.len());
@@ -1124,12 +1487,25 @@ impl Parser {
                 && matches!(self.peek_at(1), Tok::Op("="))
             {
                 let n = self.ident()?;
+                // A compile-time error in CPython, so nothing before it runs:
+                // `print(1); f(a=1, a=2)` prints nothing. Accepted, the last
+                // value won and the program ran at exit 0.
+                if kwargs.iter().any(|(k, _): &(std::rc::Rc<str>, Expr)| *k == n) {
+                    return Err(LypningError::syntax(
+                        self.line(),
+                        &format!("keyword argument repeated: {n}"),
+                    ));
+                }
                 self.bump();
                 kwargs.push((n, self.expr()?));
             } else {
                 let e = self.expr()?;
                 // A bare generator argument: `sum(x for x in y)`
                 if self.is_kw("for") {
+                    if !args.is_empty() || !kwargs.is_empty() || !dstar.is_empty() {
+                        return Err(self.reject(BARE_GEN));
+                    }
+                    bare_gen = true;
                     let clauses = self.comp_clauses()?;
                     args.push(Expr::Comp {
                         kind: CompKind::Gen,
@@ -1144,6 +1520,9 @@ impl Parser {
             if !self.eat_op(",") {
                 break;
             }
+            if bare_gen {
+                return Err(self.reject(BARE_GEN));
+            }
         }
         self.expect_op(")")?;
         Ok(Expr::Call {
@@ -1152,11 +1531,17 @@ impl Parser {
             star,
             kwargs,
             dstar,
+            dstar_at,
         })
     }
 
     fn subscript_tail(&mut self, base: Expr) -> R<Expr> {
-        // `a[:]`, `a[i]`, `a[i:j]`, `a[i:j:k]`
+        // `a[:]`, `a[i]`, `a[i:j]`, `a[i:j:k]`. `t[*a]` (3.11) is a tuple
+        // subscript this parser does not build; it was `invalid syntax` at
+        // exit 1 on valid Python.
+        if self.is_op("*") {
+            return Err(unsupported("unpack", "* in a subscript"));
+        }
         let lo = if self.is_op(":") {
             None
         } else {
@@ -1203,6 +1588,9 @@ impl Parser {
             while self.eat_op(",") {
                 if self.is_op("]") {
                     break;
+                }
+                if self.is_op("*") {
+                    return Err(unsupported("unpack", "* in a subscript"));
                 }
                 items.push(self.expr()?);
             }
@@ -1277,6 +1665,12 @@ impl Parser {
                         self.bump();
                         return Ok(Expr::False);
                     }
+                    // Before 3.14 the module's annotations are a real dict the
+                    // program can read; from 3.14 (PEP 649) they are lazy. A
+                    // compile-time constant, so a 3.14 build carries none of it.
+                    "__annotations__" if crate::err::REF_PY_MINOR < 14 => {
+                        return Err(unsupported("annotation", "__annotations__"));
+                    }
                     _ => {}
                 }
                 if is_keyword(&n) {
@@ -1311,7 +1705,7 @@ impl Parser {
                 if self.eat_op(",") {
                     let mut items = vec![first];
                     while !self.is_op(")") {
-                        items.push(self.expr()?);
+                        items.push(self.display_elem()?);
                         if !self.eat_op(",") {
                             break;
                         }
@@ -1348,7 +1742,7 @@ impl Parser {
                     if self.is_op("]") {
                         break;
                     }
-                    items.push(self.expr()?);
+                    items.push(self.display_elem()?);
                 }
                 self.expect_op("]")?;
                 Ok(Expr::List(items))
@@ -1425,7 +1819,7 @@ impl Parser {
                     if self.is_op("}") {
                         break;
                     }
-                    items.push(self.expr()?);
+                    items.push(self.display_elem()?);
                 }
                 self.expect_op("}")?;
                 Ok(Expr::Set(items))
@@ -1544,6 +1938,9 @@ fn parse_fstring(raw: &str, raw_prefix: bool) -> R<Vec<FPart>> {
                     lit.clear();
                 }
                 let (expr_src, conv, spec_src, next) = split_field(raw, i + 1)?;
+                if conv.is_some_and(|c| !matches!(c, 's' | 'r' | 'a')) {
+                    return Err(LypningError::syntax(0, "f-string: invalid conversion character"));
+                }
                 i = next;
                 if expr_src.trim_end().ends_with('=') && !expr_src.trim_end().ends_with("==") {
                     return Err(unsupported("fstring", "self-documenting {x=} field"));
@@ -1553,6 +1950,8 @@ fn parse_fstring(raw: &str, raw_prefix: bool) -> R<Vec<FPart>> {
                     i: 0,
                     depth: 0,
                     chain_ops: 0,
+                    scope: AnnScope::default(),
+                    loops: 0,
                 };
                 let e = p.expr_list()?;
                 if !matches!(p.peek(), Tok::Newline | Tok::Eof) {
@@ -1663,6 +2062,223 @@ fn split_field(raw: &str, start: usize) -> R<(String, Option<char>, Option<Strin
         i += 1;
     }
     Err(LypningError::syntax(0, "f-string: expecting '}'"))
+}
+
+/// `*a, 2` as a value builds a tuple of `a`'s items. The evaluator has no
+/// splice for a tuple display — the parenthesized spelling already refuses —
+/// and reached `can't use starred expression here` at exit 1 instead. A
+/// target list keeps its star: this runs only on what is left as a value.
+const BARE_GEN: &str = "Generator expression must be parenthesized";
+
+/// A name's uses in one scope so far, as CPython's symbol table flags them.
+const PARAM: u8 = 1;
+const USE: u8 = 2;
+const LOCAL: u8 = 4;
+
+type Seen<'a> = Vec<(&'a str, u8)>;
+
+/// CPython's rule for `global` (`symtable.c`, `Global_kind`), over one scope's
+/// statements in source order: a name already a PARAMETER of the scope, USED
+/// in it, or ASSIGNED in it (a target, a `def`, `del`, `except … as`) is a
+/// compile-time `SyntaxError`. An import is not an assignment; a nested
+/// scope's own names (a lambda's or def's parameters and body, a
+/// comprehension past its first iterable) and keyword or attribute names are
+/// not the scope's at all. `Err` is CPython's message.
+fn globals_in(body: &[Stmt], params: &[Rc<str>]) -> Result<(), String> {
+    let mut seen: Seen = params.iter().map(|n| (&**n, PARAM)).collect();
+    g_stmts(body, &mut seen)
+}
+
+fn g_stmts<'a>(body: &'a [Stmt], s: &mut Seen<'a>) -> Result<(), String> {
+    body.iter().try_for_each(|st| g_stmt(st, s))
+}
+
+fn g_stmt<'a>(st: &'a Stmt, s: &mut Seen<'a>) -> Result<(), String> {
+    match st {
+        Stmt::Expr(e) | Stmt::Return(Some(e)) | Stmt::Raise { exc: Some(e) } => g_expr(e, s),
+        Stmt::Assign { targets, value } => {
+            targets.iter().for_each(|t| g_target(t, s));
+            g_expr(value, s);
+        }
+        Stmt::AugAssign { target, value, .. } => {
+            g_target(target, s);
+            g_expr(value, s);
+        }
+        Stmt::Assert { test, msg } => {
+            g_expr(test, s);
+            msg.iter().for_each(|m| g_expr(m, s));
+        }
+        Stmt::If { arms, els } => {
+            for (c, b) in arms {
+                g_expr(c, s);
+                g_stmts(b, s)?;
+            }
+            g_stmts(els, s)?;
+        }
+        Stmt::For { target, iter, body, els } => {
+            g_target(target, s);
+            g_expr(iter, s);
+            g_stmts(body, s)?;
+            g_stmts(els, s)?;
+        }
+        Stmt::While { cond, body, els } => {
+            g_expr(cond, s);
+            g_stmts(body, s)?;
+            g_stmts(els, s)?;
+        }
+        Stmt::Def { name, params, body } => {
+            s.push((name, LOCAL));
+            g_params(params, s);
+            globals_in(body, &params.names)?;
+        }
+        Stmt::Try { body, handlers, els, finally } => {
+            g_stmts(body, s)?;
+            for h in handlers {
+                for k in &h.kinds {
+                    s.push((k.split('.').next().unwrap_or(""), USE));
+                }
+                if let Some(n) = &h.name {
+                    s.push((n, LOCAL));
+                }
+                g_stmts(&h.body, s)?;
+            }
+            g_stmts(els, s)?;
+            g_stmts(finally, s)?;
+        }
+        Stmt::With { items, body } => {
+            for (e, t) in items {
+                g_expr(e, s);
+                t.iter().for_each(|t| g_target(t, s));
+            }
+            g_stmts(body, s)?;
+        }
+        Stmt::Del(ts) => ts.iter().for_each(|t| g_target(t, s)),
+        Stmt::Global(names) => {
+            for n in names {
+                let f = s.iter().filter(|(m, _)| *m == &**n).fold(0, |a, (_, f)| a | f);
+                let why = if f & PARAM != 0 {
+                    "is parameter and global"
+                } else if f & USE != 0 {
+                    "is used prior to global declaration"
+                } else if f & LOCAL != 0 {
+                    "is assigned to before global declaration"
+                } else {
+                    continue;
+                };
+                return Err(format!("name '{n}' {why}"));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// What a `def` or `lambda` evaluates in the ENCLOSING scope: its defaults,
+/// and (a `def`'s) annotations while the reference evaluates them there —
+/// before 3.14, and not under a head that deferred them (already cleared).
+fn g_params<'a>(p: &'a Params, s: &mut Seen<'a>) {
+    p.defaults.iter().flatten().for_each(|d| g_expr(d, s));
+    if crate::err::REF_PY_MINOR < 14 {
+        p.anns.iter().for_each(|a| g_expr(a, s));
+    }
+}
+
+fn g_target<'a>(t: &'a Target, s: &mut Seen<'a>) {
+    match t {
+        Target::Name(n) => s.push((n, LOCAL)),
+        Target::Tuple(v) => v.iter().for_each(|t| g_target(t, s)),
+        Target::Star(t) => g_target(t, s),
+        Target::Attr(e, _) => g_expr(e, s),
+        Target::Index(a, b) => {
+            g_expr(a, s);
+            g_expr(b, s);
+        }
+        Target::Slice { base, lo, hi } => {
+            g_expr(base, s);
+            lo.iter().chain(hi).for_each(|e| g_expr(e, s));
+        }
+    }
+}
+
+fn g_expr<'a>(e: &'a Expr, s: &mut Seen<'a>) {
+    fn each<'a>(v: &'a [Expr], s: &mut Seen<'a>) {
+        v.iter().for_each(|e| g_expr(e, s))
+    }
+    match e {
+        Expr::Name(n) => s.push((n, USE)),
+        Expr::Tuple(v) | Expr::List(v) | Expr::Set(v) | Expr::BoolAnd(v) | Expr::BoolOr(v) => each(v, s),
+        Expr::Dict(v) => v.iter().for_each(|(k, x)| {
+            g_expr(k, s);
+            g_expr(x, s);
+        }),
+        Expr::DictUnpack(v) => v.iter().for_each(|d| match d {
+            DictItem::Pair(k, x) => {
+                g_expr(k, s);
+                g_expr(x, s);
+            }
+            DictItem::Unpack(x) => g_expr(x, s),
+        }),
+        Expr::Bin(_, a, b) | Expr::Index(a, b) => {
+            g_expr(a, s);
+            g_expr(b, s);
+        }
+        Expr::Un(_, a) | Expr::Starred(a) | Expr::Attr(a, _) => g_expr(a, s),
+        Expr::Compare { first, rest } => {
+            g_expr(first, s);
+            rest.iter().for_each(|(_, x)| g_expr(x, s));
+        }
+        Expr::Cond { cond, then, els } => {
+            g_expr(cond, s);
+            g_expr(then, s);
+            g_expr(els, s);
+        }
+        Expr::Slice { base, lo, hi, step } => {
+            g_expr(base, s);
+            lo.iter().chain(hi).chain(step).for_each(|x| g_expr(x, s));
+        }
+        Expr::Call { func, args, kwargs, dstar, .. } => {
+            g_expr(func, s);
+            each(args, s);
+            kwargs.iter().for_each(|(_, x)| g_expr(x, s));
+            each(dstar, s);
+        }
+        // Only the first iterable is evaluated in this scope.
+        Expr::Comp { clauses, .. } => clauses.iter().take(1).for_each(|c| g_expr(&c.iter, s)),
+        Expr::FString(parts) => parts.iter().for_each(|p| {
+            if let FPart::Expr { expr, spec, .. } = p {
+                g_expr(expr, s);
+                spec.iter().for_each(|x| g_expr(x, s));
+            }
+        }),
+        Expr::Lambda { params, .. } => params.defaults.iter().flatten().for_each(|d| g_expr(d, s)),
+        _ => {}
+    }
+}
+
+/// CPython's two errors for a starred target: a second star in one tuple or
+/// list, and a star that is the whole target.
+fn stars(n: usize, alone: bool) -> Option<&'static str> {
+    match n {
+        0 => None,
+        1 => alone.then_some(LONE_STAR),
+        _ => Some("multiple starred expressions in assignment"),
+    }
+}
+
+const LONE_STAR: &str = "starred assignment target must be in a list or tuple";
+
+fn no_star(e: Expr) -> R<Expr> {
+    if matches!(&e, Expr::Starred(_)) || matches!(&e, Expr::Tuple(v) if v.iter().any(|x| matches!(x, Expr::Starred(_)))) {
+        return Err(unsupported("unpack", "* in a tuple display"));
+    }
+    Ok(e)
+}
+
+fn annotated_global() -> LypningError {
+    // CPython's message depends on what else the scope did with the name
+    // (`used prior to`, `is parameter and`), which this parser does not track;
+    // it is a SyntaxError every time, so the reference is asked for its words.
+    unsupported("annotation", "an annotated name declared global")
 }
 
 fn contains_yield(body: &[Stmt]) -> bool {

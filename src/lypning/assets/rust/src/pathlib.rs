@@ -497,13 +497,7 @@ fn fs_effect(s: &str, name: &str, args: &mut Args, kw: &[(Rc<str>, Value)]) -> R
         if !kw.is_empty() {
             return Err(refuse("PosixPath.unlink(missing_ok=…)"));
         }
-        if !crate::io::path_exists(s) {
-            return Err(LypningError::exc(
-                "FileNotFoundError",
-                format!("[Errno 2] No such file or directory: '{s}'"),
-            ));
-        }
-        crate::io::stage_delete(s);
+        crate::io::remove_file(s)?;
         return Ok(Value::None);
     }
     let mut parents = false;

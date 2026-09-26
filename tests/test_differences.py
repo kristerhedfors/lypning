@@ -57,15 +57,20 @@ def _string_const(file: str, name: str) -> list:
 def _core_modules() -> list:
     """``modules.rs:MODULES`` as the build with no ``cap-*`` feature sees it.
 
-    The table is spelled once per feature combination, and the one guarded by
-    ``cfg(not(any(…)))`` is the core's — which is also the set both engines
-    share, since a capability only ever adds.
+    The table is one array whose capability rows are each an element behind its
+    own ``#[cfg(feature = "cap-…")]``; dropping those leaves the core's — which
+    is also the set both engines share, since a capability only ever adds.
     """
-    m = re.search(r"#\[cfg\(not\(any\((?:[^)]|\)[^\]])*?\)\)\)\]\s*"
-                  r"pub const MODULES: &\[&str\] = &\[(?P<body>.*?)\];",
+    m = re.search(r"pub const MODULES: &\[&str\] = &\[(?P<body>.*?)\];",
                   _text("modules.rs"), re.S)
-    assert m, "modules.rs: no `cfg(not(any(…)))` MODULES table — this test reads the core's by that guard"
-    return _QUOTED.findall(m.group("body"))
+    assert m, "modules.rs: no `pub const MODULES` array — this test reads the core's by name"
+    body = re.sub(r"//[^\n]*", "", m.group("body"))
+    gated = re.findall(r'#\[cfg\(([^\]]*)\)\]\s*"[^"]*"', body)
+    assert all(g.startswith('feature = "cap-') for g in gated), (
+        "modules.rs: a MODULES row is gated on something other than one cap-* feature: %r"
+        % gated)
+    body = re.sub(r'#\[cfg\([^\]]*\)\]\s*"[^"]*"', "", body)
+    return _QUOTED.findall(body)
 
 
 def _caps() -> dict:
@@ -199,9 +204,14 @@ def test_every_capability_row_names_the_module_it_serves():
 
 @pytest.mark.parametrize("module,source", [
     ("base64", ("route.rs", "BASE64_SERVED")),
+    ("binascii", ("route.rs", "BINASCII_SERVED")),
     ("glob", ("route.rs", "GLOB_SERVED")),
     ("hashlib", ("hashlib.rs", "SERVED")),
+    ("statistics", ("statistics.rs", "SERVED")),
+    ("itertools", ("itertools.rs", "SERVED")),
+    ("textwrap", ("route.rs", "TEXTWRAP_SERVED")),
     ("csv", None),
+    ("difflib", None),
 ])
 def test_the_partial_surfaces_are_the_served_lists(module, source):
     """§4.3 is the list a reader uses to decide whether a program costs a spawn,
@@ -209,7 +219,7 @@ def test_the_partial_surfaces_are_the_served_lists(module, source):
     rows = {_names(r[0])[0]: r for r in _table_rows("| module | served | source |")[1:]}
     assert module in rows, "docs/DIFFERENCES.md §4.3 has no `%s` row" % module
     doc = set(_names(rows[module][1]))
-    crate = set(_module_attrs_row("csv") if source is None else _string_const(*source))
+    crate = set(_module_attrs_row(module) if source is None else _string_const(*source))
     assert doc == crate, _fail("what lypning-l serves of `%s` (§4.3)" % module, doc, crate)
 
 

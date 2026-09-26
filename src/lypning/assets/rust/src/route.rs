@@ -55,14 +55,23 @@ pub const SPECTRUM: &[Variant] = &[
         // so the binary's own answer, this table and `engines.VARIANT_CAPS` are
         // one list and not three that happen to agree.
         caps: &[
+            "cap-ast",
             "cap-base64",
             "cap-bigint",
+            "cap-binascii",
             "cap-collections",
             "cap-csv",
+            "cap-difflib",
+            "cap-future",
             "cap-glob",
             "cap-hashlib",
+            "cap-itertools",
             "cap-pathlib",
+            "cap-random",
             "cap-re",
+            "cap-statistics",
+            "cap-textwrap",
+            "cap-time",
         ],
     },
 ];
@@ -126,6 +135,12 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// to hand it to, and `chain_after` a runtime `base64:` refusal is `[cpython]`
 /// by construction, so listing the kind would cost a spawn to be told no twice.
 ///
+/// `cap-binascii` serves the `binascii` MODULE — six functions of it, and only
+/// the names [`MODULE_ATTRS`] lists — and answers no runtime kind, for
+/// `cap-base64`'s reason: its one runtime refusal (`binascii`) is a computed
+/// argument whose call CPython raises on or words, and there is no rung above
+/// lypning-l to carry the kind to.
+///
 /// `cap-hashlib` serves the `hashlib` MODULE — four CONSTRUCTORS, and only the
 /// names [`MODULE_ATTRS`] lists, for the same reason `csv` needs a row: adding
 /// the module to this table admits every hashlib program into `lypning-l`,
@@ -134,6 +149,18 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// otherwise be found out at RUNTIME. It answers no runtime kind: a `hashlib:`
 /// refusal is a keyword CPython owns or an attribute whose answer is CPython's
 /// to print, and there is no rung above `lypning-l` to carry the kind to.
+///
+/// `cap-statistics` serves the `statistics` MODULE — four functions, and only
+/// the names [`MODULE_ATTRS`] lists — and answers no runtime kind. Its runtime
+/// `statistics:` refusals (empty data, a float or non-numeric `mean`) are
+/// answers CPython owns: there is no rung above `lypning-l` to carry the kind
+/// to, so listing it would cost a spawn to be told no twice.
+/// `cap-itertools` serves the `itertools` MODULE — two classes of it, and only
+/// the names [`MODULE_ATTRS`] lists — and `cap-difflib` serves the `difflib`
+/// module with NO name at all, which is why its row there is present and
+/// empty: an absent row would claim the whole surface. Neither answers a
+/// runtime kind, for the reason `cap-hashlib` gives: there is no rung above
+/// `lypning-l` to carry one to.
 ///
 /// `cap-glob` serves the `glob` MODULE and answers no runtime kind either. It
 /// is the SECOND module served only in part, and it needs no [`MODULE_ATTRS`]
@@ -145,15 +172,60 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// STATICALLY, before the program starts, and the kind is in
 /// [`ONLY_CPYTHON_KINDS`] because no reimplementation can reproduce
 /// `os.scandir` order, so no sibling could answer it either.
+///
+/// `cap-textwrap` serves the `textwrap` MODULE — five functions, and only the
+/// names [`MODULE_ATTRS`] lists (`TextWrapper` is not one) — and answers no
+/// runtime kind. Its runtime refusals (`textwrap:`) are a computed argument of
+/// the wrong type or a non-ASCII character the hyphen regex would have to
+/// classify, and there is no rung above `lypning-l` to carry either to.
+///
+/// `cap-time` serves the `time` MODULE — the clocks, a bounded `sleep` and the
+/// one fused UTC stamp, and only the names [`MODULE_ATTRS`] lists — and
+/// answers no runtime kind. Every `time:` refusal is a SHAPE lypning-l's own
+/// walk decides before the program starts (a function used as a value, a
+/// `sleep` the walk cannot bound, `strftime` outside the fused shape), and
+/// there is no rung above lypning-l to carry the kind to.
+///
+/// `cap-future` serves `__future__`, which is not a module at all but a
+/// compiler directive: `future.rs` is a pass over the parse that strips a
+/// served head of future imports, so lypning-l's walk never sees one. The row
+/// is the MODULE column, not a kind, because what the CORE stops on is
+/// `module: from __future__ import …` and [`answers`] asks `served_module` of
+/// `module_of` that detail, which is `__future__`. Its refusal kinds (`future`,
+/// `annotation`) are shapes CPython owns — a `SyntaxError`, a `_Feature` value,
+/// annotations as strings — so the kind column stays empty.
+///
+/// `cap-random` is the first row with NEITHER column: it serves no module —
+/// `random` and `sys` are the core's own — and no runtime kind, because every
+/// refusal it raises is the `random` kind, which is only-CPython. Its routing
+/// half is [`CAP_ATTRS`], the attributes it adds to those two modules; the row
+/// is here so the spectrum declares the feature like every other.
+///
+/// `cap-ast` serves the `ast` MODULE — `literal_eval` over a `str`, and only
+/// the names [`MODULE_ATTRS`] lists ([`AST_SERVED`]; `ast.parse` is NOT one,
+/// because `parse.rs` accepts programs CPython's `ast.parse` rejects) — and
+/// answers no runtime kind: every `ast:` refusal is an input whose answer
+/// CPython owns (a `ValueError` naming an AST node, a warning, an escape or a
+/// number `lex.rs` may misread), and there is no rung above lypning-l to carry
+/// it to.
 pub const CAPS: &[(&str, &[&str], &[&str])] = &[
+    ("cap-ast", &["ast"], &[]),
     ("cap-base64", &["base64"], &[]),
     ("cap-bigint", &[], &["bigint", "int-div-precision"]),
+    ("cap-binascii", &["binascii"], &["fromhex"]),
     ("cap-collections", &["collections"], &[]),
     ("cap-csv", &["csv"], &[]),
+    ("cap-difflib", &["difflib"], &[]),
+    ("cap-future", &["__future__"], &[]),
     ("cap-glob", &["glob"], &[]),
     ("cap-hashlib", &["hashlib"], &[]),
+    ("cap-itertools", &["itertools"], &[]),
     ("cap-pathlib", &["pathlib"], &[]),
+    ("cap-random", &[], &[]),
     ("cap-re", &["re"], &[]),
+    ("cap-statistics", &["statistics"], &[]),
+    ("cap-textwrap", &["textwrap"], &[]),
+    ("cap-time", &["time"], &[]),
 ];
 
 /// The module attributes a capability answers, for the modules whose surface is
@@ -194,8 +266,28 @@ pub const CAPS: &[(&str, &[&str], &[&str])] = &[
 /// it — with the KIND the runtime would have raised — several arms before
 /// [`capability_module`] is reached. A row here would be a second table saying
 /// the same thing, and the two would drift.
+///
+/// `__future__` is here so the CORE sends `from __future__ import braces`, a
+/// misspelled feature and `barry_as_FLUFL` to CPython rather than to a variant
+/// that would refuse them: the row IS [`FUTURE_SERVED`], held to `future.rs`
+/// by its own `the_route_table_names_exactly_what_is_served`.
 pub const MODULE_ATTRS: &[(&str, &[&str])] = &[
+    ("__future__", FUTURE_SERVED),
+    // Held to `pyast.rs` by its own
+    // `the_route_table_names_exactly_what_is_served`. `parse`, `walk`,
+    // `dump`, `unparse`, the node classes and `NodeVisitor` are blocked HERE,
+    // in the core's walk, and never reach the variant. Deliberately NO
+    // pre-run stop in lypning-l's own walk, as `textwrap` has: an `ast.parse`
+    // that never runs (`if False:`) is the core's answer (invariant 10), and
+    // one that runs refuses where it is evaluated, in a run `import ast` has
+    // already held reversible ([`HINT_HELD_CAPS`]).
+    ("ast", AST_SERVED),
     ("base64", BASE64_SERVED),
+    // Held to `binascii.rs` by its own
+    // `the_route_table_names_exactly_what_is_served`. `Error`, `crc32`,
+    // `crc_hqx`, the uu/qp codecs and `Incomplete` are blocked HERE, in the
+    // core's walk — `except binascii.Error` included.
+    ("binascii", BINASCII_SERVED),
     (
         "csv",
         &["DictReader", "QUOTE_ALL", "QUOTE_MINIMAL", "QUOTE_NONE", "QUOTE_NONNUMERIC", "reader"],
@@ -207,7 +299,294 @@ pub const MODULE_ATTRS: &[(&str, &[&str])] = &[
     // `sha3_*`, `sha224`, `sha384`, `pbkdf2_hmac`, `scrypt`, `file_digest` —
     // is blocked HERE, in the core's walk, and never reaches the variant.
     ("hashlib", &["md5", "sha1", "sha256", "sha512"]),
+    // Held to `statistics::SERVED` by
+    // `statistics::tests::the_route_table_names_exactly_what_is_served`. Every
+    // other name — `stdev`, `pstdev`, `variance`, `fmean`, `mode`,
+    // `quantiles`, `NormalDist`, `StatisticsError` — is blocked HERE, in the
+    // core's walk, and never reaches the variant.
+    ("statistics", &["mean", "median", "median_high", "median_low"]),
+    // Held to `itertools::SERVED` by
+    // `itertools::tests::the_route_table_names_exactly_what_is_served`. Every
+    // other name — `chain`, `islice`, `permutations`, `count`, `groupby`,
+    // `accumulate`, `zip_longest`, `tee`, … — is blocked HERE, in the core's
+    // walk, and never reaches the variant.
+    ("itertools", &["combinations", "product"]),
+    // EMPTY on purpose, and present on purpose: `import difflib` is served
+    // and nothing on it is, so `difflib.SequenceMatcher` and every other name
+    // is a `module-attr` block in the core's walk. Held to `modules::get_attr`
+    // by `the_difflib_row_is_empty_and_the_variant_serves_nothing_on_it`.
+    ("difflib", &[]),
+    // Held to `textwrap.rs` by
+    // `textwrap::tests::the_route_table_names_exactly_what_is_served`.
+    // `TextWrapper`, `__file__` and every private name are blocked HERE, in
+    // the core's walk.
+    ("textwrap", TEXTWRAP_SERVED),
+    // Held to `time::SERVED` by
+    // `time::tests::the_route_table_names_exactly_what_is_served`. Every
+    // local-time name — `localtime`, `ctime`, `asctime`, `mktime`, `strptime`,
+    // `timezone`, `tzname`, `altzone`, `daylight` — and the rest of the module
+    // (`process_time`, `thread_time`, `get_clock_info`, `struct_time`, the
+    // `clock_*` functions and constants) is blocked HERE, in the core's walk.
+    // A served name used in a shape lypning-l does not serve is lypning-l's
+    // own walk to refuse, before its first statement.
+    ("time", TIME_SERVED),
 ];
+
+/// The `ast` names lypning-l serves — `route.rs`'s own table, for the reason
+/// [`BINASCII_SERVED`] is: the binary that routes has no `pyast.rs`.
+/// `ast.parse` is deliberately absent — see `pyast.rs`.
+pub const AST_SERVED: &[&str] = &["literal_eval"];
+
+/// The `time` names lypning-l serves — `route.rs`'s own table, for the reason
+/// [`TEXTWRAP_SERVED`] is: the CORE walks every served `time` call too
+/// ([`time_call_block`]), so it sends a program lypning-l's walk would refuse
+/// straight to CPython rather than into a rung that refuses it (#48), and it
+/// has no `time.rs` compiled in. `time::SERVED` IS this list.
+pub const TIME_SERVED: &[&str] = &[
+    "gmtime", "monotonic", "monotonic_ns", "perf_counter", "perf_counter_ns", "sleep",
+    "strftime", "time", "time_ns",
+];
+
+/// Why `time.strftime(f, …)` refuses `f`, or `None` when every directive in
+/// it is one of `%Y %m %d %H %M %S %%` — the ones that read neither the locale
+/// nor the zone. Here rather than in `time.rs` so the core's walk can ask it;
+/// the runtime asks the same function.
+pub fn time_format_block(f: &str) -> Option<&'static str> {
+    if !f.is_ascii() {
+        return Some("time.strftime() over a non-ASCII format");
+    }
+    let b = f.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            match b.get(i + 1) {
+                Some(b'Y' | b'm' | b'd' | b'H' | b'M' | b'S' | b'%') => i += 1,
+                Some(_) => {
+                    return Some(
+                        "time.strftime() with a directive outside %Y %m %d %H %M %S %% \
+                         (the rest read the locale or the zone, or are platform-defined)",
+                    )
+                }
+                None => return Some("time.strftime() with a trailing '%'"),
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The `textwrap` functions lypning-l serves, and therefore the only ones ANY
+/// rung answers — `route.rs`'s own table and not a copy of `textwrap.rs`'s, for
+/// the reason [`BASE64_SERVED`] gives: the binary that routes has no
+/// `textwrap.rs` compiled into it.
+pub const TEXTWRAP_SERVED: &[&str] = &["dedent", "fill", "indent", "shorten", "wrap"];
+
+/// The keyword arguments each served `textwrap` function takes here. `wrap` and
+/// `fill` take the five the corpus uses; `shorten` takes `width` and
+/// `placeholder`; `dedent` and `indent` take none (`indent`'s `predicate=` is
+/// a callable this engine would have to call per line, and is refused).
+/// `TextWrapper`'s other knobs — `max_lines`, `expand_tabs`, `tabsize`,
+/// `replace_whitespace`, `drop_whitespace`, `fix_sentence_endings` — are not
+/// served, and neither is a keyword `text=`.
+fn textwrap_kw_served(name: &str, k: &str) -> bool {
+    match name {
+        "wrap" | "fill" => matches!(
+            k,
+            "width" | "initial_indent" | "subsequent_indent" | "break_long_words" | "break_on_hyphens"
+        ),
+        "shorten" => matches!(k, "width" | "placeholder"),
+        _ => false,
+    }
+}
+
+/// The `from __future__ import` names `cap-future` serves: every feature that
+/// is mandatory in Python 3, and so does nothing, plus `annotations`, whose
+/// effect the pass implements by never evaluating one. Not `barry_as_FLUFL`
+/// (a grammar), not `braces` (a `SyntaxError`), and nothing else, because
+/// CPython answers any other name with a `SyntaxError`. Sorted, as every
+/// [`MODULE_ATTRS`] row is.
+pub const FUTURE_SERVED: &[&str] = &[
+    "absolute_import",
+    "annotations",
+    "division",
+    "generator_stop",
+    "generators",
+    "nested_scopes",
+    "print_function",
+    "unicode_literals",
+    "with_statement",
+];
+
+/// How many tokens of the program are `needle`: a name, or text inside an
+/// f-string, whose expressions the lexer keeps as raw source. Over-counting
+/// (an f-string's literal text) can only refuse, never serve.
+pub fn future_mentions(toks: &[crate::lex::Token], needle: &str) -> usize {
+    use crate::lex::Tok;
+    toks.iter()
+        .filter(|t| match &t.tok {
+            Tok::Name(n) => n == needle,
+            Tok::FStr { raw, .. } => raw.contains(needle),
+            _ => false,
+        })
+        .count()
+}
+
+/// How many NAME tokens are `needle` — a spelling that can be a statement,
+/// which an f-string's literal text never is. Asked where the answer decides
+/// whether `__future__` is looked at at all: `print(f"see __future__")` is the
+/// core's program, and its superset may not refuse it.
+pub fn future_names(toks: &[crate::lex::Token], needle: &str) -> usize {
+    toks.iter().filter(|t| matches!(&t.tok, crate::lex::Tok::Name(n) if n == needle)).count()
+}
+
+/// Does the program import the MODULE `__future__` — a `__future__` NAME right
+/// after `from` or `import`? Only then is it a compiler directive at all.
+/// Anywhere else the name is an ordinary one — a variable, a parameter, an
+/// `as` target, a keyword argument — which the core runs as it runs any name,
+/// and CPython with it; neither variant may look further (invariant 10).
+/// `import os, __future__` is not caught here and needs not be: its import
+/// refuses at runtime, in every variant, before anything after it runs.
+pub fn future_imported(toks: &[crate::lex::Token]) -> bool {
+    use crate::lex::Tok;
+    toks.windows(2).any(|w| {
+        matches!(&w[1].tok, Tok::Name(n) if n == "__future__")
+            && matches!(&w[0].tok, Tok::Name(k) if k == "from" || k == "import")
+    })
+}
+
+/// The refusal a program with a `__future__` NAME in it gets from its TOKENS
+/// alone: `barry_as_FLUFL`, a grammar. (A non-ASCII identifier, which CPython
+/// NFKC-folds — `ｂarry_as_FLUFL` — never reaches a token: the lexer refuses it.)
+pub fn future_token_block(toks: &[crate::lex::Token]) -> Option<&'static str> {
+    (future_names(toks, "barry_as_FLUFL") > 0).then_some("from __future__ import barry_as_FLUFL")
+}
+
+/// A program's head of `from __future__` imports, as `(start, end, names)`
+/// statement indices and the features it names — or the `future` refusal
+/// `cap-future` raises for it: `__debug__` anywhere, an alias, a name off
+/// [`FUTURE_SERVED`], a `__future__` anywhere but the head (a misplaced
+/// import, `import __future__`, an attribute), or the imported feature's own
+/// name or `__annotations__` spelled anywhere else. Asked by `future.rs` and by
+/// the CORE's route, so the core never sends a head lypning-l refuses into
+/// lypning-l (#48). What only `future.rs` sees — a compile-time `SyntaxError`
+/// the parser noted as lax — still costs that one spawn.
+pub fn future_head(
+    body: &[Stmt],
+    toks: &[crate::lex::Token],
+) -> Result<(usize, usize, Vec<std::rc::Rc<str>>), String> {
+    if future_mentions(toks, "__debug__") > 0 {
+        return Err("the name __debug__".into());
+    }
+    let start = match body.first() {
+        Some(Stmt::Expr(Expr::Str(_))) => 1,
+        _ => 0,
+    };
+    let mut end = start;
+    let mut names: Vec<std::rc::Rc<str>> = Vec::new();
+    while let Some(Stmt::FromImport { module, names: ns }) = body.get(end) {
+        if module.as_ref() != "__future__" {
+            break;
+        }
+        for (n, bind) in ns {
+            if n != bind {
+                return Err(format!("from __future__ import {n} as {bind}"));
+            }
+            if !FUTURE_SERVED.contains(&n.as_ref()) {
+                return Err(format!("from __future__ import {n}"));
+            }
+            names.push(n.clone());
+        }
+        end += 1;
+    }
+    if end - start != future_mentions(toks, "__future__") {
+        return Err("__future__ anywhere but the head of the program".into());
+    }
+    // Each consumed name is one token of its own import; any other token
+    // spelling it is a use of the `_Feature` binding.
+    let own = |n: &str| names.iter().filter(|m| m.as_ref() == n).count();
+    for n in names.iter().map(|n| n.as_ref()).chain(["__annotations__"]) {
+        if future_mentions(toks, n) != own(n) {
+            return Err(format!("the name {n}"));
+        }
+    }
+    Ok((start, end, names))
+}
+
+/// The CORE's half of [`future_head`]: a program that spells `__future__` as
+/// a name is one the core blocks on (`module: from __future__ import …`) and
+/// `cap-future` claims, so what `future.rs` would refuse is recorded as the
+/// spectrum's stop and the program goes to CPython in one step. Not on a
+/// variant with `cap-future`, whose parse has already made the decision (and
+/// removed the head this would count).
+#[cfg(not(feature = "cap-future"))]
+fn future_route_stop(src: &str, body: &[Stmt], req: &mut Requirements) {
+    if !src.contains("__future__") {
+        return;
+    }
+    let Ok(toks) = crate::lex::tokenize(src) else { return };
+    if !future_imported(&toks) {
+        return;
+    }
+    let why = match future_token_block(&toks) {
+        Some(w) => w.to_string(),
+        None => match future_head(body, &toks) {
+            Err(d) => d,
+            Ok(_) => return,
+        },
+    };
+    req.stop_only("future", why);
+}
+
+/// The attributes a capability adds to a module EVERY variant serves — the
+/// core's own `random` and `sys` — as `(cap, module, served anywhere, served in
+/// a shape)`, space-separated. Carried by every variant for the reason
+/// [`MODULE_ATTRS`] is: the binary that routes is the core, whose `get_attr`
+/// refuses these names and which therefore records `module-attr: random.sample`
+/// as its blocker. Without this table [`answers`] could only say no, and a
+/// capability on a core module would be dead from the router's side (F3).
+///
+/// The last column is the names served only in the SHAPES the walk blesses
+/// ([`bless_cap_shapes`]): `random.Random` as the callee of a one-argument call,
+/// and `sys.version_info` as `[0]`/`[1]`, `[:n]` with `n <= 2`, `.major`/
+/// `.minor`, or an operand compared with a tuple literal of at most two items.
+/// Anywhere else — and for every name a listed module's row does not carry — no
+/// rung serves the attribute, and the walk says so in the route's stop slot, so
+/// a program whose FIRST blocker lypning-l answers is still not sent there to
+/// be refused one statement in.
+pub const CAP_ATTRS: &[(&str, &str, &[&str], &[&str])] = &[
+    ("cap-random", "random", &["sample", "shuffle"], &["Random"]),
+    ("cap-random", "sys", &[], &["version_info"]),
+];
+
+/// Does `v` serve `module.name` out of [`CAP_ATTRS`] — `shaped` when the walk
+/// blessed the shape it was spelled in? `sys.version_info` is answered only by
+/// a build whose reference version was MEASURED ([`crate::err::REF_PY_KNOWN`]).
+#[inline(never)]
+fn cap_attr(v: &Variant, module: &str, name: &str, shaped: bool) -> bool {
+    (module != "sys" || crate::err::REF_PY_KNOWN)
+        && CAP_ATTRS.iter().any(|(c, m, any, shape)| {
+            *m == module && v.caps.contains(c) && (any.contains(&name) || (shaped && shape.contains(&name)))
+        })
+}
+
+/// Is `module.name` an attribute of a [`CAP_ATTRS`] module that NO rung of
+/// the spectrum serves, spelled the way it is? `false` for every other module,
+/// which leaves their routing exactly as it was.
+/// The top row is asked alone because `caps` is cumulative
+/// (`caps_are_cumulative_and_every_cap_is_declared`).
+fn no_rung_serves(module: &str, name: &str, shaped: bool) -> bool {
+    CAP_ATTRS.iter().any(|r| r.1 == module) && !cap_attr(&SPECTRUM[SPECTRUM.len() - 1], module, name, shaped)
+}
+
+/// Note a [`CAP_ATTRS`] name, whatever shape it is spelled in: the core
+/// serves none of them, so its walk blocks on each (see
+/// [`Requirements::core_attr`]).
+#[cfg(feature = "cap-random")]
+fn note_core_attr(req: &mut Requirements, module: &str, name: &str) {
+    if CAP_ATTRS.iter().any(|(_, m, any, shape)| *m == module && (any.contains(&name) || shape.contains(&name))) {
+        req.core_attr = true;
+    }
+}
 
 /// Does some variant on the spectrum answer `module.name`, as far as
 /// [`MODULE_ATTRS`] can say? `true` for every module the table does not list —
@@ -343,6 +722,17 @@ fn admitted_by_a_capability(req: &Requirements) -> bool {
     req.imports.contains("hashlib")
 }
 
+/// `textwrap` asks the same question for the ROUTE only: its results are
+/// `str` and `list`, so a method outside `known_method` on one is a method
+/// nothing on the spectrum has. Not a pre-run stop, because an import that
+/// never runs (`while False: import textwrap`) leaves a program the core
+/// answers; a direct run that does import it is held (`io::hold`), and its
+/// uncaught `AttributeError` refuses at the exit as `name-hint`.
+#[cfg(feature = "cap-textwrap")]
+fn routed_past_by_textwrap(req: &Requirements) -> bool {
+    req.imports.contains("textwrap")
+}
+
 fn module_of(detail: &str) -> &str {
     // `import X` / `from X import …`, as the walker spells its blockers.
     detail
@@ -357,16 +747,18 @@ fn module_of(detail: &str) -> &str {
 ///
 /// Asked only of rungs at or above this one. A `module` blocker is answered by
 /// a variant that serves the module; a runtime kind (`bigint`, `format-spec`,
-/// …) by one whose capability lists it in `CAPS`. `module-attr` is never
-/// claimed until the attribute surface is a table (it is a `match` in
-/// `modules::get_attr` today), because claiming a module's attribute by the
-/// module's name alone is exactly how a program would reach a sibling that
-/// refuses it again — a spawn wasted, and the ledger already paid for that
-/// lesson once. With one row in the spectrum every answer here is `false`.
+/// …) by one whose capability lists it in `CAPS`. `module-attr` is claimed only
+/// out of [`CAP_ATTRS`] — a TABLE of names, never a module's name alone,
+/// because claiming an attribute by its module is exactly how a program would
+/// reach a sibling that refuses it again — a spawn wasted, and the ledger
+/// already paid for that lesson once.
 pub fn answers(v: &Variant, kind: &str, detail: &str) -> bool {
     match kind {
         "module" => served_module(v, module_of(detail)),
-        "module-attr" => false,
+        // Only out of [`CAP_ATTRS`], and a shape-only name is claimed here
+        // because the walk has already put every UNBLESSED spelling of it in
+        // the stop slot, which overrides this verdict.
+        "module-attr" => detail.rsplit_once('.').is_some_and(|(m, n)| cap_attr(v, m, n, true)),
         _ => CAPS.iter().any(|(c, _, kinds)| v.caps.contains(c) && kinds.contains(&kind)),
     }
 }
@@ -663,6 +1055,17 @@ mod spectrum_tests {
         }
     }
 
+    #[cfg(feature = "cap-difflib")]
+    #[test]
+    fn the_difflib_row_is_empty_and_the_variant_serves_nothing_on_it() {
+        let row = MODULE_ATTRS.iter().find(|(m, _)| *m == "difflib").expect("no difflib row");
+        assert!(row.1.is_empty());
+        let m = crate::value::Value::Module("difflib");
+        for n in ["SequenceMatcher", "unified_diff", "ndiff", "get_close_matches", "Differ"] {
+            assert!(crate::modules::get_attr(&m, n).is_err(), "difflib.{n}");
+        }
+    }
+
     #[test]
     fn the_caps_this_binary_was_built_with_are_its_row() {
         let built: Vec<&str> = SELF_CAPS.split(',').filter(|s| !s.is_empty()).collect();
@@ -723,6 +1126,9 @@ pub const ONLY_CPYTHON_KINDS: &[&str] = &[
     // and EVERY variant carries the same `math.rs` — so falling to a larger
     // sibling would spend a spawn to be told no in the same words.
     "math",
+    // An uncaught NameError on a module name: CPython's import hint rests on a
+    // suggestion search no variant runs (`err::forgot_import`).
+    "name-hint",
     "nan-identity",
     "nan-order",
     "percent-format",
@@ -782,14 +1188,16 @@ pub fn route(src: &str) -> Route {
             // Only for a source that mentions the module at all, so a program
             // with no glob in it pays one substring search.
             req.glob_wrappers = trusted_wrappers(src);
-            walk_block(&body, &mut req);
+            walk_program(&body, &mut req);
+            #[cfg(not(feature = "cap-future"))]
+            future_route_stop(src, &body, &mut req);
             imports = req.imports.iter().cloned().collect();
             let reads_stdin = reads_stdin || req.reads_stdin;
             // A refusal the walk spelled outright is the more specific one and
             // wins the slot; a method no rung models is the fallback. Both mark
             // the whole spectrum rather than one rung.
             let method = method_wide_stop(req.method_stop.take(), &imports);
-            let stop = req.spectrum_stop.take().or(method);
+            let stop = req.spectrum_stop.take().or(req.route_stop.take()).or(method);
             match req.blocker {
                 None => finish_route(String::new(), String::new(), imports, reads_stdin, stop),
                 Some((kind, detail)) => {
@@ -877,6 +1285,15 @@ enum PatLit {
 
 #[derive(Default)]
 struct Requirements {
+    /// A [`CAP_ATTRS`] name was spelled — `random.sample`, `sys.version_info`
+    /// — which the CORE's walk blocks as `module-attr` and a capability
+    /// answers. Only where that capability is built: it is half of
+    /// [`core_admits`], and the core never asks it.
+    #[cfg(feature = "cap-random")]
+    core_attr: bool,
+    /// `.fromhex` was spelled — `cap-binascii`'s, which the core lacks.
+    #[cfg(feature = "cap-binascii")]
+    fromhex: bool,
     imports: BTreeSet<String>,
     blocker: Option<(String, String)>,
     aliases: Vec<(String, String)>,
@@ -917,6 +1334,31 @@ struct Requirements {
     /// and lypning-l then refuses statically for the cost of one parse.
     #[cfg(feature = "cap-base64")]
     base64_stop: Option<(String, String)>,
+    /// `from textwrap import fill [as f]` — the bound name of a served
+    /// `textwrap` function, so a bare `f(...)` is decided by the same walk
+    /// that decides `textwrap.fill(...)`. Not scoped: a later rebinding of
+    /// the name leaves it here, which can only over-refuse.
+    textwrap_names: Vec<(String, String)>,
+    /// Every name `import time [as t]` bound to the MODULE, and every name
+    /// `from time import f [as g]` bound to a served FUNCTION. Deliberately
+    /// NOT scoped or cleared by a rebinding, unlike the pattern table: every
+    /// question the walk asks through these is "must this refuse?", so a name
+    /// held too long costs a CPython spawn and a name given up too early could
+    /// let a `struct_time` or a long sleep through. Only on the variant that
+    /// serves the module; the core blocks the import instead.
+    time_mods: Vec<String>,
+    time_names: Vec<(String, &'static str)>,
+    /// The `time.gmtime()` call nodes a served `strftime(<literal>, …)` above
+    /// them blessed, by identity, as `glob_blessed` does for glob.
+    time_blessed: Vec<*const Expr>,
+    /// How many loops, `def`s, `lambda`s and comprehensions the walk is inside:
+    /// a `time.sleep` below zero of them runs at most once per run.
+    time_nest: u32,
+    /// `from binascii import hexlify [as h]` — the bound name of a binascii
+    /// FUNCTION, for the reason [`Self::base64_names`] exists. Its refusals
+    /// share the `base64_stop` slot: one static check, one substring guard.
+    #[cfg(feature = "cap-binascii")]
+    binascii_names: Vec<(String, String)>,
     /// `from glob import glob [as g]` — the bound name of a glob FUNCTION, so
     /// that a bare `g(...)` is seen as the call it is. Without it the order
     /// blocker below would miss the one spelling that hides the module name.
@@ -925,6 +1367,17 @@ struct Requirements {
     /// borrows one live AST for its whole run, so no node is freed and no
     /// address is reused; nothing is dereferenced through these.
     glob_blessed: Vec<*const Expr>,
+    /// The `random.Random` / `sys.version_info` nodes whose PARENT is one of
+    /// the shapes [`CAP_ATTRS`] serves them in, by identity like
+    /// `glob_blessed`. Filled by [`bless_cap_shapes`] before the child is
+    /// walked.
+    cap_blessed: Vec<*const Expr>,
+    /// A refusal no rung serves, for the ROUTE only: an unblessed shape or an
+    /// unlisted name on a [`CAP_ATTRS`] module. Not read by
+    /// [`static_stop_check`] — a direct run of either variant refuses at the
+    /// attribute itself, at the same point in both, so there is no answer a
+    /// pre-run refusal would protect and one the core would lose.
+    route_stop: Option<(String, String)>,
     /// The refusal that stops EVERY rung of the spectrum, as `(kind, detail)`,
     /// recorded even when an EARLIER blocker won the `--plan` row. A program
     /// whose first blocker is something lypning-l runs anyway (the walker is
@@ -1025,6 +1478,13 @@ impl Requirements {
         }
     }
 
+    /// See [`Requirements::route_stop`].
+    fn stop_route(&mut self, kind: &str, detail: String) {
+        if self.route_stop.is_none() {
+            self.route_stop = Some((kind.to_string(), detail));
+        }
+    }
+
     /// Does any capability in THIS binary still want the binding table filled?
     ///
     /// One question rather than a growing `||` chain at the call site, and the
@@ -1038,6 +1498,10 @@ impl Requirements {
         }
         #[cfg(feature = "cap-base64")]
         if self.imports.contains("base64") {
+            return true;
+        }
+        #[cfg(feature = "cap-binascii")]
+        if self.imports.contains("binascii") {
             return true;
         }
         // `PatLit::HashCtor`: which constructor a name holds, which only the
@@ -1066,7 +1530,9 @@ impl Requirements {
     /// [`known_method`] is compiled per variant. Every other kind a walk
     /// produces means the same thing in both, so `blocker` alone carries it.
     fn block_method(&mut self, name: &str) {
-        self.block("method", format!(".{name}()"));
+        // `bytes.fromhex` is `cap-binascii`'s, so its block names a kind that
+        // capability's row lists and the router sends the program there.
+        self.block(if name == "fromhex" { "fromhex" } else { "method" }, format!(".{name}()"));
         if self.method_stop.is_none() {
             self.method_stop = Some(name.to_string());
         }
@@ -1085,14 +1551,27 @@ impl Requirements {
     /// than the one already recorded: same module, and `answers` returns false
     /// for `module-attr`, so the program goes to CPython in one step instead of
     /// two. Only over a `module` blocker naming the SAME module — a blocker on
-    /// some other import is a different program's problem and stays put.
+    /// some other import keeps the `--plan` row.
+    ///
+    /// It does NOT keep the route. `import re, itertools` blocks first on `re`,
+    /// which lypning-l answers, and `itertools.count` three statements later
+    /// was dropped — so the core sent the program to a sibling that refuses it
+    /// at RUNTIME: a spawn wasted, and past a committed barrier exit 1. No rung
+    /// serves the attribute, which is what the stop slot says, so it is
+    /// recorded there and [`finish_route`] routes the program to CPython.
     fn escalate(&mut self, module: &str, name: &str) {
         let same = match &self.blocker {
             Some((k, d)) => k == "module" && module_of(d) == module,
             None => true,
         };
+        let detail = format!("{module}.{name}");
         if same {
-            self.blocker = Some(("module-attr".to_string(), format!("{module}.{name}")));
+            self.blocker = Some(("module-attr".to_string(), detail));
+        } else {
+            // The ROUTE's stop, not the run's: the attribute refuses where it
+            // is evaluated, in every variant, and one that never is (an
+            // `except m.X` no exception reaches) is the core's answer too.
+            self.stop_route("module-attr", detail);
         }
     }
 
@@ -1105,6 +1584,12 @@ impl Requirements {
     /// that binds arrives here — an assignment, a `for` target, a `with … as`,
     /// a parameter, an `import … as`, an `except … as`, a `def`'s own name.
     fn bind_pattern(&mut self, name: &str, lit: Option<PatLit>) {
+        // `ValueError = len` turns a later `except ValueError` into CPython's
+        // TypeError; the runtime reads the name through the scopes and
+        // refuses, and this stops the route before the first statement.
+        if crate::builtins::EXCEPTIONS.contains(&name) {
+            self.stop("exception", format!("rebinding of {name}"));
+        }
         if !self.tracks_literals() {
             return;
         }
@@ -1177,6 +1662,60 @@ fn walk_block(body: &[Stmt], req: &mut Requirements) {
     }
 }
 
+/// A WHOLE program's walk: [`walk_block`] after [`time_prescan`], on the
+/// variant that serves `time`, and exactly `walk_block` everywhere else.
+fn walk_program(body: &[Stmt], req: &mut Requirements) {
+    time_prescan(body, req);
+    walk_block(body, req);
+}
+
+/// Every name any `import time [as t]` or `from time import f [as g]` binds,
+/// ANYWHERE in the program, collected before the walk judges a single
+/// `time.X`. The walk reads the source in text order and the program does not
+/// run in it: a `def` or `lambda` written above `import time`, a `global time`
+/// imported inside a function, and a loop whose later iteration runs an import
+/// its earlier one skipped all call `time.X` with the module already bound —
+/// and a walk that learned the name only at the import let each of them past
+/// every rule below (a bare 9-tuple printed for a `struct_time`, a sleep in a
+/// loop). Held program-wide and never given up, which only ever refuses more.
+fn time_prescan(body: &[Stmt], req: &mut Requirements) {
+    for s in body {
+        match s {
+            Stmt::Import { names } => {
+                for (path, bound) in names {
+                    if path.as_ref() == "time" && !req.time_mods.iter().any(|m| m == bound.as_ref()) {
+                        req.time_mods.push(bound.to_string());
+                    }
+                }
+            }
+            Stmt::FromImport { module, names } if module.as_ref() == "time" => {
+                for (n, bind) in names {
+                    if let Some(f) = TIME_SERVED.iter().copied().find(|x| *x == n.as_ref()) {
+                        req.time_names.push((bind.to_string(), f));
+                    }
+                }
+            }
+            Stmt::If { arms, els } => {
+                arms.iter().for_each(|(_, b)| time_prescan(b, req));
+                time_prescan(els, req);
+            }
+            Stmt::For { body, els, .. } | Stmt::While { body, els, .. } => {
+                time_prescan(body, req);
+                time_prescan(els, req);
+            }
+            Stmt::Def { body, .. } => time_prescan(body, req),
+            Stmt::Try { body, handlers, els, finally } => {
+                time_prescan(body, req);
+                handlers.iter().for_each(|h| time_prescan(&h.body, req));
+                time_prescan(els, req);
+                time_prescan(finally, req);
+            }
+            Stmt::With { body, .. } => time_prescan(body, req),
+            _ => {}
+        }
+    }
+}
+
 fn walk_stmt(s: &Stmt, req: &mut Requirements) {
     match s {
         Stmt::Import { names } => {
@@ -1200,6 +1739,9 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                 // The `as` name is a binding like any other, so it gives up
                 // whatever literal that spelling held above it.
                 req.bind_pattern(bound, None);
+                if path.as_ref() == "time" && !req.time_mods.iter().any(|m| m == bound.as_ref()) {
+                    req.time_mods.push(bound.to_string());
+                }
                 if !crate::modules::MODULES.contains(&path.as_ref()) {
                     req.block("module", format!("import {path}"));
                 }
@@ -1238,6 +1780,19 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                         }
                     }
                 }
+                // `from binascii import hexlify [as h]`, exactly as `base64`
+                // above: a served name is a call this walk still decides, and
+                // an unserved one (`Error`, `crc32`) must stop the RUN too.
+                #[cfg(feature = "cap-binascii")]
+                "binascii" => {
+                    for (n, bind) in names {
+                        if BINASCII_SERVED.contains(&n.as_ref()) {
+                            req.binascii_names.push((bind.to_string(), n.to_string()));
+                        } else {
+                            req.stop_base64("module-attr", format!("binascii.{n}"));
+                        }
+                    }
+                }
                 // Both halves of `from hashlib import …`, for the reason the
                 // `glob` arm below has both: a served name is a CONSTRUCTOR
                 // whose call this walk still has to decide, and an unserved
@@ -1252,6 +1807,37 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                         match crate::hashlib::SERVED.iter().copied().find(|x| *x == n.as_ref()) {
                             Some(c) => req.bind_pattern(bind, Some(PatLit::HashCtor(c))),
                             None => req.stop_only("module-attr", format!("hashlib.{n}")),
+                        }
+                    }
+                }
+                // `from textwrap import …`: a served name binds a function
+                // whose calls this walk still decides; an unserved one is a
+                // stop, for the run, beside the blocker the arm below records.
+                "textwrap" => {
+                    for (n, bind) in names {
+                        if TEXTWRAP_SERVED.contains(&n.as_ref()) {
+                            req.textwrap_names.push((bind.to_string(), n.to_string()));
+                        } else {
+                            req.stop_only("module-attr", format!("textwrap.{n}"));
+                        }
+                    }
+                }
+                // `from time import perf_counter [as pc]` binds a function whose
+                // calls this walk still decides. `gmtime` and `strftime` are
+                // served in ONE shape, spelled through the module, and a bare
+                // name bound to either is refused: a later rebinding the walk
+                // reads in the wrong order could hand `gmtime()`'s tuple to
+                // something that prints it. An unserved name is a `module-attr`
+                // stop for the run, `stop_only` for the same reason as `hashlib`.
+                "time" => {
+                    for (n, bind) in names {
+                        match TIME_SERVED.iter().copied().find(|x| *x == n.as_ref()) {
+                            Some(f @ ("gmtime" | "strftime")) => req.stop(
+                                "time",
+                                format!("from time import {f}: served only as time.strftime(<literal>, time.gmtime())"),
+                            ),
+                            Some(f) => req.time_names.push((bind.to_string(), f)),
+                            None => req.stop_only("module-attr", format!("time.{n}")),
                         }
                     }
                 }
@@ -1292,8 +1878,16 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                         .unwrap(),
                 );
                 for (n, _) in names {
+                    #[cfg(feature = "cap-random")]
+                    note_core_attr(req, module, n);
                     if crate::modules::get_attr(&m, n).is_err() {
-                        req.block("module-attr", format!("{module}.{n}"));
+                        let d = format!("{module}.{n}");
+                        // `from random import Random`: a shape-only name
+                        // bound bare is a shape no rung serves.
+                        if no_rung_serves(module, n, false) {
+                            req.stop_route("module-attr", d.clone());
+                        }
+                        req.block("module-attr", d);
                     }
                 }
             }
@@ -1356,13 +1950,27 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
             // barrier, exit 1.
             walk_expr(iter, req);
             walk_target(target, req);
+            // The body runs once per item, so a `time.sleep` in it is not one
+            // the walk can bound (`time.rs`, the sleep policy).
+            {
+                req.time_nest += 1;
+            }
             walk_block(body, req);
             walk_block(els, req);
+            {
+                req.time_nest -= 1;
+            }
         }
         Stmt::While { cond, body, els } => {
+            {
+                req.time_nest += 1;
+            }
             walk_expr(cond, req);
             walk_block(body, req);
             walk_block(els, req);
+            {
+                req.time_nest -= 1;
+            }
         }
         Stmt::Return(Some(e)) | Stmt::Raise { exc: Some(e) } => walk_expr(e, req),
         Stmt::Assert { test, msg } => {
@@ -1383,7 +1991,14 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
             req.bind_pattern(name, None);
             let saved = req.enter_scope();
             req.shadow_params(params);
+            // A body runs once per CALL, and the walk has no call graph.
+            {
+                req.time_nest += 1;
+            }
             walk_block(body, req);
+            {
+                req.time_nest -= 1;
+            }
             req.leave_scope(saved);
         }
         Stmt::Try {
@@ -1402,21 +2017,71 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                     // ask it for the leaf; fall back to the old rule when the
                     // prefix is not a module we serve, so this can only remove
                     // refusals it can justify.
-                    let ok = match k.rsplit_once('.') {
-                        Some((prefix, leaf)) => {
-                            match crate::modules::MODULES.iter().find(|m| **m == prefix) {
-                                Some(m) => crate::modules::get_attr(
-                                    &crate::value::Value::Module(m),
-                                    leaf,
-                                )
-                                .is_ok(),
-                                None => crate::builtins::is_exception_name(leaf),
-                            }
-                        }
-                        None => crate::builtins::is_exception_name(k),
-                    };
+                    // `import binascii as b` then `except b.crc32:` names the
+                    // same module, and reading the alias literally skipped
+                    // both the resolution below and the binascii escalation.
+                    let dotted = k.rsplit_once('.').map(|(prefix, leaf)| {
+                        let module = req
+                            .aliases
+                            .iter()
+                            .find(|(a, _)| a == prefix)
+                            .map_or(prefix, |(_, p)| p.as_str());
+                        (module.to_string(), leaf)
+                    });
+                    // SERVED is not enough: it must be a CLASS. `except
+                    // binascii.hexlify:` and `except math.sqrt:` resolved, so
+                    // the handler was admitted and silently never matched,
+                    // where CPython raises TypeError the moment an exception
+                    // reaches it.
+                    let (ok, every_rung) = except_clause(
+                        dotted.as_ref().map(|(m, l)| (m.as_str(), *l)),
+                        k,
+                    );
                     if !ok {
                         req.block("exception", format!("except {k}"));
+                        // `import csv` then `except int:` blocked on the
+                        // `module` line first, so the core routed the program
+                        // to lypning-l on the import and this blocker was
+                        // dropped: the handler ran as a non-match and printed
+                        // at exit 0 where CPython raises TypeError. When the
+                        // verdict cannot differ between rungs — a bare name,
+                        // or a module this binary already serves — it stops
+                        // the whole spectrum. A module only a larger rung
+                        // serves (`except csv.Error` from the core) is that
+                        // rung's to decide, and keeps the route it had.
+                        if every_rung {
+                            req.stop_only("exception", format!("except {k}"));
+                        } else if dotted
+                            .as_ref()
+                            .is_some_and(|(m, _)| crate::modules::MODULES.contains(&m.as_str()))
+                        {
+                            // A module only a capability of THIS binary serves
+                            // (`except glob.X`, `except time.error`): the verdict is
+                            // the capability's, and a handler no exception
+                            // reaches is never evaluated — the core, whose
+                            // walk sees no such module, runs the program and
+                            // answers. So the ROUTE goes past the rungs, and a
+                            // direct run refuses where an exception reaches
+                            // the clause (`eval.rs`), as the core's would.
+                            req.stop_route("exception", format!("except {k}"));
+                        }
+                    }
+                    // `except binascii.<anything>`: no binascii name is a class
+                    // any rung serves (`Error` is not served, and the rest are
+                    // functions), so the core must not route the program into
+                    // lypning-l on the strength of the import, where the
+                    // handler would refuse only once an exception reached it —
+                    // possibly past a write — or, statically, in lypning-l's
+                    // own walk (#48). The same holds for every module a
+                    // capability of this branch added — `statistics`
+                    // (`except statistics.StatisticsError`), `itertools`,
+                    // `difflib`, `textwrap`, `time`, `ast`: none serves a class.
+                    // `except csv.Error` keeps the route it had before these
+                    // rows existed.
+                    if let Some((m @ ("binascii" | "statistics" | "itertools" | "difflib" | "textwrap" | "time" | "ast"), leaf)) =
+                        dotted.as_ref().map(|(m, l)| (m.as_str(), *l))
+                    {
+                        req.escalate(m, leaf);
                     }
                 }
                 // `except E as p` binds `p`, and Python deletes it again at
@@ -1577,6 +2242,10 @@ pub(crate) const CAP_METHODS: &[(&str, &str)] = &[
          parts read_bytes read_text relative_to stem suffix suffixes unlink with_name with_stem \
          with_suffix write_bytes write_text",
     ),
+    // The methods of a `random.Random(int)` instance, `randobj::METHODS`:
+    // no probe type has any of them, so without the row every instance
+    // program would stop on its first `.randint()` in the core's walk.
+    ("random", "choice getrandbits randint random randrange sample seed shuffle"),
     // `re::PATTERN_METHODS`, `re::MATCH_METHODS` and the seven read-only
     // attributes. `groupindex`, `scanner`, `expand`, `lastindex`,
     // `lastgroup` and `regs` are deliberately absent: a shape the engine does
@@ -1642,7 +2311,9 @@ fn cap_method(name: &str, imports: &[String]) -> bool {
 /// the example is the record of the defect, not a claim about today's tables.
 fn method_wide_stop(method: Option<String>, imports: &[String]) -> Option<(String, String)> {
     let name = method?;
-    if cap_method(&name, imports) {
+    // Its block names `cap-binascii`'s own kind, which routes it; no import
+    // has to vouch for the name.
+    if cap_method(&name, imports) || name == "fromhex" {
         return None;
     }
     Some(("method".to_string(), format!(".{name}()")))
@@ -1973,6 +2644,14 @@ const GLOB_ORDER: &str = "glob() order is filesystem-defined and not \
 pub const BASE64_SERVED: &[&str] =
     &["b64decode", "b64encode", "urlsafe_b64decode", "urlsafe_b64encode"];
 
+/// The `binascii` attributes lypning-l serves — the [`MODULE_ATTRS`] row,
+/// held to `binascii.rs` by `binascii::tests::the_route_table_names_exactly_what_is_served`.
+/// Sorted, for the reason [`BASE64_SERVED`] is. `Error` is deliberately absent:
+/// the class does not exist in this engine, so `except binascii.Error` is a
+/// static `module-attr` block in the CORE's walk.
+pub const BINASCII_SERVED: &[&str] =
+    &["a2b_base64", "a2b_hex", "b2a_base64", "b2a_hex", "hexlify", "unhexlify"];
+
 /// Which base64 keyword arguments are served, and the refusal line for the rest
 /// — one function, so the WALK and `base64::call` refuse with the same words.
 ///
@@ -2182,6 +2861,66 @@ fn base64_call_block(
     }
 }
 
+/// Which binascii FUNCTION this callee names, if any — one of
+/// [`BINASCII_SERVED`], through the module (or its alias) or a name bound by
+/// `from binascii import …`.
+#[cfg(feature = "cap-binascii")]
+fn binascii_func(func: &Expr, req: &Requirements) -> Option<&'static str> {
+    let n: &str = match func {
+        Expr::Attr(b, n)
+            if req.imports.contains("binascii")
+                && matches!(resolve_module(b, &req.aliases), Some(crate::value::Value::Module("binascii"))) =>
+        {
+            n.as_ref()
+        }
+        Expr::Name(n) => req
+            .binascii_names
+            .iter()
+            .find(|(bound, _)| bound == n.as_ref())
+            .map(|(_, f)| f.as_str())?,
+        _ => return None,
+    };
+    BINASCII_SERVED.iter().copied().find(|x| *x == n)
+}
+
+/// Every refusal a served `binascii` call can raise that the source spells,
+/// decided in the walk by [`crate::binascii::block`] — the SAME function the
+/// run asks, so the two cannot disagree. A keyword's truth value is read only
+/// from a literal; an argument's type and bytes through [`base64_arg`].
+#[cfg(feature = "cap-binascii")]
+fn binascii_call_block(
+    req: &mut Requirements,
+    func: &Expr,
+    args: &[Expr],
+    kwargs: &[(std::rc::Rc<str>, Expr)],
+    star: &[usize],
+    dstar: &[Expr],
+) {
+    let Some(name) = binascii_func(func, req) else { return };
+    let Some((pos, kws)) = flatten_call(args, kwargs, star, dstar) else { return };
+    let kws: Vec<(&str, Option<bool>)> = kws
+        .iter()
+        .map(|(k, v)| {
+            // `binascii::truth`, over literals: before 3.12 `newline` is a C
+            // `int`, so `None` is a TypeError and a wide int an OverflowError.
+            let int = crate::err::REF_PY_MINOR < 12;
+            let t = match v {
+                Expr::True => Some(true),
+                Expr::False => Some(false),
+                Expr::None if !int => Some(false),
+                Expr::Int(n) => n.small().filter(|i| !int || *i as i32 as i64 == *i).map(|i| i != 0),
+                _ => None,
+            };
+            (*k, t)
+        })
+        .collect();
+    let arg = pos.first().and_then(|e| base64_arg(e, req));
+    let arg = arg.as_ref().map(|(t, d)| (*t, d.as_deref()));
+    if let Some((k, d)) = crate::binascii::block(name, pos.len(), &kws, arg) {
+        req.stop_base64(k, d);
+    }
+}
+
 /// The static base64 rules, asked of a program that is ABOUT TO RUN rather than
 /// of one being routed — and it is the same walk, so the two can never
 /// disagree.
@@ -2194,11 +2933,13 @@ fn base64_call_block(
 /// search.
 #[cfg(feature = "cap-base64")]
 pub fn base64_static_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
-    if !src.contains("base64") {
+    // `binascii` shares the slot; `a2b_base64` already says "base64", and
+    // `hexlify` does not.
+    if !src.contains("base64") && !(cfg!(feature = "cap-binascii") && src.contains("binascii")) {
         return Ok(());
     }
     let mut req = Requirements::default();
-    walk_block(body, &mut req);
+    walk_program(body, &mut req);
     match req.base64_stop {
         Some((k, d)) => Err(crate::err::unsupported(&k, &d)),
         None => Ok(()),
@@ -2552,6 +3293,215 @@ fn hash_call_block(
     req.stop("hashlib", detail);
 }
 
+/// Does `b` name the `textwrap` module — `textwrap.…` or `t.…` after
+/// `import textwrap as t`? Only for a program that imports it.
+fn textwrap_module(b: &Expr, req: &Requirements) -> bool {
+    if !req.imports.contains("textwrap") {
+        return false;
+    }
+    let Expr::Name(base) = b else { return false };
+    let m = req
+        .aliases
+        .iter()
+        .find(|(a, _)| a == base.as_ref())
+        .map(|(_, p)| p.as_str())
+        .unwrap_or(base.as_ref());
+    m == "textwrap"
+}
+
+/// Which served `textwrap` function this callee names, if any.
+fn textwrap_func(func: &Expr, req: &Requirements) -> Option<&'static str> {
+    let n: &str = match func {
+        Expr::Attr(b, n) if textwrap_module(b, req) => n.as_ref(),
+        Expr::Name(n) => req
+            .textwrap_names
+            .iter()
+            .rev()
+            .find(|(bound, _)| bound == n.as_ref())
+            .map(|(_, f)| f.as_str())?,
+        _ => return None,
+    };
+    TEXTWRAP_SERVED.iter().copied().find(|x| *x == n)
+}
+
+/// Everything about a served `textwrap` call that a walk can decide, decided
+/// here rather than one statement into a program that may already have
+/// written a file: a keyword outside [`textwrap_kw_served`], a `*`/`**`
+/// splice, a positional count the function does not take, `width` given
+/// twice, and an argument whose LITERAL type is not the one served. What is
+/// left for `textwrap::call` is a value the walk cannot see.
+fn textwrap_call_block(
+    req: &mut Requirements,
+    func: &Expr,
+    args: &[Expr],
+    kwargs: &[(std::rc::Rc<str>, Expr)],
+    star: &[usize],
+    dstar: &[Expr],
+) {
+    let Some(name) = textwrap_func(func, req) else { return };
+    let (lo, hi) = match name {
+        "dedent" => (1, 1),
+        "indent" => (2, 2),
+        _ => (1, 2),
+    };
+    let width_kw = kwargs.iter().any(|(k, _)| k.as_ref() == "width");
+    let want = |i: usize| -> &'static str {
+        match (name, i) {
+            ("wrap" | "fill" | "shorten", 1) => "int",
+            _ => "str",
+        }
+    };
+    let bad_literal = args.iter().enumerate().find_map(|(i, e)| {
+        let t = literal_type(e)?;
+        (t != want(i)).then(|| format!("textwrap.{name}() with a {t} literal as argument {}", i + 1))
+    });
+    let bad_kw_literal = kwargs.iter().find_map(|(k, e)| {
+        let t = literal_type(e)?;
+        let want = match k.as_ref() {
+            "width" => "int",
+            "break_long_words" | "break_on_hyphens" => "bool",
+            _ => "str",
+        };
+        (t != want).then(|| format!("textwrap.{name}({k}=…) with a {t} literal"))
+    });
+    let detail = if !dstar.is_empty() {
+        format!("textwrap.{name}(**…), whose keywords a walk cannot read")
+    } else if !star.is_empty() {
+        format!("textwrap.{name}(*…), whose arguments a walk cannot count")
+    } else if let Some((k, _)) = kwargs.iter().find(|(k, _)| !textwrap_kw_served(name, k)) {
+        format!("textwrap.{name}({k}=…)")
+    } else if args.len() < lo || args.len() > hi {
+        format!("textwrap.{name}() with {} positional arguments", args.len())
+    } else if width_kw && args.len() > 1 {
+        format!("textwrap.{name}() with width given twice")
+    } else if name == "shorten" && args.len() < 2 && !width_kw {
+        "textwrap.shorten() without a width".to_string()
+    } else if let Some(d) = bad_literal.or(bad_kw_literal) {
+        d
+    } else {
+        return;
+    };
+    req.stop("textwrap", detail);
+}
+
+/// Does `b` name the `time` MODULE — `time.…`, or `t.…` after `import time as
+/// t`? Every name `import time` ever bound, in any scope, and never given up:
+/// see [`Requirements::time_mods`] for why the conservative direction is the
+/// only one this may err in.
+fn time_module(b: &Expr, req: &Requirements) -> bool {
+    matches!(b, Expr::Name(n) if req.time_mods.iter().any(|m| m == n.as_ref()))
+}
+
+/// Which served `time` FUNCTION this callee names, if any: `time.f` through a
+/// module name, or a bare name `from time import f [as g]` bound.
+fn time_func(func: &Expr, req: &Requirements) -> Option<&'static str> {
+    match func {
+        Expr::Attr(b, n) if time_module(b, req) => {
+            TIME_SERVED.iter().copied().find(|x| *x == n.as_ref())
+        }
+        Expr::Name(n) => req.time_names.iter().find(|(b, _)| b == n.as_ref()).map(|(_, f)| *f),
+        _ => None,
+    }
+}
+
+/// Is this `time.sleep` argument one the walk can bound: a literal that either
+/// raises before sleeping (a negative number, `None`, a `str`, `bytes`) or
+/// sleeps for at most one second (`time.rs`, the sleep policy)?
+fn sleep_literal_ok(a: &Expr) -> bool {
+    match a {
+        Expr::Int(i) => i.small().is_some_and(|n| n <= 1),
+        Expr::Float(f) => *f <= 1.0,
+        Expr::Un(UnOp::Neg, x) => matches!(**x, Expr::Int(_) | Expr::Float(_)),
+        Expr::True | Expr::False | Expr::None | Expr::Str(_) | Expr::Bytes(_) => true,
+        _ => false,
+    }
+}
+
+/// Everything about a served `time` call that a walk can decide, decided before
+/// the program starts. `call` is the call node itself, which is how a
+/// `gmtime()` knows whether the `strftime` above it blessed it.
+///
+///   * no keyword, `*` or `**` argument on any of them — CPython takes none
+///     (a `TypeError` whose words this engine does not write), and a splice is
+///     arguments the walk cannot count;
+///   * the six clocks take no argument;
+///   * `sleep` takes one, a literal [`sleep_literal_ok`] bounds, at a call
+///     site outside every loop, `def`, `lambda` and comprehension;
+///   * `strftime` takes exactly `(<str literal>, <time module>.gmtime())`, the
+///     literal ASCII with directives from `%Y %m %d %H %M %S %%` only, and
+///     blesses that `gmtime()` node;
+///   * `gmtime` is served only where a `strftime` blessed it.
+fn time_call_block(
+    req: &mut Requirements,
+    call: &Expr,
+    f: &'static str,
+    args: &[Expr],
+    kwargs: &[(std::rc::Rc<str>, Expr)],
+    star: &[usize],
+    dstar: &[Expr],
+) {
+    let detail = if !kwargs.is_empty() || !star.is_empty() || !dstar.is_empty() {
+        Some(format!("time.{f}() with a keyword, * or ** argument"))
+    } else {
+        match f {
+            "sleep" if args.len() != 1 => Some("time.sleep() without exactly one argument".to_string()),
+            "sleep" if req.time_nest > 0 => Some(
+                "time.sleep() inside a loop, a def, a lambda or a comprehension: a later \
+                 refusal re-runs the program on CPython, and the walk cannot bound how \
+                 long it would have slept"
+                    .to_string(),
+            ),
+            "sleep" if !sleep_literal_ok(&args[0]) => Some(
+                "time.sleep() over anything but a literal of at most one second".to_string(),
+            ),
+            "sleep" => None,
+            "strftime" => {
+                let fmt_ok = match args.first() {
+                    Some(Expr::Str(s)) => time_format_block(s).map(str::to_string),
+                    _ => Some("time.strftime() over a format that is not a str literal".to_string()),
+                };
+                let t = args.get(1).filter(|_| args.len() == 2);
+                let gm = match t {
+                    Some(
+                        g @ Expr::Call { func, args: a, kwargs: k, star: s, dstar: d, .. },
+                    ) if a.is_empty()
+                        && k.is_empty()
+                        && s.is_empty()
+                        && d.is_empty()
+                        && matches!(&**func, Expr::Attr(b, n) if n.as_ref() == "gmtime" && time_module(b, req)) =>
+                    {
+                        Some(g as *const Expr)
+                    }
+                    _ => None,
+                };
+                match (fmt_ok, gm) {
+                    (Some(why), _) => Some(why),
+                    (None, None) => Some(
+                        "time.strftime() other than time.strftime(<literal>, time.gmtime()): \
+                         local time, and a struct_time, are CPython's"
+                            .to_string(),
+                    ),
+                    (None, Some(p)) => {
+                        req.time_blessed.push(p);
+                        None
+                    }
+                }
+            }
+            "gmtime" if req.time_blessed.contains(&(call as *const Expr)) => None,
+            "gmtime" => Some(
+                "time.gmtime() outside time.strftime(<literal>, time.gmtime()): there is no \
+                 struct_time here"
+                    .to_string(),
+            ),
+            _ if !args.is_empty() => Some(format!("time.{f}() with an argument")),
+            _ => None,
+        }
+    };
+    if let Some(d) = detail {
+        req.stop("time", d);
+    }
+}
+
 /// The call's arguments with every `*`/`**` spliced in, as
 /// `(positionals, keywords)` — or `None` when one of them holds a value only
 /// the run can see.
@@ -2661,6 +3611,31 @@ fn glob_bless(
     }
 }
 
+/// Is an `except` clause an exception CLASS this binary can match — and would
+/// every rung give the same answer? `module` is the dotted prefix, already
+/// resolved through `import … as` when the caller can; `k` is the clause as
+/// written. The walk above asks it statically, and `eval` asks it again when
+/// an exception actually reaches the clause, so a program run directly with
+/// `-c` refuses where CPython raises TypeError instead of skipping the handler.
+pub fn except_clause(dotted: Option<(&str, &str)>, k: &str) -> (bool, bool) {
+    match dotted {
+        Some((module, leaf)) => match crate::modules::MODULES.iter().find(|m| **m == module) {
+            Some(m) => (
+                matches!(
+                    crate::modules::get_attr(&crate::value::Value::Module(m), leaf),
+                    Ok(crate::value::Value::Builtin(n)) if crate::builtins::is_exception_name(n)
+                ),
+                // Every rung only when the CORE serves the module: `glob` and
+                // `time` are in this binary's MODULES and not in the core's,
+                // whose walk therefore never stops on the clause.
+                !CAPS.iter().any(|(c, mods, _)| !SPECTRUM[0].caps.contains(c) && mods.contains(&module)),
+            ),
+            None => (crate::builtins::is_exception_name(leaf), false),
+        },
+        None => (crate::builtins::is_exception_name(k), true),
+    }
+}
+
 /// The spectrum stop, asked of a program that is ABOUT TO RUN rather than of
 /// one being routed — and it is the same walk, so the two can never disagree.
 ///
@@ -2705,18 +3680,170 @@ fn glob_bless(
 /// substring guard above means a program that never mentions either name pays
 /// nothing.
 pub fn static_stop_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
-    if !src.contains("glob") && !src.contains("hashlib") {
+    let mentioned = src.contains("glob") || src.contains("hashlib");
+    // Behind the features, so the frozen core's guard is the bytes it was.
+    #[cfg(feature = "cap-textwrap")]
+    let mentioned = mentioned || src.contains("textwrap");
+    // `cap-time` widens the guard to `time` on the variant that has it, for
+    // the reason `hashlib` is in it.
+    #[cfg(feature = "cap-time")]
+    let mentioned = mentioned || src.contains("time");
+    if !mentioned {
         return Ok(());
     }
     let mut req = Requirements {
         glob_wrappers: trusted_wrappers(src),
         ..Requirements::default()
     };
-    walk_block(body, &mut req);
+    walk_program(body, &mut req);
     match req.spectrum_stop {
         Some((k, d)) => Err(crate::err::unsupported(&k, &d)),
         None => Ok(()),
     }
+}
+
+/// The capabilities whose programs every Rust rung refused before this branch
+/// served them — each went to CPython, and got CPython's `Did you mean`
+/// suggestion, which no variant computes (`err::forgot_import`).
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+const HINT_HELD_CAPS: &[&str] = &[
+    "cap-ast",
+    "cap-binascii",
+    "cap-difflib",
+    "cap-future",
+    "cap-itertools",
+    "cap-random",
+    "cap-statistics",
+    "cap-textwrap",
+    "cap-time",
+];
+
+/// The capabilities the CORE lacks that this program needs, as the core's own
+/// walk would find them — computed HERE, on a variant that has them, from the
+/// tables every variant carries ([`SPECTRUM`], [`CAPS`], [`CAP_ATTRS`]):
+/// an import of a module only a capability serves (the core blocks `module:
+/// import X`), a [`CAP_ATTRS`] name (`module-attr: random.sample`), and a
+/// served `__future__` head, which the parse has already removed and which the
+/// core blocks as `module: from __future__ import …`. Empty means the core's
+/// walk blocks on no capability, so as far as capabilities go the router picks
+/// the core — and what the core answers, this variant must answer the same.
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+fn core_lacks(req: &Requirements, future_head: bool) -> Vec<&'static str> {
+    // The core's caps are empty, so a module some CAPS row lists is one the
+    // core's walk blocks; a module no row lists is the core's own, or nobody's.
+    let mut out: Vec<&'static str> = Vec::new();
+    for m in &req.imports {
+        if let Some((c, _, _)) = CAPS
+            .iter()
+            .find(|(c, mods, _)| !SPECTRUM[0].caps.contains(c) && mods.contains(&m.as_str()))
+        {
+            out.push(c);
+        }
+    }
+    #[cfg(feature = "cap-random")]
+    if req.core_attr {
+        out.push("cap-random");
+    }
+    #[cfg(feature = "cap-binascii")]
+    if req.fromhex {
+        out.push("cap-binascii");
+    }
+    if future_head {
+        out.push("cap-future");
+    }
+    out
+}
+
+/// Does the core's walk admit this program, as far as capabilities go? See
+/// [`core_lacks`]; `pub` for the test that holds the two variants' answers to
+/// each other.
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+pub fn core_admits(body: &[Stmt], src: &str) -> bool {
+    core_lacks(&walk_for_hold(body, src), has_future_head(src)).is_empty()
+}
+
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+fn walk_for_hold(body: &[Stmt], src: &str) -> Requirements {
+    let mut req = Requirements {
+        glob_wrappers: trusted_wrappers(src),
+        ..Requirements::default()
+    };
+    walk_program(body, &mut req);
+    req
+}
+
+/// Did the parse remove a served `from __future__` head? It did exactly when a
+/// NAME token spells `__future__` in a program that parsed: `future.rs`
+/// refuses every other such name. A string or a comment is not a name.
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+fn has_future_head(src: &str) -> bool {
+    #[cfg(feature = "cap-future")]
+    if src.contains("__future__") {
+        return crate::lex::tokenize(src).is_ok_and(|t| future_imported(&t));
+    }
+    let _ = src;
+    false
+}
+
+/// Is this run ARMED (`io::arm`) — may it become held, its output kept
+/// reversible to the end and its uncaught `NameError`, `AttributeError` or
+/// unexpected-keyword `TypeError` refused as `name-hint`
+/// (`err::forgot_import`)?
+///
+/// Exactly when the spectrum router, evaluated in this binary over this
+/// program, would NOT pick the core, because the core's static walk blocks on
+/// a capability in [`HINT_HELD_CAPS`] ([`core_lacks`]). Those programs went to
+/// CPython before the capability existed; a program the core routes to itself
+/// is the core's answer, and this variant answers it identically — no hold, no
+/// `name-hint`, no 8 MiB or `rmdir` refusal (invariant 10, pinned by
+/// `tests/test_hold_monotone.py`). Nothing here reads the source as text —
+/// a comment or a string that says `itertools`, a variable named `sample`,
+/// arms nothing. The HOLD itself starts where the capability RUNS
+/// (`io::hold`), which is where the core, running the same program, refuses:
+/// an import that never runs (`if False: import time`) holds nothing, and the
+/// program is answered as the core answers it.
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+pub fn hint_held(body: &[Stmt], src: &str) -> bool {
+    core_lacks(&walk_for_hold(body, src), has_future_head(src))
+        .iter()
+        .any(|c| HINT_HELD_CAPS.contains(c))
+}
+
+/// Before the first statement, for a run [`hint_held`] says the core routes
+/// past itself: the run is ARMED (`io::arm`), and HELD where the capability
+/// runs (`io::hold`) — a served `__future__` head at once, since the core
+/// refuses it at its first statement. Until then it answers exactly as the
+/// core answers (invariant 10). A routed run and a direct one are the same
+/// run: nothing in the environment says which it is.
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+pub fn arm_hold(body: &[Stmt], src: &str) {
+    if hint_held(body, src) {
+        crate::io::arm();
+        if has_future_head(src) {
+            crate::io::hold();
+        }
+    }
+}
+
+/// Does evaluating `module.name` mean running a capability the core lacks —
+/// a [`CAP_ATTRS`] name, which the core's `get_attr` refuses? Asked where
+/// the RUN evaluates the attribute (`ops.rs`, a `from … import`), never by
+/// the walk, which reads `modules::get_attr` without running anything.
+#[cfg(feature = "cap-random")]
+pub fn core_refuses_attr(module: &str, name: &str) -> bool {
+    CAP_ATTRS.iter().any(|(c, m, any, shape)| {
+        *m == module && !SPECTRUM[0].caps.contains(c) && (any.contains(&name) || shape.contains(&name))
+    })
+}
+
+/// Does running `module` mean running a capability the core lacks, one whose
+/// programs [`HINT_HELD_CAPS`] says went to CPython before — the point at
+/// which the core, running the same program, refuses (`io::hold`)?
+#[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+pub fn core_refuses_import(module: &str) -> bool {
+    CAPS.iter().any(|(c, mods, _)| {
+        HINT_HELD_CAPS.contains(c) && !SPECTRUM[0].caps.contains(c) && mods.contains(&module)
+    })
 }
 
 /// Which order-blind wrapper names this source still uses as the BUILTIN, one
@@ -2819,6 +3946,116 @@ fn calls_stdin(func: &Expr, args: &[Expr]) -> bool {
 /// `aliases` is `import x as y`, so `r.seed(7)` after `import random as r`
 /// resolves to the module and its attributes are decided, not guessed at as
 /// method names — the third spelling in the ledger (`py-0e241643581e`).
+/// Bless the `random.Random` / `sys.version_info` child of `e` when `e` is one
+/// of the shapes [`CAP_ATTRS`] serves it in, and put a `random.<f>(…)` call
+/// spelled in a way no rung serves in the route's stop slot. `true` only for
+/// `sys.version_info.major` / `.minor`, which the caller must not then treat
+/// as a method name.
+///
+/// Every test is SYNTACTIC — a literal index, a literal slice bound, a tuple
+/// LITERAL of at most two items — because the runtime half
+/// (`randobj::version_info`) serves exactly what these spellings can reach and
+/// refuses the rest, and a walk that admitted a computed index would admit a
+/// program the runtime refuses one statement in.
+fn bless_cap_shapes(e: &Expr, req: &mut Requirements) -> bool {
+    let aliases = &req.aliases;
+    let vi = |x: &Expr| module_attr_named(x, aliases, "sys", "version_info");
+    let small = |x: &Expr, hi: i64| matches!(x, Expr::Int(i) if i.small().is_some_and(|v| (0..=hi).contains(&v)));
+    let mut blessed: Option<&Expr> = None;
+    let mut attr = false;
+    match e {
+        Expr::Attr(b, n) if matches!(n.as_ref(), "major" | "minor") && vi(b) => {
+            blessed = Some(&**b);
+            attr = true;
+        }
+        Expr::Index(b, i) if small(i, 1) && vi(b) => blessed = Some(&**b),
+        Expr::Slice { base, lo: None, hi: Some(h), step: None } if small(h, 2) && vi(base) => {
+            blessed = Some(&**base)
+        }
+        // Exactly one `version_info` operand, every other one a tuple literal
+        // of at most two items, and no `in` / `is` anywhere in the chain.
+        Expr::Compare { first, rest } => {
+            let mut ok = true;
+            for i in 0..=rest.len() {
+                let x = if i == 0 { &**first } else { &rest[i - 1].1 };
+                if i > 0 {
+                    ok &= !matches!(rest[i - 1].0, CmpOp::In | CmpOp::NotIn | CmpOp::Is | CmpOp::IsNot);
+                }
+                if vi(x) {
+                    ok &= blessed.is_none();
+                    blessed = Some(x);
+                } else {
+                    ok &= matches!(x, Expr::Tuple(t) if t.len() <= 2
+                        && !t.iter().any(|y| matches!(y, Expr::Starred(_))));
+                }
+            }
+            if !ok {
+                blessed = None;
+            }
+        }
+        Expr::Call { func, args, star, kwargs, dstar, .. } => {
+            let (arity, n) = match &**func {
+                Expr::Attr(_, n) => match n.as_ref() {
+                    "Random" | "shuffle" => (1, n),
+                    "sample" => (2, n),
+                    _ => return false,
+                },
+                _ => return false,
+            };
+            if !module_attr_named(func, aliases, "random", n) {
+                return false;
+            }
+            // A literal seed this engine cannot hash the way CPython does.
+            let bad_seed = n.as_ref() == "Random"
+                && matches!(
+                    args.first(),
+                    Some(Expr::None | Expr::Float(_) | Expr::Str(_) | Expr::Bytes(_) | Expr::FString(_)
+                        | Expr::Tuple(_) | Expr::List(_) | Expr::Set(_) | Expr::Dict(_))
+                );
+            if args.len() != arity || !star.is_empty() || !kwargs.is_empty() || !dstar.is_empty() || bad_seed {
+                req.stop_route("random", "random.Random/sample/shuffle() with arguments no rung serves".into());
+            } else if n.as_ref() == "Random" {
+                blessed = Some(&**func);
+            }
+        }
+        _ => {}
+    }
+    if let Some(p) = blessed {
+        req.cap_blessed.push(p);
+    }
+    attr
+}
+
+/// Is `x` spelled `<module m>.n`, the module resolved as [`resolve_module`]
+/// resolves it? Out of line: [`bless_cap_shapes`] asks it at every node.
+#[inline(never)]
+fn module_attr_named(x: &Expr, aliases: &[(String, String)], m: &str, n: &str) -> bool {
+    matches!(x, Expr::Attr(b, a) if a.as_ref() == n
+        && matches!(resolve_module(b, aliases), Some(crate::value::Value::Module(r)) if r == m))
+}
+
+/// A `random.Random` instance's method names — `.randint`, `.shuffle`, `.seed`
+/// — admitted ONLY for a program that imports `random`, by the argument
+/// [`pathlib_method`] makes. The names are [`CAP_METHODS`]'s row.
+#[cfg(feature = "cap-random")]
+fn random_method(req: &Requirements, n: &str) -> bool {
+    req.imports.contains("random") && cap_serves("random", n)
+}
+#[cfg(not(feature = "cap-random"))]
+fn random_method(_req: &Requirements, _n: &str) -> bool {
+    false
+}
+
+/// Is `e` a bare name some `import` in the program bound — an `as` alias, or
+/// the module's own name? Read in source order, like every binding here, so
+/// a use above its import (in a `def`) is not one; that costs a stop, which
+/// the run then raises where the attribute is evaluated.
+#[cfg(any(feature = "cap-base64", feature = "cap-binascii"))]
+fn names_an_import(e: &Expr, req: &Requirements) -> bool {
+    let Expr::Name(n) = e else { return true };
+    req.aliases.iter().any(|(a, _)| a == n.as_ref()) || req.imports.contains(n.as_ref())
+}
+
 fn resolve_module(e: &Expr, aliases: &[(String, String)]) -> Option<crate::value::Value> {
     match e {
         Expr::Name(n) => {
@@ -2868,8 +4105,20 @@ fn capability_module(e: &Expr, req: &Requirements) -> Option<String> {
 }
 
 fn walk_expr(e: &Expr, req: &mut Requirements) {
+    let shaped_attr = bless_cap_shapes(e, req);
     match e {
         Expr::Name(n) => {
+            // The `time` module, or a served `time` function, anywhere but the
+            // callee of a call (which the Call arm never walks down to): a
+            // value this engine would have to print as `<module 'time'
+            // (built-in)>` or `<built-in function time>`, or hand to code that
+            // calls it where the walk cannot see.
+            if req.time_mods.iter().any(|m| m == n.as_ref())
+                || req.time_names.iter().any(|(b, _)| b == n.as_ref())
+            {
+                req.stop("time", format!("{n} used as a value: only a call to a served time function is served"));
+                return;
+            }
             // A name bound by `from glob import glob` that is NOT the callee of
             // a blessed call: the walk skips the callee of one it served, so
             // reaching here means the function is being passed, stored or
@@ -2894,7 +4143,24 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             }
         }
         Expr::Attr(b, n) => {
+            // `time.<n>` reached as a VALUE — the Call arm does not walk the
+            // callee of a served call — or an unserved name in any position.
+            // Before `b` is walked, which would refuse the module name itself.
+            if time_module(b, req) {
+                if TIME_SERVED.contains(&n.as_ref()) {
+                    req.stop("time", format!("time.{n} used as a value: only a call is served"));
+                } else {
+                    req.escalate("time", n);
+                    req.stop_only("module-attr", format!("time.{n}"));
+                }
+                return;
+            }
             walk_expr(b, req);
+            // `sys.version_info.major`: an attribute of a value, not a method
+            // name for the union below to be pessimistic about.
+            if shaped_attr {
+                return;
+            }
             if matches!(n.as_ref(), "stdin" | "__stdin__") {
                 req.reads_stdin = true;
             }
@@ -2933,6 +4199,16 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                 req.stop("module-attr", format!("hashlib.{n}"));
                 return;
             }
+            // `textwrap.TextWrapper`, `textwrap.__file__`: the same stop, for
+            // the same reason — the core routes on `MODULE_ATTRS`, the run
+            // needs the stop.
+            if textwrap_module(b, req) && !TEXTWRAP_SERVED.contains(&n.as_ref()) {
+                // `escalate` keeps the core's `--plan` row the attribute
+                // rather than the import; the stop is the run's.
+                req.escalate("textwrap", n);
+                req.stop_only("module-attr", format!("textwrap.{n}"));
+                return;
+            }
             // Every OTHER `glob.<n>`, decided from [`GLOB_SERVED`]: `escape`
             // and `has_magic` are served in any position and stop the walk
             // here, and the rest are a `module-attr` refusal that no rung of
@@ -2947,14 +4223,36 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                 return;
             }
             if let Some(crate::value::Value::Module(m)) = resolve_module(b, &req.aliases) {
+                #[cfg(feature = "cap-random")]
+                note_core_attr(req, m, n);
                 if crate::modules::get_attr(&crate::value::Value::Module(m), n).is_err() {
-                    req.block("module-attr", format!("{m}.{n}"));
+                    // A blessed shape of a name THIS binary serves in that
+                    // shape is not a blocker here; anywhere else it is, and
+                    // when no rung serves it spelled this way, a stop.
+                    let shaped = req.cap_blessed.contains(&(e as *const Expr));
+                    let d = format!("{m}.{n}");
+                    if no_rung_serves(m, n, shaped) {
+                        req.stop_route("module-attr", d.clone());
+                    }
+                    if !(shaped && cap_attr(&SPECTRUM[self_index()], m, n, true)) {
+                        req.block("module-attr", d);
+                    }
                     // `base64.b32encode` is a `module-attr` blocker in both
                     // variants, so the ROUTE is already right — but a blocker
                     // is not a stop, and the run has to refuse before the
                     // barrier rather than when the attribute is touched.
+                    //
+                    // Only for a name the program IMPORTED: `resolve_module`
+                    // reads any bare `binascii` as the module, and
+                    // `binascii = "x"; binascii.upper()` is a string's method,
+                    // which the core answers and a pre-run stop would refuse.
                     #[cfg(feature = "cap-base64")]
-                    if m == "base64" {
+                    if m == "base64" && names_an_import(b, req) {
+                        req.stop_base64("module-attr", format!("{m}.{n}"));
+                    }
+                    // `binascii.Error` / `binascii.crc32`, the same way.
+                    #[cfg(feature = "cap-binascii")]
+                    if m == "binascii" && names_an_import(b, req) {
                         req.stop_base64("module-attr", format!("{m}.{n}"));
                     }
                 }
@@ -2981,7 +4279,17 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                 // function the module was served to run.
                 return;
             }
-            if !known_method(n) && !pathlib_method(req, n) && !re_method(req, n) && !hash_method(req, n)
+            // `bytes.fromhex` is `cap-binascii`'s, a capability the core
+            // lacks: the run is armed for it as for an import (`core_lacks`).
+            #[cfg(feature = "cap-binascii")]
+            if n.as_ref() == "fromhex" {
+                req.fromhex = true;
+            }
+            if !known_method(n)
+                && !pathlib_method(req, n)
+                && !re_method(req, n)
+                && !hash_method(req, n)
+                && !random_method(req, n)
             {
                 // The iteration-74 defect class, and the reason `hashlib` was
                 // rejected there: the walk keeps the FIRST blocker, and for a
@@ -3016,6 +4324,10 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                 if admitted_by_a_capability(req) {
                     req.stop_only("method", format!(".{n}()"));
                 }
+                #[cfg(feature = "cap-textwrap")]
+                if routed_past_by_textwrap(req) {
+                    req.stop_route("method", format!(".{n}()"));
+                }
                 req.block_method(n);
             }
         }
@@ -3025,6 +4337,7 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             kwargs,
             star,
             dstar,
+            ..
         } => {
             // Before the callee and the arguments are walked, so that a
             // program whose arguments hold a second blocker is still counted
@@ -3044,6 +4357,19 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             // before the program starts (#51).
             #[cfg(feature = "cap-base64")]
             base64_call_block(req, func, args, kwargs, star, dstar);
+            textwrap_call_block(req, func, args, kwargs, star, dstar);
+            // A served `time` call: every shape it can refuse is decided here,
+            // and its callee is not walked, because the callee is the one
+            // position a served `time` name may take.
+            let time_call = match time_func(func, req) {
+                Some(f) => {
+                    time_call_block(req, e, f, args, kwargs, star, dstar);
+                    true
+                }
+                None => false,
+            };
+            #[cfg(feature = "cap-binascii")]
+            binascii_call_block(req, func, args, kwargs, star, dstar);
             // Is THIS a glob call, and did its parent bless it? A blessed call
             // is served and its callee is not walked; an unblessed one is the
             // blocker, whatever it was going to be handed to. `escape` and
@@ -3071,7 +4397,7 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             if calls_stdin(func, args) {
                 req.reads_stdin = true;
             }
-            if !served_glob {
+            if !served_glob && !time_call {
                 walk_expr(func, req);
             }
             for a in args {
@@ -3150,6 +4476,9 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             // therefore still read against the enclosing table — which is where
             // it is evaluated.
             let saved = req.enter_scope();
+            {
+                req.time_nest += 1;
+            }
             for c in clauses {
                 walk_expr(&c.iter, req);
                 walk_target(&c.target, req);
@@ -3158,6 +4487,9 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             walk_expr(elt, req);
             if let Some(v) = val {
                 walk_expr(v, req);
+            }
+            {
+                req.time_nest -= 1;
             }
             req.leave_scope(saved);
         }
@@ -3175,9 +4507,19 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             }
             let saved = req.enter_scope();
             req.shadow_params(params);
+            {
+                req.time_nest += 1;
+            }
             walk_expr(body, req);
+            {
+                req.time_nest -= 1;
+            }
             req.leave_scope(saved);
         }
+        // `return 0, *a` / `b = 0, *a`: a starred element of a bare tuple in a
+        // VALUE position, which no variant unpacks (`eval` refuses it at
+        // runtime). A starred TARGET is a `Target::Star` and never reaches here.
+        Expr::Starred(_) => req.block("unpack", "* in a tuple display".to_string()),
         _ => {}
     }
 }
@@ -3211,4 +4553,82 @@ pub fn scan_imports(src: &str) -> Vec<String> {
         }
     }
     out
+}
+
+#[cfg(all(test, feature = "cap-itertools", feature = "cap-random", feature = "cap-future", feature = "cap-time"))]
+mod hold_tests {
+    use super::*;
+
+    fn held(src: &str) -> bool {
+        hint_held(&crate::parse::parse(src).expect("parses"), src)
+    }
+
+    /// The hold is the router's verdict, never a word in the text: a program
+    /// the core routes to itself is the core's, whatever it says.
+    #[test]
+    fn words_in_the_text_hold_nothing() {
+        for src in [
+            "# itertools\nfoo",
+            "print('difflib')\nfoo",
+            "\"\"\"uses __future__ semantics\"\"\"\nfoo",
+            "print(f\"see __future__\")\nfoo",
+            "import random\nsample = [1]\nprint(sample)",
+            "import random\nprint('shuffle', 'Random')",
+            "import sys\nversion_info = 3\nprint(version_info)",
+            "# time statistics textwrap binascii\nfoo",
+        ] {
+            assert!(!held(src), "held a program the core routes to itself: {src:?}");
+            assert!(core_admits(&crate::parse::parse(src).unwrap(), src), "{src:?}");
+        }
+    }
+
+    #[test]
+    fn a_capability_the_core_lacks_holds() {
+        for src in [
+            "import itertools\nfoo",
+            "if False:\n    import time\nfoo",
+            "import random\nprint(random.Random(1).randint(1, 2))",
+            "import random\nl = [1]\nrandom.shuffle(l)",
+            "import sys\nprint(sys.version_info[0])",
+            "from sys import version_info\nprint(1)",
+            "from __future__ import annotations\nfoo",
+            "import statistics\nfoo",
+        ] {
+            assert!(held(src), "did not hold a program only a capability admits: {src:?}");
+        }
+        // A capability outside the held set is admitted past the core but not held.
+        assert!(!held("import re\nfoo"));
+        assert!(!core_admits(&crate::parse::parse("import re\nfoo").unwrap(), "import re\nfoo"));
+    }
+
+    /// No pre-run stop for what the core runs: a variable named after a
+    /// capability module, or an `except m.X` clause no exception reaches. The
+    /// core's walk sees no such module and the core answers; the ROUTE may
+    /// still go past the rungs, but a direct run refuses only where the
+    /// attribute is evaluated.
+    #[test]
+    fn what_the_core_runs_has_no_pre_run_stop() {
+        for src in [
+            "binascii = 'x'\nprint(binascii.upper())",
+            "def f(binascii): return binascii.upper()\nprint(f('a'))",
+            "base64 = 'x'\nprint(base64.upper())",
+            "try:\n    print(1)\nexcept glob.X:\n    pass",
+            "try:\n    print(1)\nexcept hashlib.X:\n    pass",
+            "try:\n    print(1)\nexcept time.error:\n    pass",
+            "try:\n    print(1)\nexcept textwrap.X:\n    pass",
+            "try:\n    print(1)\nexcept binascii.Error:\n    pass",
+            "time = 1\ntry:\n    print(1)\nexcept time.error:\n    pass",
+            "def f():\n    try:\n        pass\n    except (ValueError, glob.X):\n        pass",
+        ] {
+            let body = crate::parse::parse(src).expect("parses");
+            assert!(static_stop_check(&body, src).is_ok(), "{src:?}");
+            #[cfg(feature = "cap-base64")]
+            assert!(base64_static_check(&body, src).is_ok(), "{src:?}");
+        }
+        // An imported module's unserved attribute is still stopped before the run.
+        let src = "import binascii\nprint(binascii.crc32(b'a'))";
+        #[cfg(feature = "cap-base64")]
+        assert!(base64_static_check(&crate::parse::parse(src).unwrap(), src).is_err());
+        let _ = src;
+    }
 }

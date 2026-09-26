@@ -106,6 +106,10 @@ pub enum Expr {
         kwargs: Vec<(std::rc::Rc<str>, Expr)>,
         /// `**kwargs` expressions.
         dstar: Vec<Expr>,
+        /// For each `dstar[i]`, how many `kwargs` precede it in the source:
+        /// `f(x=1, **d, z=3)` is `[1]`. CPython builds the keyword mapping in
+        /// source order, so `**` keys land between the literal keywords.
+        dstar_at: Vec<usize>,
     },
     Comp {
         kind: CompKind,

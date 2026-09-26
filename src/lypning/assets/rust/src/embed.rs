@@ -231,10 +231,12 @@ fn run_guarded(req: &Request) -> Outcome {
     let mut interp = crate::eval::Interp::new();
     let result = catch_unwind(AssertUnwindSafe(|| {
         let body = crate::parse::parse(&req.source)?;
-        #[cfg(any(feature = "cap-glob", feature = "cap-hashlib"))]
+        #[cfg(any(feature = "cap-glob", feature = "cap-hashlib", feature = "cap-textwrap"))]
         crate::route::static_stop_check(&body, &req.source)?;
         #[cfg(feature = "cap-base64")]
         crate::route::base64_static_check(&body, &req.source)?;
+        #[cfg(any(feature = "cap-itertools", feature = "cap-difflib", feature = "cap-time"))]
+        crate::route::arm_hold(&body, &req.source);
         interp.run(&body)
     }));
 
@@ -322,6 +324,10 @@ fn finish(r: Result<(), LypningError>) -> Outcome {
             }
         }
         Err(e) => {
+            // `main.rs::finish` asks the same question; see `err::forgot_import`.
+            if let Some(r) = crate::err::forgot_import(&e).filter(|_| !io::is_committed()) {
+                return finish(Err(r));
+            }
             let committed = io::commit().is_ok();
             Outcome {
                 stderr: format!("Traceback (most recent call last):\n{e}\n").into_bytes(),
