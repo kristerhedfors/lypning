@@ -35,7 +35,13 @@ bytes are CI's to measure), reference CPython 3.14.5.
 |---|---|---|
 | core `code`, host build | 767,544 B, 8 blocks | 767,488 B, 8 blocks |
 | lypning-l `code`, host build | 958,616 B, 10 blocks | 961,524 B, 10 blocks |
-| conformance, gate, corpus-time | — | not run in this session; the serial verification run owns them |
+| lypning-l MATCH / UNSUPPORTED / MISMATCH | 7,357 / 2,816 / 0 | 7,430 / 2,743 / 0 |
+| all arms MISMATCH, UNSAFE, dispatchers | 0, 0, 10,173/10,173 | 0, 0, 10,173/10,173 |
+
+The conformance rows come from `lypning conformance --mixture both`: 10,173
+of the 14,816 loaded programs were graded, against CPython 3.14.5. "Before" is
+the f6b0728 run of record, and "after" is this branch on 2026-09-26. The +73 is
+close to the critic's estimate of about 77.
 
 `glob.rs` always yielded in CPython's `_iglob` order over `readdir`; the
 walker hid it behind a static `glob-order` stop anyway, because nobody had
