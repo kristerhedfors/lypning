@@ -177,6 +177,12 @@ _RUN_SPECIFIC = tuple(re.compile(p) for p in (
     # 2026-09-25). One named key, `os.environ['HOME']` or `.get('X')`, is
     # still graded.
     r"\bos\s*\.\s*environ\b(?!\s*(?:\[|\.\s*get\b))",
+    # A remote server's answer belongs to the moment it was asked: the
+    # reference got `HTTP Error 429: Too Many Requests` from a registry the arm
+    # read a moment later (py-fe693f6d2361, CI 2026-09-26).
+    r"\burlopen\s*\(",
+    r"\bhttp\s*\.\s*client\b",
+    r"\bsocket\s*\.\s*(?:socket|create_connection|getaddrinfo|gethostbyname)\b",
 ))
 
 # The one class that must be matched against the program TEXT, quotes and all,
