@@ -55,7 +55,7 @@ Advance a step by editing this table in the same PR as the work.
 | 1 | Fix the instrument | $0 | nothing else is readable until it is | done (2026-09-22, implementation in PRs #97–#101; validation limits below) |
 | 2 | Positive control (S1 / stage 0b) | ~$126 at 512 output tokens/request; ~$225 at allowance (full k=16); rungs run: $28.12751896 charged or reserved | distillation route, rejection-filtered distillation, or contrastive route | done (2026-09-23, full split k=4, merge `35912725289`: **flat** — no distillation route; Step 3 mandatory) |
 | 3 | Build contrastive targets | tokens | is there enough pair supply for a preference arm? | done (2026-09-23, `step3-pairs` `35918571219`: 110–257 pair prompts by source, **< 300** — no preference arm; arm C carries the signal) |
-| 4 | S4, re-specified, three seeds | up to ~$180 (three h200 seed jobs capped at 720m, ~$60 each) | the first result the instrument can read | in progress (2026-09-23: arm A configured; hardware smoke before seed 1111) |
+| 4 | S4, re-specified, three seeds | up to ~$180 (three h200 seed jobs capped at 720m, ~$60 each) | the first result the instrument can read | paused 2026-09-26 (engine coverage); resume on the next engine via `ENGINE_BUMP.md` and `RAMP.md`. Was in progress (2026-09-23: arm A configured; hardware smoke before seed 1111) |
 
 **Operator direction, 2026-09-22: free first.** Continue Step 2's free checks
 and preparation. Paid inference and GPU training remain held; no paid ceiling
@@ -656,6 +656,77 @@ arms included, so one job holds all four arms: the failed job reached chunk 26
 in about 228 minutes of wall clock, which puts a full rerun near 520 minutes,
 inside the 648-minute budget.
 
+**Paused, 2026-09-26.** The operator paused training while engine coverage
+continues; training resumes on the next engine, which is a new arm: arm A's
+targets, bundles and Space revision cannot train or evaluate it
+(`ENGINE_BUMP.md`). The finish redispatch above is now an optional salvage
+under `RAMP.md` §5, and every billed step climbs `RAMP.md` one rung per go.
+
+**Seed 1111 complete, 2026-09-26.** The redispatch (HF job
+6ab7b0b76b030d633f693e48, Actions 36239792036) ran all four arms. Eval-2
+correct-and-native +5.30pp [+2.22, +8.88], correctness −0.12pp, gates A–C pass;
+the +3pp lower-bound rule is not met on one seed. The read, and the coverage
+worklist it yields, are `reports/2026-09-26-seed1111-finish-read.md`. Seeds 2222
+and 3333 of arm A are not run: arm A's engine is retired (Step 5).
+
+### Step 5 — The next arm: continue from `adapter-1050`, or start fresh (planned 2026-09-26; nothing built or run)
+
+The operator asked, on 2026-09-26, to continue training the fine-tuned model with
+new data instead of starting from the base. It is possible and cheaper than a
+fresh SFT, but it is a new arm type, and one free-to-build, one billed read
+decide whether it is worth running. The order:
+
+1. **Wait for coverage, then bump the engine** (`ENGINE_BUMP.md` §4, steps 1–10).
+   The continuation's data, targets and bundles are the new engine's; nothing of
+   arm A's is reused except the adapter.
+2. **Decide with one eval-only read (R8-shaped, ~$37 at the last finish's
+   wall).** Evaluate three arms on the new engine and the new bundles: the
+   base, `adapter-1050` unchanged, and nothing else yet. This needs the
+   lineage exception below for stage `eval` only. It answers the question the
+   seed-1111 read raised (`reports/2026-09-26-seed1111-finish-read.md` §4):
+   coverage and SFT drew on one pool of 917 base correct-fallback draws, so
+   how much headroom is left once the engine serves `functools`, `copy`,
+   `OrderedDict` and the rest, and does the adapter still help or now hurt?
+   - Adapter still beats the new base on correct-and-native with gates A–C →
+     continue (item 3).
+   - Adapter's gain is absorbed or it costs correctness → start fresh arms on
+     the new engine (`ENGINE_BUMP.md` §4 steps 11–13), three independent seeds.
+   - Headroom below the +3pp MDE → no adapter can fire the rule; stop (kill
+     criteria below).
+3. **Continued SFT from `adapter-1050` (arm C).** New targets at the new engine
+   (`ENGINE_BUMP.md` §4 step 11, paid), a short SFT from the adapter, eval-2 on
+   the three arms of item 2 plus the continued adapter.
+   - **Data.** Include cases where a module the new engine serves is the right
+     answer, so learned avoidance is unlearned where it is no longer needed,
+     and a real share of fallback-control cases: that slice lost 4.5pp of
+     correctness (family macro) at step 1,050. New cases stay disjoint from
+     eval-2 (`split_bank.py`); eval-2 is never trained on.
+   - **What it can show.** Every continuation descends from seed 1111, so its
+     seeds vary only the continuation: three continuation seeds can show
+     whether continuing helps, not that the whole recipe does. A recipe claim
+     still needs three independent SFT lineages.
+   - **GRPO from the adapter** (reward = the new engine) is the alternative
+     that needs no target generation; it moved almost nothing on 2026-09-21
+     (at most +0.1190pp, Step 0), so it is second choice.
+4. **Code to build first ($0, each with a test under `training/tests/`):**
+   - `training/gpu/train_verified.py:673` loads an adapter trainable only for
+     `grpo`; SFT from a parent adapter needs `is_trainable` for `sft` too, and
+     the schedule, `sft_batches` and adapter sealing checked on that path.
+   - `adapter_lineage_admitted` (`train_verified.py:106`) refuses an adapter on
+     any bundle but its own, except stage `eval` on the benchmark. Admit a
+     parent adapter on a new bundle only when it is named explicitly
+     (`--parent-adapter`), its seal verifies, its tokenizer and model-config
+     digests match (the checks already at the adapter contract), and the
+     experiment records the parent's bundle digest, engine sha and job.
+   - Stage `eval` of a pilot adapter on a new engine's benchmark: the same
+     explicit-parent rule, so item 2 can run.
+   - `arm_check.py` and the manifest: a continuation arm names its parent job
+     and step, and never joins seeds with arm A.
+5. **Then climb `RAMP.md` from R0.** Continuation from an adapter is a code path
+   that has never run: R0 (unit tests), R3 (a10g smoke continuing a tiny
+   adapter), R4, then the item-2 read, then item 3's short SFT at R6 before a
+   full continuation.
+
 ## Kill criteria (unchanged, `LADDER.md` §6)
 
 If Step 2 is flat **and** Step 3's supply is tiny, the model lever is capped
@@ -685,5 +756,5 @@ not a claim that every refusal is engine-addressable or model-repairable.
 3. Do the work in a PR that also edits this table's state and adds a ledger row
    to `ORCHESTRATION.md`. A step whose decision changed a later step edits
    that step here, in the same PR, with the reason.
-4. Before any billed job: `round02-preflight` (all six checks) and the cost
-   ceiling in `ROUND_READINESS.md`.
+4. Before any billed job: `round02-preflight` (all six checks), and the rung,
+   its entry condition and its approved ceiling in `RAMP.md`.

@@ -765,3 +765,18 @@ def test_an_oversize_chunk_splits_the_same_way_in_both_arms_and_others_keep_thei
     assert [(c, d) for c, d, _ in arms[0][1]] == [(c, d) for c, d, _ in arms[2][1]], "(case, draw) order holds"
     assert json.loads((tmp_path / "base" / ev.PREFILL_SPLITS_FILE).read_text()) == \
         {"step": 0, "splits": [{"chunk_cases": 2, "padded": 40, "parts": [1, 1]}]}
+
+
+def test_the_chunk_that_ran_the_finish_out_of_memory_now_fits_in_three_parts():
+    """HF job 6ab6a20c6b030d633f691a95, eval-2 chunk index 26 (2026-09-25): one
+    434-token prompt among 16 cases at 16 draws padded 256 sequences to 111,104
+    prefill tokens. Every part must fit the largest prefill already run clean."""
+    ev = load_evaluation()
+    lengths = [129] * 15 + [434]
+    assert 16 * 16 * max(lengths) == 111_104
+    spans = ev.prefill_parts(lengths, 16, ev.PREFILL_TOKENS)
+    assert [len(s) for s in spans] == [6, 6, 4]
+    assert sorted(i for s in spans for i in s) == list(range(16)), "every case, once, in order"
+    assert all(len(s) * 16 * max(lengths[i] for i in s) <= ev.PREFILL_TOKENS for s in spans)
+    typical = [129] * 16
+    assert ev.prefill_parts(typical, 16, ev.PREFILL_TOKENS) == [list(range(16))], "a p50 chunk is untouched"

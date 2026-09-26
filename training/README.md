@@ -22,8 +22,12 @@ and the signal ladder and action plan that would. See
 loop, [NEXT_ROUND.md](NEXT_ROUND.md) for the manual probe/train/eval sequence and
 [L-TRAINING-ROADMAP.md](L-TRAINING-ROADMAP.md) for runtime priorities. The new
 `training-prepare` and `gpu/train_verified.py` path is separate from the frozen
-rewrite experiment documented below. Its GPU integration still needs a hardware
-smoke; no quality improvement is claimed from implementing the trainer.
+rewrite experiment documented below. Its h200 hardware smoke ran on 2026-09-23
+(HF job `6ab4582d6b030d633f68c90e`); no quality improvement is claimed from
+implementing the trainer. [PLAN.md](PLAN.md) is the step plan;
+[ENGINE_BUMP.md](ENGINE_BUMP.md) is what a new engine invalidates and the
+checklist for training on it; [RAMP.md](RAMP.md) is how billed spend climbs and
+the ledger of paid failures.
 
 The original pipeline's four stages:
 

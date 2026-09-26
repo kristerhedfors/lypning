@@ -148,7 +148,7 @@ ceiling says an effect *can* exist, never that one will.
 | 7 | Carve `banks/v3/{train,eval2}.jsonl`, disjoint by family | **done** — `nt bank-carve`; validated against bank v2's union, which it carves back to its own hand-made 51/18 shape |
 | 8 | Publish to the Hub and point `BANK_PATH` at it | **done** — `banks/v3-20260919` pushed (run `35439152832`); `BANK_PATH` repointed |
 | 9 | The exact supervised-token count | **done, and it caught a refusal** — run `35434623069`: `--steps 250` exposes 46,535/45,952/44,940 against the 50,000 floor, so the pilot as configured would have been refused after the weights. `PILOT_STEPS` is now 300 and the billed submit needs a passing count |
-| 10 | Operator authorises the spend | h200 at the 720m ceiling ≈ $60/seed (2026-09-22 amendment above; ≈ $25 at the old 300m); a complete S4 is three seeds (1111, 2222, 3333) |
+| 10 | Operator authorises the spend | h200 at the 720m ceiling ≈ $60/seed (2026-09-22 amendment above; ≈ $25 at the old 300m); a complete S4 is three seeds (1111, 2222, 3333). From 2026-09-26 the per-rung ceilings are `training/RAMP.md` §2 (proposed) and §7 (approved) |
 
 Two open items that block nothing above but change how a result reads:
 

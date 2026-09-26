@@ -30,6 +30,15 @@ do not spend a turn writing one.
 
 ## 2. The mechanism: push a branch, read the log
 
+**Never push `round02/**` to read evidence.** That glob also triggers
+`round02.yml`, whose bootstrap rebuilds the verifier Space from the pushed
+commit's engine (Actions `36196784607`, 2026-09-25), and a head commit carrying
+`[submit-pilot]` or `[submit-smoke]` bills. A reader already on main runs by
+`gh workflow run` (both `hf-status.yml` and, once #130 merges, `eval2-shape.yml`
+declare `workflow_dispatch`); a new reader is pushed on its own glob
+(`bank3/**` for `hf-status.yml`, `s0/**` below). `.github/scripts/eval2_shape.py`
+is an aggregates-only reader of chunk prompt lengths.
+
 Add a workflow whose `on: push: branches:` glob matches the branch you are
 about to push, push it, and read the run's log. `gh` has `workflow` scope here,
 so the push itself is the trigger and no approval step stands between.
