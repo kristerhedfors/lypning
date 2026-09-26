@@ -1,0 +1,44 @@
+name: round-02 finish readout (aggregates only)
+
+# Free and read-only: a completed finish job's four arms, gates A-C and the
+# by-kind refusal vector, from the private artifact repo. No GPU, no case text.
+# Dispatch, or a push to readout/** (no other workflow listens there; never
+# round02/**, whose push rebuilds the verifier Space, training/ENGINE_BUMP.md §6).
+on:
+  push:
+    branches: ["readout/**"]
+    paths: [".github/scripts/finish_readout.py", ".github/workflows/finish-readout.yml"]
+  workflow_dispatch:
+    inputs:
+      job:
+        description: HF job id of the completed finish (24 hex)
+        required: false
+        default: 6ab7b0b76b030d633f693e48
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  readout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HF_HUB_DISABLE_PROGRESS_BARS: "1"
+      HF_HUB_VERBOSITY: error
+      LYPNING_CAPTURE: "0"
+      LYPNING_HARVEST: "0"
+      FINISH_JOB: ${{ inputs.job || '6ab7b0b76b030d633f693e48' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # The pinned engine is lypning-l for CPython 3.12; gate B runs it.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q "huggingface-hub==1.31.0"
+      - name: Read the four arms and print only aggregates
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python .github/scripts/finish_readout.py
