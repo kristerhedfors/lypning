@@ -127,8 +127,9 @@ impl Mt {
         (a * 67_108_864.0 + b) * (1.0 / 9_007_199_254_740_992.0)
     }
 
-    /// `getrandbits(k)` for `0 <= k <= 63`: 32-bit words, least significant
-    /// first, the last one right-shifted to its remaining width.
+    /// `getrandbits(k)` for `0 <= k <= 64`: 32-bit words, least significant
+    /// first, the last one right-shifted to its remaining width. The core asks
+    /// for at most 63; `cap-bigint` asks for 64 and widens the result.
     pub fn getrandbits(&mut self, k: u32) -> u64 {
         if k == 0 {
             return 0;
@@ -233,6 +234,15 @@ pub fn call(it: &mut Interp, name: &str, args: &mut Args, kw: &[(Rc<str>, Value)
             let k = int(&args[0])?;
             if k < 0 {
                 return Err(unsupported("random", "random.getrandbits() of a negative count"));
+            }
+            // `getrandbits(64)` is two words, low first, exactly as `_random`
+            // fills them — and a result at or past 2**63 is a wide integer,
+            // which only a variant with `cap-bigint` has. The core's code here
+            // is the bytes it was; for it, 64 is still past its range.
+            #[cfg(feature = "cap-bigint")]
+            if k == 64 {
+                let v = it.rng.as_mut().expect("seeded").getrandbits(64);
+                return Ok(Value::Int(crate::bigint::norm(false, vec![v as u32, (v >> 32) as u32])));
             }
             if k > 63 {
                 return Err(big());

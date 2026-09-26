@@ -46,6 +46,10 @@ pub mod bigint;
 /// variant entirely, not merely unreachable in it.
 #[cfg(feature = "cap-binascii")]
 pub mod binascii;
+/// `struct.pack` / `unpack` / `unpack_from` / `calcsize` — the other half of
+/// the `cap-binascii` capability. Absent from the smaller variant entirely.
+#[cfg(feature = "cap-binascii")]
+pub mod pystruct;
 /// `collections.Counter` / `defaultdict` — the `cap-collections` capability.
 /// Absent from the smaller variant entirely, not merely unreachable in it.
 #[cfg(feature = "cap-collections")]

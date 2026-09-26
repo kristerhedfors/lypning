@@ -14,6 +14,26 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-26** — lypning-l serves `struct` and `random.getrandbits(64)` ([#134](https://github.com/kristerhedfors/lypning/pull/134))
+
+- `struct.pack` / `unpack` / `unpack_from` / `calcsize` and their `from struct
+  import` spellings, over the codes `x c b B ? h H i I l L q Q s d`, in
+  `pystruct.rs` under `cap-binascii`. Native layout only on a 64-bit
+  little-endian Unix host, aligned before each item (even at count 0) and
+  never padded at the end; a native `?` byte other than 0 or 1 refuses, since
+  3.11 and 3.14 read it differently.
+- Every `struct.error` and `TypeError` refuses rather than raises (the texts
+  changed in 3.12 and 3.14), as do a NaN packed, `f`/`e`, whitespace or a
+  non-ASCII character in a format, a `bytes` format, `bytearray` buffers and
+  every keyword but `unpack_from`'s `offset=`.
+- `random.getrandbits(64)`: two MT words, low first, a wide integer at or past
+  2**63 — on `cap-bigint`, so the core's code does not change.
+- Routing: `struct` is folded into the `cap-binascii` row of `route::CAPS`, the
+  core's only cost (host `__text` unchanged in both the 3.11- and the
+  3.14-reference build, macOS arm64, 2026-09-26). With no `MODULE_ATTRS` row,
+  `struct.error`, `Struct`, `pack_into` and `iter_unpack` are routed into
+  lypning-l and refused there: a late spawn, not a wrong answer.
+
 **2026-09-26** — Draw an oversize evaluation chunk in parts, so eval-2 fits the h200 ([#130](https://github.com/kristerhedfors/lypning/pull/130))
 
 - The seed-1111 finish (HF job 6ab6a20c6b030d633f691a95) completed both test

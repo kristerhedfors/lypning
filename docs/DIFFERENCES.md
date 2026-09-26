@@ -111,7 +111,8 @@ lacks has **run** is *held*: every uncaught `NameError`, `AttributeError` and
 unexpected-keyword `TypeError` is `name-hint` too, and the run refuses rather
 than commit past 8 MiB of output or `os.rmdir` a directory it did not make, so
 that refusal stays possible (`io.rs:hold`). The capabilities are `itertools`,
-`difflib`, `time`, `statistics`, `textwrap` and `binascii` (held when imported),
+`difflib`, `time`, `statistics`, `textwrap`, `binascii` and `struct` (held when
+imported),
 a served `from __future__` head (held from the first statement), and
 `cap-random`'s `random.Random`/`sample`/`shuffle` and `sys.version_info` (held
 when evaluated) — the points at which the core, running the same program,
@@ -162,13 +163,13 @@ no capability feature — a larger engine would answer every `math` program
 exactly as the smaller one does (`math.rs`).
 
 Any other import — `functools`, `datetime`,
-`string`, `struct`, `argparse`, `subprocess`, a third-party package, a module of
+`string`, `argparse`, `subprocess`, a third-party package, a module of
 the user's own — is `unsupported: module: import <name>` on both engines, and
 `lypning-l` adds the modules in §5.
 
 ### 4.3 Modules served in part
 
-Eleven modules on `lypning-l` are served as a named list of attributes rather than
+Twelve modules on `lypning-l` are served as a named list of attributes rather than
 whole, so the walk in the *smaller* engine can decide statically whether the
 larger one would answer. Everything not listed is `unsupported: module-attr:
 <module>.<name>` — including under `from <module> import <name>`:
@@ -181,6 +182,7 @@ larger one would answer. Everything not listed is `unsupported: module-attr:
 | `csv` | `DictReader` `QUOTE_ALL` `QUOTE_MINIMAL` `QUOTE_NONE` `QUOTE_NONNUMERIC` `reader` | `route.rs:MODULE_ATTRS` — the writers are CPython's |
 | `glob` | `escape` `glob` `has_magic` `iglob` | `route.rs:GLOB_SERVED` |
 | `hashlib` | `md5` `sha1` `sha256` `sha512` | `hashlib.rs:SERVED` — `new`, the SHA-3 family and the KDFs are CPython's |
+| `struct` | `calcsize` `pack` `unpack` `unpack_from` | `pystruct.rs:SERVED` — over the codes `x c b B ? h H i I l L q Q s d`, native layout on a 64-bit little-endian Unix host only; every `struct.error` and `TypeError` it would raise, a NaN packed, `f` and `e`, and `error`, `Struct`, `pack_into` and `iter_unpack` refuse — at run time, since no `route.rs:MODULE_ATTRS` row lets the core's walk see them |
 | `statistics` | `mean` `median` `median_high` `median_low` | `statistics.rs:SERVED` — `mean` exact over ints, bools and floats; empty data, a float beside an int past 64 bits, a median over items `<` does not totally order (mixed kinds past the first pair, a nested NaN, a set, an int past 2**53 beside a float) and the spread functions are CPython's |
 | `itertools` | `combinations` `product` | `itertools.rs:SERVED` — `chain`, `islice`, `permutations` and the rest are CPython's |
 | `difflib` | nothing: the import alone | `route.rs:MODULE_ATTRS` — an EMPTY row, so every `difflib.<name>` is CPython's |
@@ -202,8 +204,8 @@ either binary):
 |---|---|---|
 | `cap-ast` | the `ast` module — `literal_eval` over a `str`, and no other name (`ast.parse` refuses) | `pyast.rs` |
 | `cap-base64` | the `base64` module, four functions of it | `base64.rs` |
-| `cap-bigint` | no module: integers past 64 bits, exact | `bigint.rs` |
-| `cap-binascii` | the `binascii` module, six functions of it | `binascii.rs` |
+| `cap-bigint` | no module: integers past 64 bits, exact — and so `random.getrandbits(64)`, whose draw may be one | `bigint.rs` |
+| `cap-binascii` | the `binascii` module, six functions of it, and the `struct` module, four | `binascii.rs`, `pystruct.rs` |
 | `cap-collections` | the `collections` module — `Counter`, `defaultdict` | `collections.rs` |
 | `cap-csv` | the `csv` module — the two readers | `csv.rs` |
 | `cap-difflib` | the `difflib` module — the import, and no name on it | `modules.rs:MODULES` |

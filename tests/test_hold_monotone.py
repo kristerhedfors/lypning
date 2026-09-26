@@ -50,6 +50,7 @@ MENTIONS = [
     "# time statistics textwrap binascii\n",
     "# ast.parse, ast.literal_eval, last, fast\n",
     "last = [1]\nprint(last[-1], 'ast')\n",
+    "struct = {'pack': 1}\nprint(struct['pack'], 'struct.unpack')\n",
 ]
 
 #: What a held run refuses and the core answers.
@@ -77,6 +78,8 @@ HELD = [
     "import sys\nprint(sys.version_info[0] >= 3)\nundefined_name",
     "from __future__ import annotations\nundefined_name",
     "import ast\nprint(ast.literal_eval('[1]'))\nundefined_name",
+    "import struct\nprint(struct.calcsize('<I'))\nundefined_name",
+    "from struct import pack\nx = 1\nx.foo",
 ]
 
 
@@ -128,6 +131,15 @@ ARMED = [
     "if 0:\n    import binascii\nprint(1)\nprint(x=1, 2)",
     "if 0:\n    import binascii\nx = 1\nglobal x\nprint(x)",
     "if 0:\n    import binascii\nprint(1)\nreturn 1",
+    # `struct` is folded into `cap-binascii`'s row: the same net.
+    "if 0:\n    import struct\nprint(1)",
+    "if 0:\n    import struct\nprint(undefined_name)",
+    "if False:\n    import struct\n    struct.error\nprint('a' * 9000000)",
+    "def f():\n    import struct\n    return struct.pack('<B', 256)\nprint('ok')\nundefined",
+    "struct = 'x'\nprint(struct.upper())",
+    "struct = [3]\nprint(struct.count(3))",
+    "def f(struct): return struct.upper()\nprint(f('a'))",
+    "try:\n    print(1)\nexcept struct.error:\n    pass",
 ]
 
 #: What CPython's compiler rejects before anything runs, which the parser used

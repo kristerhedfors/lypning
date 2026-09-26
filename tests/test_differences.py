@@ -208,6 +208,7 @@ def test_every_capability_row_names_the_module_it_serves():
     ("glob", ("route.rs", "GLOB_SERVED")),
     ("hashlib", ("hashlib.rs", "SERVED")),
     ("statistics", ("statistics.rs", "SERVED")),
+    ("struct", ("pystruct.rs", "SERVED")),
     ("itertools", ("itertools.rs", "SERVED")),
     ("textwrap", ("route.rs", "TEXTWRAP_SERVED")),
     ("csv", None),
