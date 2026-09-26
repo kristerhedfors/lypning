@@ -134,7 +134,7 @@ marked paid; stop at the first that fails.
 10. **Measure headroom** — the seed-1111 finish showed coverage and SFT draw on one pool (917 base correct-fallback draws, 7.1% of eval-2; `training/reports/2026-09-26-seed1111-finish-read.md` §4), so the base on the new engine is the number the next arm is sized against — with `bank-ceiling.yml` (free; its last run
     `35427139796` on 2026-09-19 failed, so re-validate it first). If the ceiling
     leaves less than the +3pp MDE, stop: no adapter can fire the rule.
-11. **Targets at the new engine (paid).** Old targets cannot train here. Either
+11. **Decide continue-or-fresh first** (`PLAN.md` Step 5 item 2: one eval-only read of the base and `adapter-1050` on the new engine). **Targets at the new engine (paid).** Old targets cannot train here. Either
     a new target rung, or regrading the old draws under a dated protocol
     amendment (PLAN.md forbids regrading today). Last cost: arm A's full rung
     was two shards, `35828368891`+`35849787147` ($11.38071959) and `35828540620`

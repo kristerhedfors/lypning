@@ -62,7 +62,9 @@ How to resume, in order:
    how each is regenerated. A new engine is a new arm; old seeds never join it.
 3. **Climb the spend ramp** in [`RAMP.md`](RAMP.md), one rung per explicit user
    go, starting from the free rung. It also holds the ledger of billed attempts.
-4. Then continue `PLAN.md` Step 4 on the new engine.
+4. Then [`PLAN.md`](PLAN.md) Step 5: one eval-only read of the base and
+   `adapter-1050` on the new engine decides between continuing the fine-tuned
+   model with new data (arm C) and fresh arms on the new engine.
 
 Every section below this one is history, kept for its evidence; where it names
 a next action, this section supersedes it.

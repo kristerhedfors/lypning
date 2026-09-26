@@ -27,6 +27,9 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   correct-and-native +5.30pp [+2.22, +8.88], correctness −0.12pp, gates A–C
   pass, one seed. `.github/scripts/finish_readout.py` prints the aggregates and
   the stdlib coverage worklist (`training/reports/2026-09-26-seed1111-finish-read.md`).
+- `training/PLAN.md` Step 5 plans the next arm: continue `adapter-1050` with
+  new data (arm C) or start fresh, decided by one eval-only read on the new
+  engine; the two trainer changes it needs are listed, not built.
 - `training/START_NEXT_ROUND.md` gains the resume order. The round02-plan,
   -preflight, -launch and -evidence skills warn that a `round02/**` push
   rebuilds the verifier Space (Actions 36196784607, 2026-09-25).
