@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-26** — lypning-l serves `struct` and `random.getrandbits(64)` (PR pending)
+**2026-09-26** — lypning-l serves `struct` and `random.getrandbits(64)` ([#134](https://github.com/kristerhedfors/lypning/pull/134))
 
 - `struct.pack` / `unpack` / `unpack_from` / `calcsize` and their `from struct
   import` spellings, over the codes `x c b B ? h H i I l L q Q s d`, in
