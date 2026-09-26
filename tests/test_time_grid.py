@@ -540,7 +540,9 @@ HINTED = [
 def test_an_error_cpython_may_hint_refuses_in_a_time_program(program: str, line: str) -> None:
     got = _run([str(BINARY)], program)
     assert _refusal_problem(got) is None, (got.returncode, got.stdout, got.stderr)
-    assert got.stderr.startswith("%s: unsupported: name-hint: " % engines.LYPNING_L), got.stderr
+    # A bad keyword in a held run refuses as `call` before its name is hinted.
+    assert got.stderr.startswith(tuple("%s: unsupported: %s: " % (engines.LYPNING_L, k)
+                                       for k in ("name-hint", "call"))), got.stderr
     if sys.version_info[:3] == (3, 14, 5):
         ref = _run([sys.executable], program)
         assert (ref.returncode, ref.stdout) == (1, "")
