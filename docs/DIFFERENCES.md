@@ -247,9 +247,14 @@ Three of them show what the list is for: `identity` fires on `is` between two
 equal immutables that are not provably the same object, where an interning
 scheme that is not CPython's answers `True` for `int('1000') is 1000`;
 `nan-order` fires on a sort containing a NaN, whose result is the sort
-*algorithm's* answer rather than Python's; `glob-order` fires on a `glob()`
-result in a position that would show the order of two or more matched paths,
-which comes from `os.scandir` and cannot be reproduced by anything.
+*algorithm's* answer rather than Python's; `glob-order` fires where a `glob`
+listing's order shows and no rung lists it the way CPython would — a lazy
+`glob.iglob()` outside `sorted`/`min`/`max`/`any`/`all`/`sum`/`in`, a
+listing function used as a value, or (lypning-l, at runtime) a directory
+this run has written, renamed or removed something at or below. Everywhere
+else an eager `glob.glob()` answers in CPython's own `readdir` order
+(`glob.rs`), measured against glibc CPython on six Linux filesystems in
+GitHub Actions run 36230478729 and on macOS APFS, both on 2026-09-26.
 
 One construct is on the other list — `route.rs:CPYTHON_ONLY_KINDS` — for the
 opposite reason: `async` is not something a reimplementation gets wrong, it is

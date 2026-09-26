@@ -26,6 +26,47 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-09-26 · iteration 85 — glob order is computed, not hidden
+
+Focus: coverage. Host: macOS arm64, host-target build (no rustup, so musl
+bytes are CI's to measure), reference CPython 3.14.5.
+
+| | before (5d821c7) | after (2026-09-26) |
+|---|---|---|
+| core `code`, host build | 767,544 B, 8 blocks | 767,488 B, 8 blocks |
+| lypning-l `code`, host build | 958,616 B, 10 blocks | 961,524 B, 10 blocks |
+| conformance, gate, corpus-time | — | not run in this session; the serial verification run owns them |
+
+`glob.rs` always yielded in CPython's `_iglob` order over `readdir`; the
+walker hid it behind a static `glob-order` stop anyway, because nobody had
+shown the order was the same on Linux. GitHub Actions run 36230478729
+(2026-09-26) did: a static musl `std::fs::read_dir` matched glibc CPython
+3.9/3.11/3.14 `os.listdir` and `os.scandir` with 0 mismatches on the runner
+disk, tmpfs, ext4, xfs, btrfs and overlayfs, on ubuntu-22.04 and 24.04.
+APFS was measured on this host the same day.
+
+- **The stop was removed, not gated.** The stop slot overrides every verdict
+  in `finish_route`, so a core that kept it would route every eager-glob
+  program to CPython whatever lypning-l answers. The core gets smaller.
+- **`iglob` stays confined.** CPython's generator reads each directory after
+  the loop body before it has run, and this engine is eager.
+- **The staging merge is the one place the orders can part**, since a staged
+  write is appended. A call whose order shows refuses at runtime over a
+  directory with a staged write, append, rename or delete at or below it
+  (overlayfs copy-up moves ancestors), or one an early commit flushed. The
+  design checked only the directory itself, and the critic widened it to
+  everything below plus early commits. The design's program-wide flag became
+  a per-call one: the walk hands its blessed nodes to `glob.rs` and `eval`
+  names the node it dispatches, so a `sorted()` listing after the writes is
+  still answered.
+- **`**` over a non-directory** answers `'d/'` on 3.9/3.10 and nothing on
+  3.11+; the critic found `**/**` (a leading `''` on 3.9 only) through the
+  same door. Both refuse on an older reference.
+
+**Known cost.** Two corpus programs pair a glob with `os.path.getmtime`, a
+lypning-l static blocker the core's walk cannot see past `import glob`, so
+the core now sends them to a late lypning-l spawn instead of CPython.
+
 ## 2026-09-26 · iteration 84 — coverage from the latest sessions' own programs, and MISMATCH 0 on every arm
 
 Focus: coverage. The corpus was harvested from the sessions since 2026-09-07

@@ -2,67 +2,73 @@
 //! and into nothing smaller. Every line of this file, and every line that
 //! reaches it, is behind `cfg(feature = "cap-glob")`.
 //!
-//! **The invariant this module exists to hold: the match SET is computed
-//! exactly, and the match ORDER is never computed at all — because a call
-//! whose order could be observed never reaches this file.**
+//! **The invariant this module exists to hold: the match SET and the match
+//! ORDER are both CPython's.** CPython walks with `os.scandir` and does not
+//! sort, so a multi-match result comes in whatever order the filesystem hands
+//! back. This file reads the SAME stream (`std::fs::read_dir` is `readdir`)
+//! and yields in `glob._iglob`'s own order: [`glob1`] filters and keeps the
+//! order, [`rlistdir`] is preorder, and the leading `''` of a `**` is dropped
+//! exactly where CPython drops it. So `glob.glob()` is served in ANY position
+//! — a bare `for p in glob.glob(…)`, a `print`, an index, a concatenation.
 //!
-//! CPython walks a directory with `os.scandir` and does not sort, so the order
-//! of a multi-match result is whatever the filesystem handed back. That is the
-//! same fact that makes `os.listdir()` a refusal here (kind `os-listdir`,
-//! `modules.rs`) and `Path.glob()`/`.rglob()`/`.iterdir()` refusals in
-//! `pathlib.rs`. glob inherits the fact, so it inherits the refusal.
+//! The basis is measured, not argued. On macOS APFS (2026-09-26) a
+//! `std::fs::read_dir` probe matched `os.scandir` (3.14) and `os.listdir`
+//! (3.9) over 2,729 entries with holes from deletes, and unsorted
+//! `glob.glob()` was byte-identical on 3.9, 3.10, 3.11, 3.12, 3.13 and 3.14
+//! for 18 patterns with and without `recursive=`, except the one shape below.
+//! On Linux the question is a static musl binary against glibc CPython, and
+//! GitHub Actions run 36230478729 (2026-09-26) answered it: `read_dir` order
+//! matched CPython 3.9/3.11/3.14 `os.listdir` and `os.scandir` with 0
+//! mismatches on the runner disk, tmpfs, ext4, xfs, btrfs and overlayfs, on
+//! ubuntu-22.04 and ubuntu-24.04. The order is the kernel's `f_pos` cookie,
+//! not a property of either libc's buffer size.
 //!
-//! **Where the refusal lives is the whole design.** It is in `route.rs`, in the
-//! WALK, and it is static: a `glob.glob(...)` call is admitted only where the
-//! walker can see that the order cannot be observed — wrapped directly in
-//! `sorted()`, `len()`, `bool()`, `sum()`, `min()`/`max()`, `any()`/`all()`, or
-//! as the right operand of `in`. Every other position — a bare
-//! `for p in glob.glob(...)`, `print(glob.glob(...))`, an assignment, an index,
-//! a slice — is a `glob-order` blocker before the program starts. None of that
-//! walk is behind `cap-glob`: it is a position test with no glob implementation
-//! behind it, so every variant carries it and the CORE — the binary
-//! `engines.route()` asks — predicts the same refusal instead of spending a
-//! spawn to be told.
+//! **Three refusals keep that claim true where it would not be.**
 //!
-//! `set()` is NOT one of the admitted positions, and the reason is the rule
-//! that decides the list: the wrapper's RESULT has to carry no order, and a set
-//! handed back to the program does. `route.rs` has it.
+//!   1. **`glob.iglob` is lazy in CPython** — each directory is read only
+//!      after the loop body before it has run, so a body that writes changes
+//!      CPython's answer. This engine is eager, so `iglob` stays confined to
+//!      the positions that cannot see an order (`sorted`, `min`, `max`,
+//!      `any`, `all`, `sum`, the right of `in`). Anywhere else, and a listing
+//!      function used as a VALUE, is a static `glob-order` in `route.rs`,
+//!      decided in every variant so the core routes it to CPython.
+//!   2. **A visible order over a directory this run changed.** The commit
+//!      barrier stages writes (`io.rs`), and [`listdir`] merges a staged write
+//!      by APPENDING its name — where CPython sees the file wherever the
+//!      filesystem put it. On overlayfs a write anywhere BELOW a lower-layer
+//!      directory copies up every directory above it, which moves them in
+//!      their parents' listings. So a listing whose order shows refuses
+//!      `glob-order` at runtime when this run has staged a write, append,
+//!      rename or delete at or below the listed directory (by real path, at
+//!      every level of a `**` walk), or an early commit flushed one there.
+//!      Whether an order shows is decided per CALL: the walk blesses the
+//!      order-blind call nodes, `eval` names the node it dispatches
+//!      ([`at_call`]), and a module escape (`m = glob`) makes every call
+//!      shown. The default, on every run, is shown ([`set_order_shown`]).
+//!      `sorted(glob.glob('d/*'))` after `open('d/x','w')` is answered.
+//!   3. **`**` over a dirname that is not a directory** — missing, a file, a
+//!      broken link, or the `''` a magic dirname such as `**/**` yields. 3.9
+//!      and 3.10 yield `''` for it (`glob('nope/**')` is `['nope/']`; 3.9
+//!      keeps a second `''` in `**/**`), 3.11+ yield nothing. The engine
+//!      answers the 3.11+ shape and refuses on an older reference.
 //!
-//! Two consequences, and both are the point:
+//! **`glob.glob()` returns a plain [`Value::List`].** There is no
+//! `Value::Glob`, no order taint, and therefore no arm of `ops.rs`, `fmt.rs`,
+//! `value.rs`, `json.rs`, `iter.rs` or `builtins.rs` that has to remember a
+//! new variant exists. The first attempt at this capability (branch
+//! `cap-glob`, `docs/HILLCLIMB.md` iteration 76) added the variant and missed
+//! `set_item`, `del_item`, slice assignment and AugAssign's in-place-extend
+//! arm; `g += [...]` rebound instead of mutating and left every alias stale,
+//! at exit 0.
 //!
-//!   1. **`glob.glob()` returns a plain [`Value::List`].** There is no
-//!      `Value::Glob`, no order taint, and therefore no arm of `ops.rs`,
-//!      `fmt.rs`, `value.rs`, `json.rs`, `iter.rs` or `builtins.rs` that has to
-//!      remember a new variant exists. The first attempt at this capability
-//!      (branch `cap-glob`, `docs/HILLCLIMB.md` iteration 76) added the variant
-//!      and missed `set_item`, `del_item`, slice assignment and AugAssign's
-//!      in-place-extend arm; `g += [...]` rebound instead of mutating and left
-//!      every alias stale, at exit 0.
-//!   2. **The refusal happens before anything runs.** A runtime `glob-order`
-//!      is a refusal the ROUTER could have spent instead: the chain hands the
-//!      program to this rung with `-c`, so the spawn is already paid for when
-//!      the refusal arrives. A static blocker costs the program nothing — it
-//!      was never started here — and it is also the only kind that survives a
-//!      barrier the run has committed (`os.rmdir`, or an output stream past
-//!      `io::COMMIT_THRESHOLD`), where a refusal is exit 1 and never retried.
-//!
-//! **`glob.iglob` is served and returns the same list**, in the positions that
-//! CONSUME it. A generator can never be BOUND here, because binding is not an
-//! admitted position, so the shape where the two most obviously differ —
-//! iterating it twice — is unreachable. But "consumed" is the whole of the
-//! claim, and two admitted positions do not consume their argument at all; they
-//! ask about the CONTAINER, and a generator is not the container a list is:
-//!
-//!   * `len()` raises `TypeError` on a generator.
-//!   * `bool()` is `True` for EVERY generator, empty or not, because a
-//!     generator has no `__len__`. `bool(glob.iglob('nope*'))` is `True` in
-//!     CPython and was `False` here — at exit 0, on the normal case for a glob,
-//!     which is that nothing matched.
-//!
-//! `route.rs` therefore decides each admitted position for `iglob`
-//! SEPARATELY from `glob`, in the `ORDER_BLIND` table: `len` and `bool` are
-//! `glob`-only, and `sorted`, `min`, `max`, `any`, `all`, `sum` and `in` take
-//! either.
+//! **`glob.iglob` returns the same list** in the positions that serve it. A
+//! generator can never be BOUND here, so the shape where the two most
+//! obviously differ — iterating it twice — is unreachable. Two of the
+//! order-blind positions do not consume their argument at all; they ask about
+//! the CONTAINER, and a generator is not the container a list is: `len()`
+//! raises `TypeError` on one, and `bool()` is `True` for every generator,
+//! empty or not. `route.rs` therefore serves `len`/`bool` for `glob` only, in
+//! the `ORDER_BLIND` table.
 //!
 //! **`glob.escape` and `glob.has_magic` are pure string algebra** and are
 //! answered exactly, in any position. `glob.translate`, `glob.glob0` and
@@ -70,8 +76,7 @@
 //! router sees statically off `route::GLOB_SERVED`.
 //!
 //! **Every refusal reachable from an ADMITTED call is static where a walk can
-//! see it**, and for the same reason the position rule is: a blessed call has
-//! already started the program, so a refusal it reaches lands after the commit
+//! see it**, because a served call has already started the program, so a refusal it reaches lands after the commit
 //! barrier and is exit 1 with the side effect on disk and no answer. So the
 //! keyword names, the argument count, the pattern's type and — through
 //! [`route::glob_pattern_block`] — the pattern itself are all decided in the
@@ -103,8 +108,8 @@
 //! fall onward with nothing left behind. `open()` and `os.path.exists()` merge
 //! the staging into their answer because they are asked about one path they
 //! were handed; a directory listing has to work out which staged spelling names
-//! an entry of which directory, and [`listdir`] does it by comparing normalised
-//! paths — the same `normpath` `os.path.normpath` answers with. Without it
+//! an entry of which directory, and [`listdir`] does it by comparing real
+//! paths ([`real_dir`]). Without it
 //! `open("d/a.py","w"); glob.glob("d/*.py")` would answer `[]` at exit 0 for a
 //! file the program had just written, which is the worst outcome this
 //! repository has.
@@ -445,8 +450,9 @@ const MAX_DEPTH: usize = 128;
 /// The staged half is why `open("d/a.py","w"); glob.glob("d/*.py")` is right:
 /// a file this run wrote is an entry of its directory even though it is not on
 /// disk yet, and a file this run removed is not an entry even though it is. The
-/// attribution is by `normpath`, so `./d/a.py` and `d/a.py` are one path. Order
-/// is not preserved and does not need to be — see the module note.
+/// attribution is by real path, so `./d/a.py` and `d/a.py` are one path. The
+/// appended name is where CPython's order and this one can part, which is why
+/// a call whose order shows refuses first ([`order_touched`]).
 fn listdir(dirname: &str, dironly: bool) -> R<Vec<String>> {
     let mut out = Vec::new();
     let rd = std::fs::read_dir(if dirname.is_empty() { "." } else { dirname });
@@ -552,8 +558,8 @@ fn iglob(it: &mut Interp, out: &mut Vec<String>, pattern: &str, rec: bool, diron
                 // `''` in `**/**`). Measured on 3.9-3.14, 2026-09-26.
                 if !isdir(&d) && !(crate::err::REF_PY_KNOWN && crate::err::REF_PY_MINOR >= 11) {
                     return Err(refuse(&format!(
-                        "glob('{d}/**', recursive=True) over a path that is not a directory: \
-                         CPython 3.9/3.10 answer '{d}/', 3.11+ answer []"
+                        "a recursive ** under '{d}', which is not a directory: \
+                         CPython 3.9/3.10 yield it, 3.11+ do not"
                     )));
                 }
                 glob2(it, &mut names, &d, dironly, 0)?;
