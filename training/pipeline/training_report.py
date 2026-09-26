@@ -24,6 +24,10 @@ def compare(base, candidate):
     for key in ("seed", "eval_split", "eval_draws", "greedy"):
         if a["args"][key] != b["args"][key]:
             raise TrainingError("unmatched evaluation argument: " + key)
+    # A chunk over the prefill budget is drawn as parts under their own seeds,
+    # so two budgets pair different noise; older runs recorded none.
+    if a["args"].get("eval_prefill_tokens") != b["args"].get("eval_prefill_tokens"):
+        raise TrainingError("unmatched evaluation argument: eval_prefill_tokens")
     rows = [[json.loads(line) for line in (p / "evaluations.jsonl").read_text().splitlines()] for p in paths]
     # Old runs retain their old metric; an amendment never rewrites evidence.
     policy = a.get("metric_policy", {"min_family_cases": 1})
