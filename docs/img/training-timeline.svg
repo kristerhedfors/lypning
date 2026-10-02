@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 426" width="980" height="426" role="img" aria-labelledby="t d">
+<title id="t">The training programme, 2026-09-11 to 2026-09-26</title>
+<desc id="d">Twelve dated milestones in three phases: first rounds on the rewrite benchmark, instrument and data, and round-02 on bank v3.</desc>
+<style>
+  .bg   { fill: #fbfbfa; }
+  .box  { fill: #f2f1ee; stroke: #d9d6cf; stroke-width: 1; }
+  .hot  { fill: #f7ebe3; stroke: #9a4a20; stroke-width: 1.2; }
+  .lane { fill: none; stroke: #e2e0da; stroke-width: 1; stroke-dasharray: 3 4; }
+  .rule { stroke: #e2e0da; stroke-width: 1; }
+  .axis { stroke: #b9b5ad; stroke-width: 1; }
+  .ref  { stroke: #9a4a20; stroke-width: 1.5; stroke-dasharray: 5 4; }
+  .wire { stroke: #8d8981; stroke-width: 1.4; fill: none; }
+  .head { fill: #8d8981; }
+  .acc  { fill: #9a4a20; }
+  .t    { fill: #1f1e1c; }
+  .m    { fill: #6b6862; }
+  .f    { fill: #8d8981; }
+  .a    { fill: #9a4a20; }
+  .s1   { fill: #2a78d6; }
+  .s1l  { stroke: #2a78d6; stroke-width: 2; }
+  .s2   { fill: #e34948; }
+  .band1 { fill: #eef4fc; }
+  .band2 { fill: #f7ebe3; }
+  .band3 { fill: #edf6f1; }
+  @media (prefers-color-scheme: dark) {
+    .bg   { fill: #16151a; }
+    .box  { fill: #1e1d23; stroke: #3a3842; }
+    .hot  { fill: #2b201b; stroke: #e0885a; }
+    .lane { stroke: #2e2c34; }
+    .rule { stroke: #2e2c34; }
+    .axis { stroke: #5a5662; }
+    .ref  { stroke: #e0885a; }
+    .wire { stroke: #837e75; }
+    .head { fill: #837e75; }
+    .acc  { fill: #e0885a; }
+    .t    { fill: #e8e6e1; }
+    .m    { fill: #a9a49b; }
+    .f    { fill: #837e75; }
+    .a    { fill: #e0885a; }
+    .s1   { fill: #3987e5; }
+    .s1l  { stroke: #3987e5; }
+    .s2   { fill: #e66767; }
+    .band1 { fill: #1b2230; }
+    .band2 { fill: #2b201b; }
+    .band3 { fill: #19251f; }
+  }
+  text { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+</style>
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+<rect class="bg" x="0" y="0" width="980" height="426" rx="10"/>
+<rect class="band1" x="16" y="28.0" width="948" height="86.0" rx="8"/>
+<text class="f" x="950.0" y="44.0" font-size="10" text-anchor="end" font-weight="700">FIRST ROUNDS</text>
+<rect class="band2" x="16" y="118.0" width="948" height="116.0" rx="8"/>
+<text class="f" x="950.0" y="134.0" font-size="10" text-anchor="end" font-weight="700">INSTRUMENT AND DATA</text>
+<rect class="band3" x="16" y="238.0" width="948" height="146.0" rx="8"/>
+<text class="f" x="950.0" y="254.0" font-size="10" text-anchor="end" font-weight="700">ROUND-02 ON BANK V3</text>
+<line class="axis" x1="110.0" y1="32.0" x2="110.0" y2="378.0"/>
+<text class="m mono" x="96.0" y="44.0" font-size="11.5" text-anchor="end">2026-09-11</text>
+<circle class="head" cx="110" cy="40" r="4"/>
+<text class="t" x="126.0" y="44.0" font-size="12.5" text-anchor="start">Target switched to Qwen/Qwen3.8-27B (dense, 55.6 GB BF16)</text>
+<text class="m mono" x="96.0" y="74.0" font-size="11.5" text-anchor="end">2026-09-13</text>
+<circle class="head" cx="110" cy="70" r="4"/>
+<text class="t" x="126.0" y="74.0" font-size="12.5" text-anchor="start">Baseline of record on eval-1: first-draft pass@1 0.4257, k = 16</text>
+<text class="m mono" x="96.0" y="104.0" font-size="11.5" text-anchor="end">2026-09-14</text>
+<circle class="head" cx="110" cy="100" r="4"/>
+<text class="t" x="126.0" y="104.0" font-size="12.5" text-anchor="start">Two matched LoRA rounds, both null on ΔSLR (−1.00pp, −0.21pp)</text>
+<text class="m mono" x="96.0" y="134.0" font-size="11.5" text-anchor="end">2026-09-15</text>
+<circle class="head" cx="110" cy="130" r="4"/>
+<text class="t" x="126.0" y="134.0" font-size="12.5" text-anchor="start">Eval-2 pre-registered before any draw; round-02 plumbing smoke on HF</text>
+<text class="m mono" x="96.0" y="164.0" font-size="11.5" text-anchor="end">2026-09-16</text>
+<circle class="head" cx="110" cy="160" r="4"/>
+<text class="t" x="126.0" y="164.0" font-size="12.5" text-anchor="start">First 27B pilot: eval-2 base arm blocked at 384 / 1,200 draws</text>
+<text class="m mono" x="96.0" y="194.0" font-size="11.5" text-anchor="end">2026-09-18</text>
+<circle class="head" cx="110" cy="190" r="4"/>
+<text class="t" x="126.0" y="194.0" font-size="12.5" text-anchor="start">Bank v2 admits 1,120 training cases on the split the gates use</text>
+<text class="m mono" x="96.0" y="224.0" font-size="11.5" text-anchor="end">2026-09-19</text>
+<circle class="head" cx="110" cy="220" r="4"/>
+<text class="t" x="126.0" y="224.0" font-size="12.5" text-anchor="start">A missing User-Agent fixed: 7,967 generated candidates in one run</text>
+<text class="m mono" x="96.0" y="254.0" font-size="11.5" text-anchor="end">2026-09-21</text>
+<circle class="head" cx="110" cy="250" r="4"/>
+<text class="t" x="126.0" y="254.0" font-size="12.5" text-anchor="start">Seed 1111 on bank v3: both stages select step 0, the selector is blind</text>
+<text class="m mono" x="96.0" y="284.0" font-size="11.5" text-anchor="end">2026-09-22</text>
+<circle class="head" cx="110" cy="280" r="4"/>
+<text class="t" x="126.0" y="284.0" font-size="12.5" text-anchor="start">The instrument fixed: selection, macro scope, LoRA recipe (PRs #97–#101)</text>
+<text class="m mono" x="96.0" y="314.0" font-size="11.5" text-anchor="end">2026-09-23</text>
+<circle class="head" cx="110" cy="310" r="4"/>
+<text class="t" x="126.0" y="314.0" font-size="12.5" text-anchor="start">Positive control flat: no distillation route; too few pairs for a preference arm</text>
+<text class="m mono" x="96.0" y="344.0" font-size="11.5" text-anchor="end">2026-09-25</text>
+<circle class="head" cx="110" cy="340" r="4"/>
+<text class="t" x="126.0" y="344.0" font-size="12.5" text-anchor="start">Seed 1111 finish runs out of CUDA memory in the eval-2 prefill</text>
+<text class="m mono" x="96.0" y="374.0" font-size="11.5" text-anchor="end">2026-09-26</text>
+<circle class="acc" cx="110" cy="370" r="6"/>
+<text class="t" x="126.0" y="374.0" font-size="12.5" text-anchor="start" font-weight="700">Seed 1111 finish completes: eval-2 +5.30pp; training paused for the engine</text>
+<text class="f" x="16.0" y="412.0" font-size="10.5" text-anchor="start">Sources: training/STATUS.md §0 and §2, training/PLAN.md, training/START_NEXT_ROUND.md, CHANGELOG.md. Each number&#x27;s run id is in the prose.</text>
+</svg>

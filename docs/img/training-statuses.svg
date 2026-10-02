@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 280" width="980" height="280" role="img" aria-labelledby="t d">
+<title id="t">Seed 1111 on eval-2: where the draws moved</title>
+<desc id="d">Change in eval-2 draws per status, SFT minus base, 12,848 draws per arm: correct-native +538, correct-fallback -567, correct-control -29, incorrect +85, no-code -27.</desc>
+<style>
+  .bg   { fill: #fbfbfa; }
+  .box  { fill: #f2f1ee; stroke: #d9d6cf; stroke-width: 1; }
+  .hot  { fill: #f7ebe3; stroke: #9a4a20; stroke-width: 1.2; }
+  .lane { fill: none; stroke: #e2e0da; stroke-width: 1; stroke-dasharray: 3 4; }
+  .rule { stroke: #e2e0da; stroke-width: 1; }
+  .axis { stroke: #b9b5ad; stroke-width: 1; }
+  .ref  { stroke: #9a4a20; stroke-width: 1.5; stroke-dasharray: 5 4; }
+  .wire { stroke: #8d8981; stroke-width: 1.4; fill: none; }
+  .head { fill: #8d8981; }
+  .acc  { fill: #9a4a20; }
+  .t    { fill: #1f1e1c; }
+  .m    { fill: #6b6862; }
+  .f    { fill: #8d8981; }
+  .a    { fill: #9a4a20; }
+  .s1   { fill: #2a78d6; }
+  .s1l  { stroke: #2a78d6; stroke-width: 2; }
+  .s2   { fill: #e34948; }
+  .band1 { fill: #eef4fc; }
+  .band2 { fill: #f7ebe3; }
+  .band3 { fill: #edf6f1; }
+  @media (prefers-color-scheme: dark) {
+    .bg   { fill: #16151a; }
+    .box  { fill: #1e1d23; stroke: #3a3842; }
+    .hot  { fill: #2b201b; stroke: #e0885a; }
+    .lane { stroke: #2e2c34; }
+    .rule { stroke: #2e2c34; }
+    .axis { stroke: #5a5662; }
+    .ref  { stroke: #e0885a; }
+    .wire { stroke: #837e75; }
+    .head { fill: #837e75; }
+    .acc  { fill: #e0885a; }
+    .t    { fill: #e8e6e1; }
+    .m    { fill: #a9a49b; }
+    .f    { fill: #837e75; }
+    .a    { fill: #e0885a; }
+    .s1   { fill: #3987e5; }
+    .s1l  { stroke: #3987e5; }
+    .s2   { fill: #e66767; }
+    .band1 { fill: #1b2230; }
+    .band2 { fill: #2b201b; }
+    .band3 { fill: #19251f; }
+  }
+  text { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+</style>
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+<rect class="bg" x="0" y="0" width="980" height="280" rx="10"/>
+<line class="rule" x1="380.0" y1="32.0" x2="380.0" y2="220.0"/>
+<text class="f" x="380.0" y="236.0" font-size="10.5" text-anchor="middle">-600</text>
+<line class="rule" x1="473.3" y1="32.0" x2="473.3" y2="220.0"/>
+<text class="f" x="473.3" y="236.0" font-size="10.5" text-anchor="middle">-400</text>
+<line class="rule" x1="566.7" y1="32.0" x2="566.7" y2="220.0"/>
+<text class="f" x="566.7" y="236.0" font-size="10.5" text-anchor="middle">-200</text>
+<line class="rule" x1="660.0" y1="32.0" x2="660.0" y2="220.0"/>
+<text class="f" x="660.0" y="236.0" font-size="10.5" text-anchor="middle">0</text>
+<line class="rule" x1="753.3" y1="32.0" x2="753.3" y2="220.0"/>
+<text class="f" x="753.3" y="236.0" font-size="10.5" text-anchor="middle">+200</text>
+<line class="rule" x1="846.7" y1="32.0" x2="846.7" y2="220.0"/>
+<text class="f" x="846.7" y="236.0" font-size="10.5" text-anchor="middle">+400</text>
+<line class="rule" x1="940.0" y1="32.0" x2="940.0" y2="220.0"/>
+<text class="f" x="940.0" y="236.0" font-size="10.5" text-anchor="middle">+600</text>
+<line class="axis" x1="660.0" y1="32.0" x2="660.0" y2="220.0"/>
+<text class="t" x="190.0" y="56.0" font-size="12.5" text-anchor="end" font-weight="700">correct-native</text>
+<text class="m" x="330.0" y="56.0" font-size="11.5" text-anchor="end">8,758 → 9,296</text>
+<path class="s1" d="M660.0,40.0 h247.1 a4,4 0 0 1 4,4 v16.0 a4,4 0 0 1 -4,4 h-247.1 z"/>
+<text class="t" x="919.1" y="56.0" font-size="12" text-anchor="start" font-weight="700">+538</text>
+<text class="t" x="190.0" y="94.0" font-size="12.5" text-anchor="end" font-weight="700">correct-fallback</text>
+<text class="m" x="330.0" y="94.0" font-size="11.5" text-anchor="end">917 → 350</text>
+<path class="s2" d="M660.0,78.0 h-260.6 a4,4 0 0 0 -4,4 v16.0 a4,4 0 0 0 4,4 h260.6 z"/>
+<text class="t" x="387.4" y="94.0" font-size="12" text-anchor="end" font-weight="700">-567</text>
+<text class="t" x="190.0" y="132.0" font-size="12.5" text-anchor="end" font-weight="700">correct-control</text>
+<text class="m" x="330.0" y="132.0" font-size="11.5" text-anchor="end">1,701 → 1,672</text>
+<path class="s2" d="M660.0,116.0 h-9.5 a4,4 0 0 0 -4,4 v16.0 a4,4 0 0 0 4,4 h9.5 z"/>
+<text class="t" x="638.5" y="132.0" font-size="12" text-anchor="end" font-weight="700">-29</text>
+<text class="t" x="190.0" y="170.0" font-size="12.5" text-anchor="end" font-weight="700">incorrect</text>
+<text class="m" x="330.0" y="170.0" font-size="11.5" text-anchor="end">1,423 → 1,508</text>
+<path class="s1" d="M660.0,154.0 h35.7 a4,4 0 0 1 4,4 v16.0 a4,4 0 0 1 -4,4 h-35.7 z"/>
+<text class="t" x="707.7" y="170.0" font-size="12" text-anchor="start" font-weight="700">+85</text>
+<text class="t" x="190.0" y="208.0" font-size="12.5" text-anchor="end" font-weight="700">no-code</text>
+<text class="m" x="330.0" y="208.0" font-size="11.5" text-anchor="end">49 → 22</text>
+<path class="s2" d="M660.0,192.0 h-8.6 a4,4 0 0 0 -4,4 v16.0 a4,4 0 0 0 4,4 h8.6 z"/>
+<text class="t" x="639.4" y="208.0" font-size="12" text-anchor="end" font-weight="700">-27</text>
+<rect class="s2" x="560" y="12" width="12" height="12" rx="3"/>
+<text class="m" x="578.0" y="22.0" font-size="11.5" text-anchor="start">fewer draws under SFT</text>
+<rect class="s1" x="738" y="12" width="12" height="12" rx="3"/>
+<text class="m" x="756.0" y="22.0" font-size="11.5" text-anchor="start">more draws under SFT</text>
+<text class="f" x="16.0" y="266.0" font-size="10.5" text-anchor="start">HF job 6ab7b0b76b030d633f693e48, read 2026-09-26; eval-2, 803 cases, 12,848 draws per arm; training/reports/2026-09-26-seed1111-finish-read.md §2.</text>
+</svg>

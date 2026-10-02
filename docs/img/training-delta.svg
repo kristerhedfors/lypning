@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 250" width="980" height="250" role="img" aria-labelledby="t d">
+<title id="t">Seed 1111: change in correct-and-native, SFT minus base</title>
+<desc id="d">Eval-2: +5.30 percentage points, 95% interval +2.22 to +8.88. Test: +3.41, interval -1.35 to +9.68. The pre-registered bar is a lower bound above +3; neither clears it.</desc>
+<style>
+  .bg   { fill: #fbfbfa; }
+  .box  { fill: #f2f1ee; stroke: #d9d6cf; stroke-width: 1; }
+  .hot  { fill: #f7ebe3; stroke: #9a4a20; stroke-width: 1.2; }
+  .lane { fill: none; stroke: #e2e0da; stroke-width: 1; stroke-dasharray: 3 4; }
+  .rule { stroke: #e2e0da; stroke-width: 1; }
+  .axis { stroke: #b9b5ad; stroke-width: 1; }
+  .ref  { stroke: #9a4a20; stroke-width: 1.5; stroke-dasharray: 5 4; }
+  .wire { stroke: #8d8981; stroke-width: 1.4; fill: none; }
+  .head { fill: #8d8981; }
+  .acc  { fill: #9a4a20; }
+  .t    { fill: #1f1e1c; }
+  .m    { fill: #6b6862; }
+  .f    { fill: #8d8981; }
+  .a    { fill: #9a4a20; }
+  .s1   { fill: #2a78d6; }
+  .s1l  { stroke: #2a78d6; stroke-width: 2; }
+  .s2   { fill: #e34948; }
+  .band1 { fill: #eef4fc; }
+  .band2 { fill: #f7ebe3; }
+  .band3 { fill: #edf6f1; }
+  @media (prefers-color-scheme: dark) {
+    .bg   { fill: #16151a; }
+    .box  { fill: #1e1d23; stroke: #3a3842; }
+    .hot  { fill: #2b201b; stroke: #e0885a; }
+    .lane { stroke: #2e2c34; }
+    .rule { stroke: #2e2c34; }
+    .axis { stroke: #5a5662; }
+    .ref  { stroke: #e0885a; }
+    .wire { stroke: #837e75; }
+    .head { fill: #837e75; }
+    .acc  { fill: #e0885a; }
+    .t    { fill: #e8e6e1; }
+    .m    { fill: #a9a49b; }
+    .f    { fill: #837e75; }
+    .a    { fill: #e0885a; }
+    .s1   { fill: #3987e5; }
+    .s1l  { stroke: #3987e5; }
+    .s2   { fill: #e66767; }
+    .band1 { fill: #1b2230; }
+    .band2 { fill: #2b201b; }
+    .band3 { fill: #19251f; }
+  }
+  text { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+</style>
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+<rect class="bg" x="0" y="0" width="980" height="250" rx="10"/>
+<line class="rule" x1="150.0" y1="40.0" x2="150.0" y2="168.0"/>
+<text class="f" x="150.0" y="186.0" font-size="10.5" text-anchor="middle">-4 pp</text>
+<line class="rule" x1="243.8" y1="40.0" x2="243.8" y2="168.0"/>
+<text class="f" x="243.8" y="186.0" font-size="10.5" text-anchor="middle">-2 pp</text>
+<line class="rule" x1="337.5" y1="40.0" x2="337.5" y2="168.0"/>
+<text class="f" x="337.5" y="186.0" font-size="10.5" text-anchor="middle">0 pp</text>
+<line class="rule" x1="431.2" y1="40.0" x2="431.2" y2="168.0"/>
+<text class="f" x="431.2" y="186.0" font-size="10.5" text-anchor="middle">+2 pp</text>
+<line class="rule" x1="525.0" y1="40.0" x2="525.0" y2="168.0"/>
+<text class="f" x="525.0" y="186.0" font-size="10.5" text-anchor="middle">+4 pp</text>
+<line class="rule" x1="618.8" y1="40.0" x2="618.8" y2="168.0"/>
+<text class="f" x="618.8" y="186.0" font-size="10.5" text-anchor="middle">+6 pp</text>
+<line class="rule" x1="712.5" y1="40.0" x2="712.5" y2="168.0"/>
+<text class="f" x="712.5" y="186.0" font-size="10.5" text-anchor="middle">+8 pp</text>
+<line class="rule" x1="806.2" y1="40.0" x2="806.2" y2="168.0"/>
+<text class="f" x="806.2" y="186.0" font-size="10.5" text-anchor="middle">+10 pp</text>
+<line class="rule" x1="900.0" y1="40.0" x2="900.0" y2="168.0"/>
+<text class="f" x="900.0" y="186.0" font-size="10.5" text-anchor="middle">+12 pp</text>
+<line class="axis" x1="337.5" y1="40.0" x2="337.5" y2="168.0"/>
+<line class="ref" x1="478.1" y1="32" x2="478.1" y2="168"/>
+<text class="a" x="484.1" y="28.0" font-size="11" text-anchor="start" font-weight="700">pre-registered bar: lower bound above +3pp</text>
+<text class="t" x="136.0" y="79.0" font-size="13" text-anchor="end" font-weight="700">eval-2</text>
+<text class="m" x="136.0" y="95.0" font-size="11" text-anchor="end">803 cases · k = 16</text>
+<line class="s1l" x1="441.6" y1="78" x2="753.8" y2="78"/>
+<line class="s1l" x1="441.6" y1="72" x2="441.6" y2="84"/>
+<line class="s1l" x1="753.8" y1="72" x2="753.8" y2="84"/>
+<circle class="s1" cx="585.9" cy="78" r="6"/>
+<text class="t" x="763.8" y="82.0" font-size="12" text-anchor="start" font-weight="700">+5.30  [+2.22, +8.88]</text>
+<text class="t" x="136.0" y="135.0" font-size="13" text-anchor="end" font-weight="700">test</text>
+<text class="m" x="136.0" y="151.0" font-size="11" text-anchor="end">315 cases · k = 4</text>
+<line class="s1l" x1="274.2" y1="134" x2="791.2" y2="134"/>
+<line class="s1l" x1="274.2" y1="128" x2="274.2" y2="140"/>
+<line class="s1l" x1="791.2" y1="128" x2="791.2" y2="140"/>
+<circle class="s1" cx="497.3" cy="134" r="6"/>
+<text class="t" x="801.2" y="138.0" font-size="12" text-anchor="start" font-weight="700">+3.41  [-1.35, +9.68]</text>
+<text class="f" x="16.0" y="236.0" font-size="10.5" text-anchor="start">HF job 6ab7b0b76b030d633f693e48, read 2026-09-26; paired family-component bootstrap, 2,000 resamples; one seed, one replicate.</text>
+</svg>
