@@ -14,6 +14,19 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-10-02** — Model training documentation, with a figure per stage, on the site and its landing page ([#137](https://github.com/kristerhedfors/lypning/pull/137))
+
+- `docs/MODEL-TRAINING.md` walks the training programme end to end: capture,
+  the three bank routes and their evidence levels, verification and the reward
+  contract, component splits and eval-2, the SFT/probe/GRPO stages, the job and
+  spend boundaries, and every result to date with its run and date.
+- Eight SVG figures under `docs/img/`, drawn by the stdlib-only
+  `site/figures.py`; each follows the reader's light or dark theme and renders
+  in a checkout, on GitHub and on the site.
+- The landing page gains a *Model training* section (the loop, the seed-1111
+  read, a link to the page) and a hero button; `site/build.py` publishes every
+  SVG under `docs/img/`.
+
 **2026-09-26** — Pause training for engine coverage; an engine-bump checklist and a spend ramp ([#131](https://github.com/kristerhedfors/lypning/pull/131))
 
 - Training resumes on the next `lypning-l`, as a new arm:

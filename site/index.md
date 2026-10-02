@@ -11,6 +11,7 @@ one-liner on the cheapest interpreter that can actually run it — the chain is
 <a class="btn ghost" href="docs/lypning.html">How it works</a>
 <a class="btn ghost" href="docs/differences.html">vs Python</a>
 <a class="btn ghost" href="docs/verification.html">Check it</a>
+<a class="btn ghost" href="docs/model-training.html">Model training</a>
 <a class="btn ghost" href="https://github.com/kristerhedfors/lypning" rel="noopener">Source</a>
 </p>
 </div>
@@ -123,6 +124,34 @@ fuzz</code> generates programs from the router's own tables
 (<code>fuzz.py</code>), diffs them against CPython, shrinks a counterexample,
 and exits 1 with its seed. <a href="changelog.html">Findings →</a></p></div>
 </div>
+
+## Model training
+
+The engine is one lever; the model is the other. The training programme
+fine-tunes `Qwen/Qwen3.8-27B` so that an agent that has never heard of lypning
+writes first drafts `lypning-l` runs natively, **without getting more answers
+wrong**. It uses the same capture feed as the corpus, admits a case only when
+executed tests agree on CPython and on the engine, and grades every draw for
+correctness first and routing second, so a program that stays in the subset by
+being wrong scores zero.
+
+<figure class="full">
+<img src="docs/img/training-loop.svg" alt="Seven stages left to right: observe, snapshot, review, verify, train, evaluate, feed back; a dashed return path from feed back to observe." width="980" height="330">
+</figure>
+
+<div class="stats">
+<div class="stat"><span class="stat-num">+5.30pp</span><span class="stat-label">eval-2 correct-and-native, SFT over base, 95% CI [+2.22, +8.88]</span></div>
+<div class="stat"><span class="stat-num">−0.12pp</span><span class="stat-label">correctness, gate A (no worse than −2pp): pass</span></div>
+<div class="stat"><span class="stat-num">+3pp</span><span class="stat-label">the pre-registered bar on the lower bound: not met</span></div>
+</div>
+
+One seed, arm A, read 2026-09-26 from HF job `6ab7b0b76b030d633f693e48` over
+803 eval-2 cases at k = 16: a positive, exploratory result, not a claim. The
+gain is correct programs that used to fall back now running natively, and the
+names they used to fall back on are the engine's next worklist. Training is
+paused until that coverage lands and resumes as a new arm on the new engine.
+
+<p class="cta"><a class="btn" href="docs/model-training.html">The training pipeline, stage by stage →</a></p>
 
 ## Install it, then check it
 

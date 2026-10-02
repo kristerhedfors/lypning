@@ -497,6 +497,7 @@ no runner or no pin shows up there as a hole rather than as silence.
 | `docs/BIGINT-NUMERIC.md` | wide byte conversion and exact finite-float ratios: representation, limits, and differential checks |
 | `docs/COOKBOOK.md` | unsupported Python, rewritten — what to type when an engine refuses |
 | `docs/CAPTURE.md` | the two capture feeds, the harvest, and the privacy rules |
+| `docs/MODEL-TRAINING.md` | model training end to end — capture, case banks, verification, SFT and RL, evaluation and every result so far, one figure per stage; the mechanisms live under `training/` |
 | `docs/HARNESSES.md` | wiring capture into opencode and the OpenHands SDK: what each install writes, what it refuses to write, and what is verified against a real install |
 | `docs/EMBEDDING.md` | linking the runtime into a harness: the C ABI, the hosts over it, and what a refusal means when there is no exit code |
 | `docs/SANDBOX-PERFORMANCE.md` | the cost model — cold blocks, the exec floor, spawns — measured upstream, dated |
