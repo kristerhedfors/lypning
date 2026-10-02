@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-10-02** — Model training documentation, with a figure per stage, on the site and its landing page (PR_LINK)
+**2026-10-02** — Model training documentation, with a figure per stage, on the site and its landing page ([#137](https://github.com/kristerhedfors/lypning/pull/137))
 
 - `docs/MODEL-TRAINING.md` walks the training programme end to end: capture,
   the three bank routes and their evidence levels, verification and the reward
